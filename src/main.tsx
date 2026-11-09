@@ -27,13 +27,13 @@ function Dashboard({ go, openLead }: any) {
   const K = ({ lab, val, hint, onClick, cls }: any) => <div className="kpi" onClick={onClick}><div className="lab">{lab}</div><div className="val">{val}</div><div className="hint">{hint}</div></div>;
   return (<div>
     <h2 className="pt">Dashboard</h2><p className="sub">Every number is live and clickable — drill straight into the records behind it.</p>
-    {brief && <div className="briefCard"><div style={{ flex: 1 }}><div className="briefTag">☀️ MORNING BRIEF — {brief.date}</div><div className="briefHead">{brief.headline}</div>
+    {brief && <div className="briefCard"><div style={{ flex: 1 }}><div className="briefTag">☀️ MORNING BRIEF — {dOnly(brief.generated_at)}</div><div className="briefHead">{brief.headline}</div>
       <div className="chipRow" style={{ marginTop: 10 }}>
-        {brief.approvals_waiting > 0 && <button className="chip on" onClick={() => go({ view: "approvals" })}>{brief.approvals_waiting} approvals waiting →</button>}
+        {brief.pending_approvals > 0 && <button className="chip on" onClick={() => go({ view: "approvals" })}>{brief.pending_approvals} approvals waiting →</button>}
         {brief.undelivered_finals > 0 && <button className="chip" onClick={() => go({ view: "handoffs" })}>{brief.undelivered_finals} finals not yet picked up →</button>}
-        {brief.backlog > 0 && <button className="chip" onClick={() => go({ view: "leads", leads: { bucket: "new" } })}>{brief.backlog} in backlog →</button>}
+        {brief.backlog_remaining > 0 && <button className="chip" onClick={() => go({ view: "leads", leads: { bucket: "new" } })}>{brief.backlog_remaining} in backlog →</button>}
         <button className="chip" onClick={() => go({ view: "ai" })}>🤖 AI insights →</button></div></div>
-      <div className="briefSide">{(brief.stale_top3 || []).map((t: string, i: number) => <div key={i}>⏰ {t}</div>)}</div></div>}
+      <div className="briefSide">{(brief.stuck || []).slice(0, 3).map((t: any, i: number) => <div key={i}>⏰ {t.service_requested} — {t.state.replaceAll("_", " ").toLowerCase()}, overdue</div>)}</div></div>}
     <div className="kpis">
       <K lab="Total leads" val={num(m.total_leads)} hint="All time · click to open Leads" onClick={() => go({ view: "leads" })} />
       <K lab="Won" val={num(m.won)} hint={`${money(d.won_value)} won value`} onClick={() => go({ view: "leads", leads: { bucket: "won" } })} />
