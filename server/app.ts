@@ -554,7 +554,7 @@ export function workspaceDefaults(wsId: string) {
   pb(s1, "Water extraction & drying", 3200, 2600); pb(s1, "Dehumidification (per day)", 450, 350);
   db.prepare("INSERT INTO templates (id,workspace_id,service_id,kind,name,body) VALUES (?,?,?,?,?,?)").run(uid("tpl"), wsId, s1, "proposal", "Standard Proposal", "Scope: {{scope}}\nLine items from price book.\nTerms: Net 14, proposal valid 14 days.");
 }
-function membershipsOf(userId: string) { return db.prepare("SELECT m.workspace_id, m.role, w.name FROM memberships m JOIN workspaces w ON w.id=m.workspace_id WHERE m.user_id=?").all(userId); }
+function membershipsOf(userId: string) { return db.prepare("SELECT m.workspace_id, m.role, w.name FROM memberships m JOIN workspaces w ON w.id=m.workspace_id WHERE m.user_id=? ORDER BY m.created_at").all(userId); }
 function ensureMembership(user: any) { const ex = db.prepare("SELECT * FROM memberships WHERE user_id=? AND workspace_id=?").get(user.id, user.workspace_id); if (!ex) db.prepare("INSERT INTO memberships (user_id,workspace_id,role,created_at) VALUES (?,?,?,?)").run(user.id, user.workspace_id, user.role, now()); }
 app.post("/api/auth/register", (req: any, res) => {
   const { name, email, password, business_name } = req.body || {};

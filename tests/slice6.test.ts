@@ -37,7 +37,8 @@ test("register creates a tenant; tenants are isolated; switch works", async () =
   assert.equal(inSecond.j.length, 0); // switched: new workspace is empty
   const list = await J("/api/workspaces", {}, a.cookie);
   assert.equal(list.j.workspaces.length, 2);
-  const back = await J("/api/workspaces/switch", { method: "POST", body: { workspace_id: list.j.workspaces[0].workspace_id } }, a.cookie);
+  const first = list.j.workspaces.find((w: any) => w.name === "A Co");
+  const back = await J("/api/workspaces/switch", { method: "POST", body: { workspace_id: first.workspace_id } }, a.cookie);
   assert.equal(back.j.ok, true);
   const again = await J("/api/leads", {}, a.cookie);
   assert.equal(again.j.length, 1);

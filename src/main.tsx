@@ -18,8 +18,8 @@ export const BUCKETS: [string, string][] = [["new", "New"], ["working", "Working
 type Nav = { view: string; leads?: any; leadId?: string };
 
 function Dashboard({ go, openLead }: any) {
-  const [d, setD] = useState<any>(null); const [ins, setIns] = useState<any[]>([]);
-  useEffect(() => { api("/api/dashboard").then(setD).catch(() => {}); api("/api/ai/insights").then(setIns).catch(() => {}); }, []);
+  const [d, setD] = useState<any>(null); const [ins, setIns] = useState<any[]>([]); const [brief, setBrief] = useState<any>(null);
+  useEffect(() => { api("/api/dashboard").then(setD).catch(() => {}); api("/api/ai/insights").then(setIns).catch(() => {}); api("/api/brief").then(setBrief).catch(() => {}); }, []);
   if (!d) return <p className="muted">Loading dashboard…</p>;
   const m = d.metrics;
   const maxF = Math.max(1, ...d.funnel.map((f: any) => f.count));
@@ -27,6 +27,13 @@ function Dashboard({ go, openLead }: any) {
   const K = ({ lab, val, hint, onClick, cls }: any) => <div className="kpi" onClick={onClick}><div className="lab">{lab}</div><div className="val">{val}</div><div className="hint">{hint}</div></div>;
   return (<div>
     <h2 className="pt">Dashboard</h2><p className="sub">Every number is live and clickable — drill straight into the records behind it.</p>
+    {brief && <div className="briefCard"><div style={{ flex: 1 }}><div className="briefTag">☀️ MORNING BRIEF — {brief.date}</div><div className="briefHead">{brief.headline}</div>
+      <div className="chipRow" style={{ marginTop: 10 }}>
+        {brief.approvals_waiting > 0 && <button className="chip on" onClick={() => go({ view: "approvals" })}>{brief.approvals_waiting} approvals waiting →</button>}
+        {brief.undelivered_finals > 0 && <button className="chip" onClick={() => go({ view: "handoffs" })}>{brief.undelivered_finals} finals not yet picked up →</button>}
+        {brief.backlog > 0 && <button className="chip" onClick={() => go({ view: "leads", leads: { bucket: "new" } })}>{brief.backlog} in backlog →</button>}
+        <button className="chip" onClick={() => go({ view: "ai" })}>🤖 AI insights →</button></div></div>
+      <div className="briefSide">{(brief.stale_top3 || []).map((t: string, i: number) => <div key={i}>⏰ {t}</div>)}</div></div>}
     <div className="kpis">
       <K lab="Total leads" val={num(m.total_leads)} hint="All time · click to open Leads" onClick={() => go({ view: "leads" })} />
       <K lab="Won" val={num(m.won)} hint={`${money(d.won_value)} won value`} onClick={() => go({ view: "leads", leads: { bucket: "won" } })} />
@@ -488,11 +495,11 @@ function SyncModal({ close, done }: any) {
 function App() {
   const [user, setUser] = useState<any>(null); const [login, setLogin] = useState({ email: "", password: "" }); const [err, setErr] = useState("");
   const [nav, setNav] = useState<Nav>({ view: "dashboard" }); const [users, setUsers] = useState<any[]>([]); const [priceBook, setPriceBook] = useState<any[]>([]);
-  const [brief, setBrief] = useState<any>(null); const [pending, setPending] = useState(0); const [creating, setCreating] = useState(false); const [leadId, setLeadId] = useState<string | null>(null); const [tick, setTick] = useState(0);
+const [pending, setPending] = useState(0); const [creating, setCreating] = useState(false); const [leadId, setLeadId] = useState<string | null>(null); const [tick, setTick] = useState(0);
   const [workspaces, setWorkspaces] = useState<any[]>([]); const [newWs, setNewWs] = useState("");
   useEffect(() => { if (user) api("/api/workspaces").then(r => setWorkspaces(r.workspaces || [])).catch(() => {}); }, [user?.id]);
   useEffect(() => { api("/api/auth/me").then(r => { setUser(r.user); setWorkspaces(r.workspaces || []); }).catch(() => {}); }, []);
-  useEffect(() => { if (user) { api("/api/users").then(setUsers).catch(() => {}); api("/api/price-book").then(setPriceBook).catch(() => {}); api("/api/brief").then(setBrief).catch(() => {}); api("/api/approvals").then(r => setPending(r.length)).catch(() => {}); } }, [user, tick]);
+  useEffect(() => { if (user) { api("/api/users").then(setUsers).catch(() => {}); api("/api/price-book").then(setPriceBook).catch(() => {}); api("/api/approvals").then(r => setPending(r.length)).catch(() => {}); } }, [user, tick]);
   if (!user) return <Landing onAuth={(u: any) => { setUser(u); }} />;
   const go = (n: Nav) => setNav(n);
   const NavB = ({ v, children, cnt }: any) => <button className={nav.view === v ? "on" : ""} onClick={() => go({ view: v })}><span>{children}</span>{cnt ? <span className="cnt">{cnt}</span> : null}</button>;
@@ -504,7 +511,6 @@ function App() {
       <NavB v="dashboard">Dashboard</NavB><NavB v="leads">Leads</NavB><NavB v="reports">Reports</NavB><NavB v="approvals" cnt={pending || undefined}>Approvals</NavB><NavB v="ai">AI Assistant</NavB><NavB v="imports">Import CSV</NavB><NavB v="demand">Demand Gap</NavB><NavB v="handoffs">Handoffs</NavB><NavB v="ops">Ops Console</NavB><NavB v="settings">Settings</NavB><NavB v="billing">Billing</NavB>
       {user.is_platform_admin ? <NavB v="admin">Platform Admin</NavB> : null}
       <button onClick={async () => { await fetch("/api/auth/logout", { method: "POST" }).catch(() => {}); setUser(null); }}><span>Sign out</span></button>
-      {brief && <div className="brief"><b>Morning Brief</b>{brief.headline}<br />{brief.undelivered_finals} finals not yet picked up by their system</div>}
     </aside>
     <main>
       <div className="topbar"><div className="search"><input type="search" placeholder="Search everything — name, phone, service… (opens Leads)" onKeyDown={e => { if (e.key === "Enter") go({ view: "leads", leads: { q: (e.target as HTMLInputElement).value } }); }} /></div>
