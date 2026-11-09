@@ -1,4 +1,4 @@
-// LeadFlow OS — deposit payments (§26 A2 money bridge)
+// Workpile — deposit payments (§26 A2 money bridge)
 // Production path: Stripe Checkout when STRIPE_SECRET_KEY is set. Until then the app
 // runs in explicit TEST MODE: a local pay page simulates the deposit and flips status
 // through the exact same code path the Stripe webhook uses — screens and data upgrade

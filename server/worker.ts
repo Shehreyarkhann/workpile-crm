@@ -1,4 +1,4 @@
-// LeadFlow OS — webhook delivery worker (§14.3/§14.5, §26 outbox discipline)
+// Workpile — webhook delivery worker (§14.3/§14.5, §26 outbox discipline)
 // Delivers final-outcome payloads to the customer's registered endpoints, HMAC-signed.
 // Retries with backoff bookkeeping; a delivery is only "delivered" on a real 2xx from
 // their endpoint — never assumed. Failed after max attempts → DLQ state, replayable.
@@ -26,7 +26,7 @@ export async function processDeliveries(fetchFn: FetchFn = fetch as any): Promis
     let ok = false, lastErr = "";
     for (const ep of endpoints) {
       try {
-        const r = await fetchFn(ep.url, { method: "POST", headers: { "Content-Type": "application/json", "X-LeadFlow-Signature": signPayload(ep.secret || "", body), "X-LeadFlow-Delivery": d.id }, body });
+        const r = await fetchFn(ep.url, { method: "POST", headers: { "Content-Type": "application/json", "X-Workpile-Signature": signPayload(ep.secret || "", body), "X-Workpile-Delivery": d.id }, body });
         if (r.status >= 200 && r.status < 300) ok = true; else lastErr = `HTTP ${r.status} from ${ep.url}`;
       } catch (e: any) { lastErr = String(e?.message || e); }
     }

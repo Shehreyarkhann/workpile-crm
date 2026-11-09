@@ -1,4 +1,4 @@
-// LeadFlow OS — own subscription billing (§18 pricing, §26 C4 billing completeness)
+// Workpile — own subscription billing (§18 pricing, §26 C4 billing completeness)
 // Plans mirror spec §18. Trial: 30 days, app-side, no card (proven ClaimPaid pattern).
 // Stripe Checkout when STRIPE_SECRET_KEY + price IDs are set; otherwise checkout is
 // honestly reported as not configured — never a fake payment flow for real money.

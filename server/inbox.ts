@@ -1,4 +1,4 @@
-// LeadFlow OS — inbox ingestion (§4.1 email branch + §25 P0-2 full inbox triage)
+// Workpile — inbox ingestion (§4.1 email branch + §25 P0-2 full inbox triage)
 // Provider note: Gmail / Microsoft 365 OAuth pollers feed this same pipeline once the
 // workspace connects credentials; the parse/categorize/create path below is provider-
 // agnostic and is what those pollers call. Every email becomes EITHER a lead OR a

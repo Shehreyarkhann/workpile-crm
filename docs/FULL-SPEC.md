@@ -1,6 +1,6 @@
 # LEADFLOW OS — FULL PRODUCT SPECIFICATION
 ### AI-Agentic Lead Backlog, Approval & Proposal SaaS for Small Service Businesses
-**Working name:** LeadFlow OS (alternatives: BacklogZero, ClearPipeline, ApproveFlow — name clearance required before launch)
+**Working name:** Workpile (alternatives: BacklogZero, ClearPipeline, ApproveFlow — name clearance required before launch)
 **Version:** 1.0 — Founder Spec | **Date:** November 9, 2026
 **Author role:** Founder / Full-Stack Engineer
 **Status:** Build-ready MVP specification. No customer data in this document. All volumes cited from a real design-partner pattern (1,000+ lead backlog, 3,000+ email backlog) are illustrative of the target segment, not a commitment by any named business.
@@ -38,7 +38,7 @@
 ## 1. EXECUTIVE SUMMARY & PRODUCT THESIS
 
 ### 1.1 One-liner
-LeadFlow OS clears a small service business's lead backlog, routes every qualified lead through a one-tap owner approval, generates the proposal from the business's own templates and price book, and never lets a lead sit without an owner and a next follow-up date.
+Workpile clears a small service business's lead backlog, routes every qualified lead through a one-tap owner approval, generates the proposal from the business's own templates and price book, and never lets a lead sit without an owner and a next follow-up date.
 
 ### 1.2 Thesis
 Small service businesses (5–50 staff) do not lose revenue because they lack leads. They lose it in the gap between *lead arrives* and *proposal sent*:
@@ -111,7 +111,7 @@ US service SMBs number in the millions; the serviceable wedge is owner-operated 
 
 ## 4. LEAD INGESTION — API, CSV & INTEGRATIONS
 
-Design rule: the business changes nothing about how leads arrive. LeadFlow meets every existing channel.
+Design rule: the business changes nothing about how leads arrive. Workpile meets every existing channel.
 
 ### 4.1 Tier 1 — MVP integrations
 | Channel | Mechanism | Notes |
@@ -264,7 +264,7 @@ On onboarding, the workspace uploads 5–20 past proposals (won + lost). The sys
 Lead data + scope notes (+ photos/site notes from PM) → Agent 5 assembles draft: tailored intro referencing the customer's stated problem, scope from library + lead specifics, line items from Price Book, timeline, terms, e-sign block → internal checks (margin band, missing exclusions, win-probability band vs won history) → Approval Inbox (§6.4) → on approval: PDF rendered on workspace letterhead + send via connected email with tracked open/view events → follow-up cadence (§8.2) starts automatically.
 
 ### 9.4 Win/Loss capture
-- **Won:** signature/payment signal or manual mark → Project created, PM confirmed, onboarding task list generated, proposal + actuals feed the learning set — **and the Project Handoff Package is published to the customer's own platform via the Handoff API (§14.5). LeadFlow's job ends at Won; delivery lives in their system, not ours.**
+- **Won:** signature/payment signal or manual mark → Project created, PM confirmed, onboarding task list generated, proposal + actuals feed the learning set — **and the Project Handoff Package is published to the customer's own platform via the Handoff API (§14.5). Workpile's job ends at Won; delivery lives in their system, not ours.**
 - **Lost:** reason code required: `PRICE, TIMING, COMPETITOR, NO_DECISION, UNRESPONSIVE, NOT_A_FIT, OTHER` + optional competitor name. Lost-reason data powers §10 insights and §11 Demand Gap. A lost proposal is data, not a dead end — **and the final outcome is delivered to the customer's own platform via §14.5, same as Won.**
 - **All other finals — No Response / N/A–Unserviceable / Junk / Duplicate:** Every terminal outcome is a deliverable, not a silent archive. Each fires a Final Outcome Delivery (§14.5) with its outcome code + reason, so the customer's CRM/ERP/project system closes the loop on their side too: no duplicate outreach, clean source ROI, suppression lists stay in sync.
 
@@ -431,7 +431,7 @@ Binds to an existing form (no rebuild) or renders a hosted form. Captures UTM + 
 
 ### 14.5 Final Outcome Handoff API — Won, Lost, N/A & Every Terminal State (NEW — Nov 9 requirement)
 
-**Principle: LeadFlow is the front door, not the house.** Leads are worked, approved, and proposed in LeadFlow. The moment a lead reaches a *final* outcome, a complete, structured record is delivered into the customer's own software — because a Won lead becomes a project they run on their platform, and Lost / N/A / No-Response records must close, suppress, and inform that same platform. Nothing terminal stays trapped in LeadFlow.
+**Principle: Workpile is the front door, not the house.** Leads are worked, approved, and proposed in Workpile. The moment a lead reaches a *final* outcome, a complete, structured record is delivered into the customer's own software — because a Won lead becomes a project they run on their platform, and Lost / N/A / No-Response records must close, suppress, and inform that same platform. Nothing terminal stays trapped in Workpile.
 
 **Outcomes covered (all of them, no exceptions):**
 `WON` · `LOST` (with reason + competitor) · `NO_RESPONSE` · `NA_UNSERVICEABLE` (not-a-fit / service not offered / out of area — feeds their records + our Demand Gap) · `JUNK` · `DUPLICATE` (with pointer to the surviving lead/external ID)
@@ -469,7 +469,7 @@ Lost / N/A / No-Response payloads use the same envelope, swapping `proposal/proj
 
 **Acknowledgement & status-back (closes the loop both ways):**
 - `POST /v1/outcomes/{delivery_id}/ack {"external_id":"their-project-or-record-id","status":"ingested"}` — stores their ID on our record; Lead Detail then shows "In their system as #12345" with a deep link if their system supports it.
-- `POST /v1/projects/{id}/status {"status":"scheduled|in_progress|completed|on_hold","external_id":"..."}` — optional callback so LeadFlow's dashboards can show delivery progress without owning delivery. Status-back never mutates the lead's final outcome.
+- `POST /v1/projects/{id}/status {"status":"scheduled|in_progress|completed|on_hold","external_id":"..."}` — optional callback so Workpile's dashboards can show delivery progress without owning delivery. Status-back never mutates the lead's final outcome.
 - Unacknowledged deliveries escalate: retry → admin alert at 24h → listed in the Morning Brief as "3 finals not yet picked up by your system." A Won lead that never lands in their platform is a sev-level workflow failure, surfaced — never silent.
 
 **Developer experience (Silicon Valley standard):** OpenAPI 3 spec + interactive docs, sandbox workspace with sample Won/Lost/N/A payloads, test-delivery button per destination, delivery log with payload viewer + one-click replay, schema versioning (`*.v1`, additive-only changes within a version), and a status page for the API. Their developer — or their ops person with Zapier — must be able to complete an integration in under a day; that is the acceptance test for this section.

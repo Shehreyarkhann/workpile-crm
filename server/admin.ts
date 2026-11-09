@@ -1,4 +1,4 @@
-// LeadFlow OS — §26 platform layer: feature flags (canary), admin health, SLO synthetics
+// Workpile — §26 platform layer: feature flags (canary), admin health, SLO synthetics
 import { db, now } from "./db.ts";
 import { metrics } from "./metrics.ts";
 

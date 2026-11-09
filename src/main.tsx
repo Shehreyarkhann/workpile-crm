@@ -320,7 +320,7 @@ function Settings({ users, setUsers, priceBook, setPriceBook }: any) {
         {newKey && <p className="mono ok">New key (shown once): {newKey}</p>}
         <p className="muted">Your system pulls finals from <span className="mono">GET /v1/outcomes</span> and acknowledges with <span className="mono">POST /v1/outcomes/:id/ack</span>. Push alternative: webhooks below.</p></div>
       <div className="card"><h3>Webhook endpoints (signed, HMAC)</h3>{hooks.map(h => <p key={h.id} className="muted" style={{ margin: "6px 0" }}><span className="mono">{h.url}</span> · {h.events} · {h.active ? "active" : "off"} <button className="btn ghost small" onClick={async () => { await api(`/api/webhooks/${h.id}`, { method: "DELETE" }); loadAll(); }}>Disable</button></p>)}
-        <div className="rowflex"><input style={{ flex: 1 }} placeholder="https://your-system.example/webhooks/leadflow" value={nh} onChange={e => setNh(e.target.value)} /><button className="btn" onClick={async () => { await api("/api/webhooks", { method: "POST", body: { url: nh } }); setNh(""); loadAll(); }}>Add endpoint</button></div></div>
+        <div className="rowflex"><input style={{ flex: 1 }} placeholder="https://your-system.example/webhooks/workpile" value={nh} onChange={e => setNh(e.target.value)} /><button className="btn" onClick={async () => { await api("/api/webhooks", { method: "POST", body: { url: nh } }); setNh(""); loadAll(); }}>Add endpoint</button></div></div>
       <div className="card"><h3>Inbox connections</h3><p className="muted">Gmail: {oauth?.google?.configured ? "app configured" : "not configured on this deployment"} · Outlook: {oauth?.microsoft?.configured ? "app configured" : "not configured"}. Manual/API/CSV ingestion works regardless.</p>
         <h3 style={{ marginTop: 16 }}>Feature flags (canary)</h3>{Object.entries(flags).map(([k, v]: any) => <div className="check" key={k}><span className={`st ${v ? "pass" : "fail"}`}>{v ? "✓" : "✗"}</span><span style={{ flex: 1 }}>{k.replaceAll("_", " ")}</span><button className="btn ghost small" onClick={async () => { await api("/api/flags", { method: "POST", body: { flag: k, enabled: !v } }); loadAll(); }}>{v ? "Turn off" : "Turn on"}</button></div>)}
         <h3 style={{ marginTop: 16 }}>Website form embed (captures TCPA consent automatically)</h3><p className="mono">&lt;script src="{location.origin}/embed/v1.js" data-workspace="YOUR_WORKSPACE" data-form="#lead-form"&gt;&lt;/script&gt;</p></div>
@@ -332,7 +332,7 @@ function Billing() {
   const [b, setB] = useState<any>(null);
   useEffect(() => { api("/api/billing").then(setB).catch(() => {}); }, []);
   if (!b) return <p className="muted">Loading billing…</p>;
-  return (<div><h2 className="pt">Billing</h2><p className="sub">Your LeadFlow subscription — plan, trial, and live usage against your caps.</p>
+  return (<div><h2 className="pt">Billing</h2><p className="sub">Your Workpile subscription — plan, trial, and live usage against your caps.</p>
     <div className="kpis">
       <div className="kpi"><div className="lab">Plan</div><div className="val">{b.plan.name}</div><div className="hint">{money(b.plan.price)}/mo</div></div>
       <div className="kpi"><div className="lab">Status</div><div className="val" style={{ fontSize: 20 }}>{b.subscription.status}</div><div className="hint">{b.trial_days_left !== null ? `${b.trial_days_left} trial days left` : "—"}</div></div>
@@ -386,7 +386,7 @@ function Reports() {
 
 class EB extends React.Component<any, any> { state = { err: "" }; static getDerivedStateFromError(e: any) { return { err: String(e && e.message || e) }; } componentDidCatch(e: any, info: any) { console.error("EB-CATCH:", e.message, (info.componentStack || "").slice(0, 900)); } render() { return this.state.err ? <div className="err">Render error: {this.state.err}</div> : this.props.children; } }
 
-function Logo({ light }: any) { return <span className="logo" style={light ? { color: "#fff" } : {}}><span className="mark">↗</span>LeadFlow&nbsp;OS</span>; }
+function Logo({ light }: any) { return <span className="logo" style={light ? { color: "#fff" } : {}}><span className="mark">↗</span>Workpile&nbsp;OS</span>; }
 
 function Landing({ onAuth }: any) {
   const [mode, setMode] = useState<"home" | "login" | "register">("home");
@@ -406,7 +406,7 @@ function Landing({ onAuth }: any) {
       <label className="f">Work email</label><input value={f.email} onChange={e => setF({ ...f, email: e.target.value })} placeholder="you@company.com" />
       <label className="f">Password</label><input type="password" value={f.password} onChange={e => setF({ ...f, password: e.target.value })} placeholder={mode === "register" ? "8+ characters" : "Your password"} />
       <button className="btn" style={{ width: "100%", marginTop: 12, padding: 12 }} onClick={submit}>{mode === "register" ? "Create my workspace →" : "Sign in →"}</button>
-      <p className="muted" style={{ fontSize: 13, marginTop: 12 }}>{mode === "register" ? <>Already have an account? <a href="#" onClick={e => { e.preventDefault(); setMode("login"); }}>Sign in</a></> : <>New to LeadFlow? <a href="#" onClick={e => { e.preventDefault(); setMode("register"); }}>Start free trial</a></>}</p>
+      <p className="muted" style={{ fontSize: 13, marginTop: 12 }}>{mode === "register" ? <>Already have an account? <a href="#" onClick={e => { e.preventDefault(); setMode("login"); }}>Sign in</a></> : <>New to Workpile? <a href="#" onClick={e => { e.preventDefault(); setMode("register"); }}>Start free trial</a></>}</p>
       <p className="muted" style={{ fontSize: 12.5 }}>Demo workspace: owner@demo.test / demo1234</p>
     </div></div></div>);
   const FEATS: [string, string, string][] = [
@@ -423,7 +423,7 @@ function Landing({ onAuth }: any) {
     <nav className="landNav"><Logo /><div className="links"><a href="#features">Features</a><a href="#how">How it works</a><a href="#compare">vs Salesforce</a><a href="#pricing">Pricing</a><button className="btn ghost" onClick={() => setMode("login")}>Sign in</button><button className="btn" onClick={() => setMode("register")}>Start free</button></div></nav>
     <div className="hero"><div>
       <h1>Your lead backlog, <em>cleared</em>. Your approvals, one tap. Your proposals, generated.</h1>
-      <p className="lede">LeadFlow OS is the operations layer for owner-operated service businesses: it ingests leads from your website, inbox, spreadsheets, and systems — then triages, routes, prices, and follows up until every single one reaches a final outcome in your own platform.</p>
+      <p className="lede">Workpile is the operations layer for owner-operated service businesses: it ingests leads from your website, inbox, spreadsheets, and systems — then triages, routes, prices, and follows up until every single one reaches a final outcome in your own platform.</p>
       <div className="rowflex"><button className="btn" style={{ padding: "13px 22px", fontSize: 15 }} onClick={() => setMode("register")}>Start 30-day free trial</button><button className="btn ghost" style={{ padding: "13px 22px", fontSize: 15 }} onClick={() => setMode("login")}>See the demo →</button></div>
       <p className="muted" style={{ marginTop: 12 }}>No card · Set up in minutes · Your data stays yours</p></div>
       <div className="heroMock"><div className="hm-kpis"><div className="hm"><span>Total leads</span><b>2,613</b></div><div className="hm"><span>Won</span><b>2,001</b></div><div className="hm"><span>First-pass approval</span><b>100%</b></div></div>
@@ -431,21 +431,21 @@ function Landing({ onAuth }: any) {
         <div className="hm-row"><span>🔥 17 hot leads scored 70+ today</span><b>AI</b></div>
         <div className="hm-row"><span>🔁 Won → project GC-JOB-1042 acknowledged</span><b>✓</b></div>
         <div className="hm-row"><span>🧹 23 duplicates archived by AI cleanup</span><b>✓</b></div></div></div>
-    <div className="section" id="features"><h2>Everything between "new lead" and "final outcome"</h2><p className="sub2">Salesforce tracks your pipeline. LeadFlow finishes it — with the approval discipline, pricing guardrails, and handoff plumbing a working business actually needs.</p>
+    <div className="section" id="features"><h2>Everything between "new lead" and "final outcome"</h2><p className="sub2">Salesforce tracks your pipeline. Workpile finishes it — with the approval discipline, pricing guardrails, and handoff plumbing a working business actually needs.</p>
       <div className="featGrid">{FEATS.map(([ic, t, d]) => <div className="feat" key={t}><div className="ic">{ic}</div><h4>{t}</h4><p>{d}</p></div>)}</div></div>
     <div className="section" id="how"><h2>How it works</h2><div className="steps">
       <div className="step"><b>1</b><h4>Connect & clear</h4><p>Sync from your lead system by date range, upload the CSV pile, connect your inbox and website form. AI cleans, dedupes, scores, and assigns everything.</p></div>
       <div className="step"><b>2</b><h4>Approve & propose</h4><p>Your team works leads on a Salesforce-style Path. Complete packets land in your Approval Inbox; proposals generate from your price book, get e-signed, and collect the deposit.</p></div>
       <div className="step"><b>3</b><h4>Hand off & learn</h4><p>Every final — won, lost, no-response, N/A — is delivered into your own platform with acknowledgment tracking, while Demand Gap shows you what to sell next.</p></div></div></div>
-    <div className="section" id="compare"><h2>Why teams switch from Salesforce</h2><p className="sub2">Salesforce is a database you configure for six months. LeadFlow is the workflow, finished — at a tenth of the seat cost.</p>
-      <div className="tableWrap"><table className="cmp"><thead><tr><th></th><th>LeadFlow OS</th><th>Salesforce</th></tr></thead><tbody>
+    <div className="section" id="compare"><h2>Why teams switch from Salesforce</h2><p className="sub2">Salesforce is a database you configure for six months. Workpile is the workflow, finished — at a tenth of the seat cost.</p>
+      <div className="tableWrap"><table className="cmp"><thead><tr><th></th><th>Workpile</th><th>Salesforce</th></tr></thead><tbody>
         {[["Backlog clearing & AI triage built in", 1, 0], ["Completeness Gate before approvals", 1, 0], ["Proposals generated from your price book", 1, 0], ["Final outcomes delivered into your other systems", 1, 0], ["Pipeline, Path, reports & dashboards", 1, 1], ["Live in an afternoon, no admin required", 1, 0], ["Flat per-business pricing from $299/mo", 1, 0]].map(([t, a, b]: any) => <tr key={t}><td>{t}</td><td className={a ? "yes" : "no"}>{a ? "✓ Included" : "—"}</td><td className={b ? "yes" : "no"}>{b ? "✓" : "Add-on / custom build"}</td></tr>)}
       </tbody></table></div></div>
     <div className="section" id="pricing"><h2>Pricing — 30 days free, no card</h2><div className="featGrid">
       {[["Starter", "$299/mo", "500 leads/mo · 5 seats · backlog clear, approvals, proposals, handoff"], ["Growth", "$599/mo", "2,000 leads/mo · 15 seats · + AI operations, demand gap, customer portal"], ["Pro", "$999/mo", "Unlimited leads · 30 seats · + priority support, advanced reports"]].map(([n, p, d]) => <div className="feat" key={n}><span className="muted" style={{ textTransform: "uppercase", fontWeight: 700, fontSize: 12 }}>{n}</span><h4 style={{ fontSize: 24 }}>{p}</h4><p>{d}</p><button className="btn" style={{ marginTop: 12 }} onClick={() => setMode("register")}>Start free</button></div>)}</div></div>
     <div className="section"><h2>Questions</h2>
-      {[["Do I have to replace my current system?", "No — LeadFlow is the front door, not the house. Won jobs become projects in YOUR platform via API or webhooks; every final outcome is delivered and acknowledged there."], ["How do leads get in?", "Four ways: sync from your lead system's API by date range (daily auto-sync available), CSV upload, website form embed with TCPA consent, and inbox/API ingestion."], ["Is the AI allowed to send things on its own?", "Never. Agents draft, score, and organize; every customer-facing send and every price-bearing decision needs a human approval. That's a product invariant, not a setting."], ["What happens to duplicates?", "Ingestion dedupes by phone/email automatically. AI Cleanup finds the rest — same name + service — and archives them as duplicates of the original, with the merge recorded."]].map(([q, a]) => <div className="faq" key={q}><b>{q}</b><p>{a}</p></div>)}</div>
-    <footer className="landFoot"><Logo /><span>© 2026 LeadFlow OS · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/dpa">DPA</a></span><span>Built for the businesses that answer the phone.</span></footer>
+      {[["Do I have to replace my current system?", "No — Workpile is the front door, not the house. Won jobs become projects in YOUR platform via API or webhooks; every final outcome is delivered and acknowledged there."], ["How do leads get in?", "Four ways: sync from your lead system's API by date range (daily auto-sync available), CSV upload, website form embed with TCPA consent, and inbox/API ingestion."], ["Is the AI allowed to send things on its own?", "Never. Agents draft, score, and organize; every customer-facing send and every price-bearing decision needs a human approval. That's a product invariant, not a setting."], ["What happens to duplicates?", "Ingestion dedupes by phone/email automatically. AI Cleanup finds the rest — same name + service — and archives them as duplicates of the original, with the merge recorded."]].map(([q, a]) => <div className="faq" key={q}><b>{q}</b><p>{a}</p></div>)}</div>
+    <footer className="landFoot"><Logo /><span>© 2026 Workpile · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/dpa">DPA</a></span><span>Built for the businesses that answer the phone.</span></footer>
   </div>);
 }
 

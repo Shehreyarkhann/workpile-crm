@@ -1,4 +1,4 @@
-// LeadFlow OS — API application (spec §5 state machine, §6 approvals, §9 proposals, §14 public API, §14.5 handoffs, §25 Gregory P0s)
+// Workpile — API application (spec §5 state machine, §6 approvals, §9 proposals, §14 public API, §14.5 handoffs, §25 Gregory P0s)
 import express from "express";
 import { createHash, randomBytes } from "node:crypto";
 import { db, uid, now, hashPassword, verifyPassword, apiKeyHash, logEvent, audit } from "./db.ts";
@@ -541,10 +541,10 @@ app.get("/embed/v1.js", (req, res) => {
 });
 
 // ---------- slice 4: legal pages (DRAFTS — attorney review required before launch, see LAUNCH.md) ----------
-const legalPage = (title: string, body: string) => (req: any, res: any) => res.type("html").send(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:sans-serif;max-width:760px;margin:24px auto;padding:0 16px;line-height:1.55}</style><h1>${title}</h1><p><em>Draft — pending attorney review.</em></p>${body}<p><a href="/">← LeadFlow OS</a></p>`);
-app.get("/terms", legalPage("Terms of Service", "<p>LeadFlow OS provides lead management, approval workflow, proposal generation, and outcome handoff software for small and medium businesses. Customer data remains the customer's data; we process it only to provide the service. Subscriptions are billed monthly per the plan selected; trials run 30 days with no card required. AI-generated drafts require human approval before any customer-facing use. Service is provided as-is during beta/pilot periods.</p>"));
+const legalPage = (title: string, body: string) => (req: any, res: any) => res.type("html").send(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:sans-serif;max-width:760px;margin:24px auto;padding:0 16px;line-height:1.55}</style><h1>${title}</h1><p><em>Draft — pending attorney review.</em></p>${body}<p><a href="/">← Workpile</a></p>`);
+app.get("/terms", legalPage("Terms of Service", "<p>Workpile provides lead management, approval workflow, proposal generation, and outcome handoff software for small and medium businesses. Customer data remains the customer's data; we process it only to provide the service. Subscriptions are billed monthly per the plan selected; trials run 30 days with no card required. AI-generated drafts require human approval before any customer-facing use. Service is provided as-is during beta/pilot periods.</p>"));
 app.get("/privacy", legalPage("Privacy Policy", "<p>We collect account data and the lead/contact data our customers submit or connect. We use it solely to operate the service. We do not sell personal data. AI processing sub-processors are listed in our DPA. Customers may export or request deletion of their data at any time. US state privacy rights (including CCPA/CPRA) are honored via privacy requests to support.</p>"));
-app.get("/dpa", legalPage("Data Processing Addendum", "<p>LeadFlow OS acts as a processor/service provider for customer-submitted personal data. Sub-processors: cloud hosting, Stripe (payments), and AI model providers used for drafting/classification features. Security: encryption in transit and at rest, tenant isolation, audit logging. Breach notification within 72 hours of confirmation.</p>"));
+app.get("/dpa", legalPage("Data Processing Addendum", "<p>Workpile acts as a processor/service provider for customer-submitted personal data. Sub-processors: cloud hosting, Stripe (payments), and AI model providers used for drafting/classification features. Security: encryption in transit and at rest, tenant isolation, audit logging. Breach notification within 72 hours of confirmation.</p>"));
 
 // ---------- slice 6: multi-tenant, lead sync, AI ----------
 export function workspaceDefaults(wsId: string) {
@@ -695,7 +695,7 @@ app.get("/api/reports/export", requireAuth, (req: any, res) => {
   const ws = req.user.workspace_id; const kind = String(req.query.dataset || "by_owner");
   const r = db.prepare("SELECT service_requested, state, est_value, created_at FROM leads WHERE workspace_id=?").all(ws) as any[];
   const csv = "service,state,est_value,created_at\n" + r.map(x => [x.service_requested, x.state, x.est_value, x.created_at].map(v => `"${String(v ?? "").replaceAll('"', '""')}"`).join(",")).join("\n");
-  res.type("text/csv").setHeader("Content-Disposition", `attachment; filename="leadflow-${kind}.csv"`).send(csv);
+  res.type("text/csv").setHeader("Content-Disposition", `attachment; filename="workpile-${kind}.csv"`).send(csv);
 });
 
 app.get("/api/health", (_req, res) => res.json({ ok: true, service: "leadflow-os", time: now() }));

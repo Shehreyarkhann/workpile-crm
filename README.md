@@ -1,4 +1,4 @@
-# LeadFlow OS
+# Workpile
 
 AI-agentic lead backlog, approval & proposal SaaS for small service businesses.
 Full product specification: `docs/FULL-SPEC.md` (v2.0, production-complete) ·

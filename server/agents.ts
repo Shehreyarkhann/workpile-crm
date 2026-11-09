@@ -1,4 +1,4 @@
-// LeadFlow OS — agent layer (spec §12). Deterministic-first: rules + structured scoring.
+// Workpile — agent layer (spec §12). Deterministic-first: rules + structured scoring.
 // Optional LLM: if ANTHROPIC_API_KEY is set, drafting can be upgraded; classification stays
 // deterministic so behavior is testable and auditable. SECURITY INVARIANT (§26 B1):
 // ingested content is DATA, never instructions. Agents cannot change price, approve, or send —

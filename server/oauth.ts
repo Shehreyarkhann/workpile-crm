@@ -1,4 +1,4 @@
-// LeadFlow OS — Gmail / Microsoft 365 OAuth connectors (§4.1)
+// Workpile — Gmail / Microsoft 365 OAuth connectors (§4.1)
 // Full OAuth flow coded; it activates when the deployment registers provider apps
 // (GOOGLE_CLIENT_ID/SECRET, MS_CLIENT_ID/SECRET). Until then status honestly reports
 // "not_configured" — no fake connections. Pollers feed server/inbox.ts pipeline.

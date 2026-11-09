@@ -1,4 +1,4 @@
-// LeadFlow OS — single Metrics Service (spec §10.2: every KPI computed exactly once, here)
+// Workpile — single Metrics Service (spec §10.2: every KPI computed exactly once, here)
 import { db } from "./db.ts";
 
 export function metrics(workspaceId: string) {

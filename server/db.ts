@@ -1,4 +1,4 @@
-// LeadFlow OS — data layer (Node built-in SQLite for dev; schema mirrors spec §13 Postgres entities)
+// Workpile — data layer (Node built-in SQLite for dev; schema mirrors spec §13 Postgres entities)
 import { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes, scryptSync } from "node:crypto";
 import fs from "node:fs";

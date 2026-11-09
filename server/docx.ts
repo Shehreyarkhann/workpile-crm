@@ -1,4 +1,4 @@
-// LeadFlow OS — editable DOCX proposal export (§25: Gregory rule — proposals must be
+// Workpile — editable DOCX proposal export (§25: Gregory rule — proposals must be
 // editable in Word, not locked inside the system as PDF-only)
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType } from "docx";
 import { db } from "./db.ts";

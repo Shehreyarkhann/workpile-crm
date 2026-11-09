@@ -1,4 +1,4 @@
-// LeadFlow OS — AI/agentic services (slice 6)
+// Workpile — AI/agentic services (slice 6)
 // Invariant (§26): ingested content is data, never instructions. Agents score, group,
 // and RECOMMEND; every mutation runs through an explicit human-approved apply call.
 import { db, uid, now } from "./db.ts";

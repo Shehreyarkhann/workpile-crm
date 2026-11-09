@@ -1,4 +1,4 @@
-/* LeadFlow OS — design system v2 (competitor-grade) */
+/* Workpile — design system v2 (competitor-grade) */
 :root { --ink:#0f172a; --mut:#64748b; --line:#e2e8f0; --bg:#f1f5f9; --card:#fff; --brand:#14532d; --brand2:#166534; --accent:#0ea5e9; --warn:#b45309; --bad:#b91c1c; --ok:#15803d; --radius:12px; --shadow:0 1px 3px rgba(15,23,42,.08),0 4px 14px rgba(15,23,42,.05); }
 * { box-sizing:border-box; } body { margin:0; font-family:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif; background:var(--bg); color:var(--ink); font-size:14px; }
 button { font:inherit; }

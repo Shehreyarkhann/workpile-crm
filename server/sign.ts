@@ -1,4 +1,4 @@
-// LeadFlow OS — native-lite e-signature (§9.3/§26 legal: ESIGN/UETA evidence)
+// Workpile — native-lite e-signature (§9.3/§26 legal: ESIGN/UETA evidence)
 // A proposal gets a signed link (unguessable token). Signing records an evidence
 // certificate: document hash at signing time, signer identity, consent, timestamp,
 // IP + user agent. Double-signing is rejected; any post-sign proposal edit changes
