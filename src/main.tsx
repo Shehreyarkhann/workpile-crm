@@ -277,11 +277,11 @@ function Ops() {
   </div>);
 }
 
-function Settings({ users, setUsers, priceBook, setPriceBook }: any) {
+function Settings({ users, setUsers, priceBook, setPriceBook, onJump }: any) {
   const [tab, setTab] = useState("workspace");
   const [s, setS] = useState<any>(null); const [msg, setMsg] = useState("");
   const [tpls, setTpls] = useState<any[]>([]); const [svcs, setSvcs] = useState<any[]>([]);
-  const [keys, setKeys] = useState<any[]>([]); const [newKey, setNewKey] = useState(""); const [hooks, setHooks] = useState<any[]>([]); const [flags, setFlags] = useState<any>({}); const [oauth, setOauth] = useState<any>(null); const [catalog, setCatalog] = useState<any[]>([]);
+  const [keys, setKeys] = useState<any[]>([]); const [newKey, setNewKey] = useState(""); const [hooks, setHooks] = useState<any[]>([]); const [flags, setFlags] = useState<any>({}); const [oauth, setOauth] = useState<any>(null); const [catalog, setCatalog] = useState<any[]>([]); const [cfg, setCfg] = useState<string | null>(null); const [cfgMsg, setCfgMsg] = useState(""); const [syncRange, setSyncRange] = useState("30");
   useEffect(() => { api("/api/integrations").then(r => setCatalog(r.integrations)).catch(() => {}); }, []);
   const [nb, setNb] = useState<any>({ name: "", unit: "job", standard_price: "", floor_price: "" });
   const [nt, setNt] = useState<any>({ name: "", body: "" }); const [nu, setNu] = useState<any>({ name: "", email: "", role: "LEAD_OWNER", password: "" }); const [nh, setNh] = useState("");
@@ -318,7 +318,7 @@ function Settings({ users, setUsers, priceBook, setPriceBook }: any) {
       <div className="rowflex" style={{ marginTop: 12 }}><input style={{ flex: 1 }} placeholder="Name" value={nu.name} onChange={e => setNu({ ...nu, name: e.target.value })} /><input style={{ flex: 1 }} placeholder="Email" value={nu.email} onChange={e => setNu({ ...nu, email: e.target.value })} /><input style={{ flex: 1 }} placeholder="Temp password" value={nu.password} onChange={e => setNu({ ...nu, password: e.target.value })} /><select style={{ width: 150 }} value={nu.role} onChange={e => setNu({ ...nu, role: e.target.value })}><option>LEAD_OWNER</option><option>PM</option><option>APPROVER</option><option>OPS_ADMIN</option></select><button className="btn" onClick={async () => { await api("/api/users", { method: "POST", body: nu }); setNu({ name: "", email: "", role: "LEAD_OWNER", password: "" }); loadAll(); setMsg("Team member added ✓"); }}>Add member</button></div></div>}
     {tab === "integrations" && <div>
       <div className="card"><h3 style={{ marginTop: 0 }}>Integration catalog — every way data moves in and out</h3>
-      <div className="featGrid">{catalog.map((c: any) => <div className="feat" key={c.id}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><b>{c.name}</b><span className="tinyBadge" style={c.status === "connected" ? { background: "#dcfce7", color: "#166534" } : c.status === "test_mode" || c.status === "demo_source" ? { background: "#fef9c3", color: "#854d0e" } : {}}>{c.status.replaceAll("_", " ")}</span></div><p>{c.detail}</p></div>)}</div></div>
+      <div className="featGrid">{catalog.map((c: any) => <div className="feat clickable" key={c.id} onClick={() => { setCfg(c.id); setCfgMsg(""); }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><b>{c.name}</b><span className="tinyBadge" style={c.status === "connected" ? { background: "#dcfce7", color: "#166534" } : c.status === "test_mode" || c.status === "demo_source" ? { background: "#fef9c3", color: "#854d0e" } : {}}>{c.status.replaceAll("_", " ")}</span></div><p>{c.detail}</p><span className="cfgHint">Configure →</span></div>)}</div></div>
       <div className="card"><h3>API keys</h3>{keys.map(k => <p key={k.id} className="muted" style={{ margin: "6px 0" }}>{k.label} · scopes {k.scopes} · {k.revoked_at ? "revoked" : "active"} {k.revoked_at ? "" : <button className="btn ghost small" onClick={async () => { await api(`/api/api-keys/${k.id}`, { method: "DELETE" }); loadAll(); }}>Revoke</button>}</p>)}
         <button className="btn" onClick={async () => { const r = await api("/api/api-keys", { method: "POST", body: { label: "Integration key" } }); setNewKey(r.key); loadAll(); }}>Generate new key</button>
         {newKey && <p className="mono ok">New key (shown once): {newKey}</p>}
@@ -334,7 +334,41 @@ function Settings({ users, setUsers, priceBook, setPriceBook }: any) {
         <h3 style={{ marginTop: 16 }}>Feature flags (canary)</h3>{Object.entries(flags).map(([k, v]: any) => <div className="check" key={k}><span className={`st ${v ? "pass" : "fail"}`}>{v ? "✓" : "✗"}</span><span style={{ flex: 1 }}>{k.replaceAll("_", " ")}</span><button className="btn ghost small" onClick={async () => { await api("/api/flags", { method: "POST", body: { flag: k, enabled: !v } }); loadAll(); }}>{v ? "Turn off" : "Turn on"}</button></div>)}
         <h3 style={{ marginTop: 16 }}>Website form embed (captures TCPA consent automatically)</h3><p className="mono">&lt;script src="{location.origin}/embed/v1.js" data-workspace="YOUR_WORKSPACE" data-form="#lead-form"&gt;&lt;/script&gt;</p></div>
     </div>}
+    {cfg && s && <IntegrationConfig id={cfg} s={s} setS={setS} keys={keys} hooks={hooks} oauth={oauth} loadAll={loadAll} onJump={onJump} msg={cfgMsg} setMsg={setCfgMsg} syncRange={syncRange} setSyncRange={setSyncRange} close={() => setCfg(null)} />}
   </div>);
+}
+
+function IntegrationConfig({ id, s, setS, keys, hooks, oauth, loadAll, onJump, msg, setMsg, syncRange, setSyncRange, close }: any) {
+  if (!id) return null;
+  const ws = s?.workspace || {};
+  const saveSettings = async (patch: any) => { await api("/api/settings", { method: "PATCH", body: patch }); setMsg("Saved."); loadAll(); };
+  const runSync = async (days: number) => { const to = new Date(); const from = new Date(Date.now() - days * 86400000); setMsg("Syncing…"); const r = await api("/api/sync/run", { method: "POST", body: { from: from.toISOString(), to: to.toISOString() } }); setMsg(`Sync done: ${r.fetched} fetched · ${r.created} created · ${r.duplicates} duplicates skipped.`); };
+  const T: Record<string, string> = { rest_api: "REST API (two-way)", webhooks: "Event Webhooks", sync: "Lead Sync (pull)", csv: "CSV Import / Export", embed: "Website Form Embed", email_in: "Email-In API", gmail_outlook: "Gmail + Outlook", slack: "Slack Notifications", stripe: "Stripe", zapier_make: "Zapier / Make / n8n", handoff: "Final Outcome Handoff" };
+  return <div className="modalOverlay" onClick={close}><div className="modal" onClick={e => e.stopPropagation()}>
+    <div className="modalHead"><h3 style={{ margin: 0 }}>Configure — {T[id] || id}</h3><button className="btn ghost small" onClick={close}>✕</button></div>
+    {msg && <p className="ok">{msg}</p>}
+    {id === "rest_api" && <div><p className="muted">API keys authenticate your systems. Scopes: leads:write, leads:read, outcomes:read, outcomes:write, projects:read. Full spec: <a href="/openapi.json" target="_blank">/openapi.json</a></p>
+      {keys.map((k: any) => <p key={k.id} className="muted" style={{ margin: "6px 0" }}>{k.label} · {k.scopes} · {k.revoked_at ? "revoked" : "active"} {k.revoked_at ? "" : <button className="btn ghost small" onClick={async () => { await api(`/api/api-keys/${k.id}`, { method: "DELETE" }); loadAll(); }}>Revoke</button>}</p>)}
+      <button className="btn" onClick={async () => { const r = await api("/api/api-keys", { method: "POST", body: { label: "integration", scopes: "leads:write,leads:read,outcomes:read,outcomes:write,projects:read" } }); setMsg("New key (shown once): " + (r.key || r.raw_key || JSON.stringify(r))); loadAll(); }}>Generate new key</button></div>}
+    {id === "webhooks" && <div><p className="muted">Endpoints receive HMAC-signed events (header <span className="mono">X-Workpile-Signature</span>). A delivery counts only on a real 2xx from your server.</p>
+      {hooks.map((h: any) => <p key={h.id} className="muted" style={{ margin: "6px 0" }}>{h.url} · events: {h.events || "outcome.final"} · {h.active ? "active" : "paused"} <button className="btn ghost small" onClick={async () => { await api(`/api/webhooks/${h.id}`, { method: "DELETE" }); loadAll(); }}>Remove</button></p>)}
+      <div className="rowflex"><input id="cfgHookUrl" style={{ flex: 1 }} placeholder="https://your-system.example/webhooks/workpile" /><input id="cfgHookEvents" style={{ flex: 1 }} defaultValue="lead.created,lead.state_changed,approval.decided,proposal.signed,deposit.paid,outcome.final" /></div>
+      <button className="btn" style={{ marginTop: 8 }} onClick={async () => { await api("/api/webhooks", { method: "POST", body: { url: (document.getElementById("cfgHookUrl") as HTMLInputElement).value, events: (document.getElementById("cfgHookEvents") as HTMLInputElement).value } }); setMsg("Endpoint added."); loadAll(); }}>Add endpoint</button></div>}
+    {id === "sync" && <div><p className="muted">Workpile pulls leads from your lead system's API by date range. Leave the URL empty to use the built-in demo source.</p>
+      <label className="f">Source API URL</label><input value={ws.source_api_url || ""} placeholder="https://your-crm.example/api/leads" onChange={e => setS({ ...s, workspace: { ...ws, source_api_url: e.target.value } })} />
+      <label className="f">Source API key (Bearer, if required)</label><input value={ws.source_api_key || ""} onChange={e => setS({ ...s, workspace: { ...ws, source_api_key: e.target.value } })} />
+      <label style={{ display: "flex", gap: 8, alignItems: "center", margin: "10px 0" }}><input type="checkbox" checked={!!ws.sync_enabled} onChange={e => setS({ ...s, workspace: { ...ws, sync_enabled: e.target.checked ? 1 : 0 } })} /> Daily auto-sync</label>
+      <div className="rowflex" style={{ marginTop: 8 }}><button className="btn" onClick={() => saveSettings({ source_api_url: ws.source_api_url || "", source_api_key: ws.source_api_key || "", sync_enabled: !!ws.sync_enabled })}>Save sync settings</button></div>
+      <label className="f">Run a sync now</label><div className="rowflex">{[["Today", 1], ["7 days", 7], ["30 days", 30], ["90 days", 90]].map(([label, d]: any) => <button key={label} className="btn ghost small" onClick={() => runSync(d)}>{label}</button>)}<span className="muted">{ws.last_sync_at ? "Last sync: " + ws.last_sync_at : "Never synced"}</span></div></div>}
+    {id === "csv" && <div><p className="muted">Import a backlog CSV (name, phone, email, service, message, created date) — deduped by phone/email on the way in. Exports live in Reports.</p><button className="btn" onClick={() => onJump && onJump("imports")}>Open CSV Import →</button></div>}
+    {id === "embed" && <div><p className="muted">Paste this on any website with a lead form. Consent (TCPA) is captured automatically with each submission.</p><p className="mono" style={{ wordBreak: "break-all" }}>{`<script src="${location.origin}/embed/v1.js" data-workspace="${ws.id || "YOUR_WORKSPACE"}" data-form="#lead-form"></script>`}</p><button className="btn" onClick={() => { navigator.clipboard?.writeText(`<script src="${location.origin}/embed/v1.js" data-workspace="${ws.id || ""}" data-form="#lead-form"></script>`); setMsg("Snippet copied."); }}>Copy snippet</button></div>}
+    {id === "email_in" && <div><p className="muted">Send any email-shaped payload and the triage agent files it as a lead (with phone extraction) or an owned inbox item.</p><p className="mono">POST /v1/inbox · scope leads:write<br />{"{ from_name, from_email, subject, body, received_at }"}</p><p className="muted">Mailbox forwarding and Gmail/Outlook polling feed this same endpoint.</p></div>}
+    {id === "gmail_outlook" && <div><p className="muted">Gmail: {oauth?.google?.configured ? "app configured" : "platform app credentials not set on this deployment"} · Outlook: {oauth?.microsoft?.configured ? "app configured" : "not configured"}</p><p className="muted">When the platform OAuth apps are configured, each workspace connects its mailbox here and polling feeds the Email-In triage pipeline. Until then, API/CSV/manual ingestion works fully.</p>{oauth?.google?.configured && <a className="btn" href="/api/oauth/google/start">Connect Gmail</a>} {oauth?.microsoft?.configured && <a className="btn" href="/api/oauth/microsoft/start">Connect Outlook</a>}</div>}
+    {id === "slack" && <div><label className="f">Slack incoming webhook URL</label><input value={ws.slack_webhook_url || ""} placeholder="https://hooks.slack.com/services/…" onChange={e => setS({ ...s, workspace: { ...ws, slack_webhook_url: e.target.value } })} /><p className="muted">Fires on new leads and approval decisions.</p><div className="rowflex"><button className="btn" onClick={() => saveSettings({ slack_webhook_url: ws.slack_webhook_url || "" })}>Save</button><button className="btn ghost" onClick={async () => { const r = await api("/api/integrations/slack/test", { method: "POST", body: {} }).catch((e: any) => ({ error: e.message })); setMsg(r.ok ? "Test message sent to Slack ✓" : "Test failed — save the URL first, then check it."); }}>Send test message</button></div></div>}
+    {id === "stripe" && <div><p className="muted">Status: {typeof window !== "undefined" ? "" : ""}keys are a deployment-level secret (STRIPE_SECRET_KEY) — until set, deposits run in explicit test mode.</p><label className="f">Deposit % required on signature</label><input type="number" value={ws.deposit_pct ?? 25} onChange={e => setS({ ...s, workspace: { ...ws, deposit_pct: Number(e.target.value) } })} /><div style={{ marginTop: 8 }}><button className="btn" onClick={() => saveSettings({ deposit_pct: ws.deposit_pct ?? 25 })}>Save deposit %</button></div><p className="muted">Workpile's own subscriptions are managed in Billing.</p></div>}
+    {id === "zapier_make" && <div><p className="muted">No separate app needed — both platforms speak REST + webhooks:</p><p>1. Generate an API key (REST API card).<br />2. In Zapier/Make, use <b>Webhooks by Zapier / HTTP</b> actions against https://workpile.io/v1/… with that key as a Bearer header.<br />3. For triggers, register a webhook endpoint above and point your Zap/Scenario at the same events.</p></div>}
+    {id === "handoff" && <div><p className="muted">Every final — won, lost, no response, N/A, junk, duplicate — is delivered to the customer's own platform two ways:</p><p>· <b>Pull:</b> <span className="mono">GET /v1/outcomes</span>, then <span className="mono">POST /v1/outcomes/:id/ack</span> with their system ID. Won leads include the full project package (<span className="mono">GET /v1/projects/:leadId</span>).<br />· <b>Push:</b> the <span className="mono">outcome.final</span> webhook event (configure under Event Webhooks).</p><button className="btn" onClick={() => onJump && onJump("handoffs")}>Open Handoff Monitor →</button></div>}
+  </div></div>;
 }
 
 function Billing() {
@@ -395,7 +429,7 @@ function Reports() {
 
 class EB extends React.Component<any, any> { state = { err: "" }; static getDerivedStateFromError(e: any) { return { err: String(e && e.message || e) }; } componentDidCatch(e: any, info: any) { console.error("EB-CATCH:", e.message, (info.componentStack || "").slice(0, 900)); } render() { return this.state.err ? <div className="err">Render error: {this.state.err}</div> : this.props.children; } }
 
-function Logo({ light }: any) { return <span className="logo" style={light ? { color: "#fff" } : {}}><span className="mark">↗</span>Workpile&nbsp;OS</span>; }
+function Logo({ light }: any) { return <span className="logo" style={light ? { color: "#fff" } : {}}><span className="mark">↗</span>Workpile</span>; }
 
 function Landing({ onAuth }: any) {
   const [mode, setMode] = useState<"home" | "login" | "register">("home");
@@ -534,7 +568,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       {nav.view === "demand" && <Demand />}
       {nav.view === "handoffs" && <Handoffs />}
       {nav.view === "ops" && <Ops />}
-      {nav.view === "settings" && <Settings users={users} setUsers={setUsers} priceBook={priceBook} setPriceBook={setPriceBook} />}
+      {nav.view === "settings" && <Settings users={users} setUsers={setUsers} priceBook={priceBook} setPriceBook={setPriceBook} onJump={(v: string) => go({ view: v as any })} />}
       {nav.view === "billing" && <Billing />}
       {nav.view === "admin" && <Admin />}
       </EB>

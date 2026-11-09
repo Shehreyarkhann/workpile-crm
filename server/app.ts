@@ -663,6 +663,12 @@ app.post("/v1/inbox", requireApiKey(["leads:write"]), (req: any, res) => {
   res.status(201).json({ category: parsed.category, inbox_item_id: id });
 });
 app.get("/openapi.json", (_req: any, res) => res.json(OPENAPI_SPEC));
+app.post("/api/integrations/slack/test", requireAuth, async (req: any, res) => {
+  const ws = db.prepare("SELECT slack_webhook_url FROM workspaces WHERE id=?").get(req.user.workspace_id) as any;
+  if (!ws?.slack_webhook_url) return res.status(400).json({ error: { code: "no_slack_url", message: "Save a Slack webhook URL first" } });
+  try { const r = await fetch(ws.slack_webhook_url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "✅ Workpile test message — Slack notifications are connected." }) }); res.json({ ok: r.ok, status: r.status }); }
+  catch (e: any) { res.status(502).json({ error: { code: "slack_unreachable", message: String(e.message || e) } }); }
+});
 app.get("/api/integrations", requireAuth, (req: any, res) => {
   const ws = db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.user.workspace_id) as any;
   const keys = (db.prepare("SELECT COUNT(*) c FROM api_keys WHERE workspace_id=? AND revoked_at IS NULL").get(req.user.workspace_id) as any).c;

@@ -67,6 +67,8 @@ test("email-in API triages; openapi + integrations catalog served", async () => 
   assert.equal(inbox.status, 201); assert.equal(inbox.j.category, "lead");
   const spec = await J("/openapi.json");
   assert.equal(spec.status, 200); assert.equal(spec.j.info.title, "Workpile API");
+  const slackTest = await J("/api/integrations/slack/test", { method: "POST", body: {} }, { Cookie: cookie });
+  assert.equal(slackTest.status, 400); // honest failure with no URL configured — not a fake success
   const cat = await J("/api/integrations", {}, { Cookie: cookie });
   assert.equal(cat.status, 200); assert.ok(cat.j.integrations.length >= 10);
   assert.ok(cat.j.integrations.find((i: any) => i.id === "rest_api"));
