@@ -429,7 +429,7 @@ function Reports() {
 
 class EB extends React.Component<any, any> { state = { err: "" }; static getDerivedStateFromError(e: any) { return { err: String(e && e.message || e) }; } componentDidCatch(e: any, info: any) { console.error("EB-CATCH:", e.message, (info.componentStack || "").slice(0, 900)); } render() { return this.state.err ? <div className="err">Render error: {this.state.err}</div> : this.props.children; } }
 
-function Logo({ light }: any) { return <span className="logo" style={light ? { color: "#fff" } : {}}><span className="mark">↗</span>Workpile</span>; }
+function Logo({ light }: any) { return <span className="logo" style={light ? { color: "#fff" } : {}}><span className="mark">↗</span><span className="ltxt">Workpile</span></span>; }
 
 function Landing({ onAuth }: any) {
   const [mode, setMode] = useState<"home" | "login" | "register">("home");
@@ -538,6 +538,7 @@ function SyncModal({ close, done }: any) {
 function App() {
   const [user, setUser] = useState<any>(null); const [login, setLogin] = useState({ email: "", password: "" }); const [err, setErr] = useState("");
   const [nav, setNav] = useState<Nav>({ view: "dashboard" }); const [users, setUsers] = useState<any[]>([]); const [priceBook, setPriceBook] = useState<any[]>([]);
+const [sb, setSb] = useState(() => localStorage.getItem("wp_sb") || "open"); const [mOpen, setMOpen] = useState(false);
 const [pending, setPending] = useState(0); const [creating, setCreating] = useState(false); const [leadId, setLeadId] = useState<string | null>(null); const [tick, setTick] = useState(0);
   const [workspaces, setWorkspaces] = useState<any[]>([]); const [newWs, setNewWs] = useState("");
   useEffect(() => { if (user) api("/api/workspaces").then(r => setWorkspaces(r.workspaces || [])).catch(() => {}); }, [user?.id]);
@@ -545,18 +546,20 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
   useEffect(() => { if (user) { api("/api/users").then(setUsers).catch(() => {}); api("/api/price-book").then(setPriceBook).catch(() => {}); api("/api/approvals").then(r => setPending(r.length)).catch(() => {}); } }, [user, tick]);
   if (!user) return <Landing onAuth={(u: any) => { setUser(u); }} />;
   const go = (n: Nav) => setNav(n);
-  const NavB = ({ v, children, cnt }: any) => <button className={nav.view === v ? "on" : ""} onClick={() => go({ view: v })}><span>{children}</span>{cnt ? <span className="cnt">{cnt}</span> : null}</button>;
+  const NavB = ({ v, children, cnt, short }: any) => <button className={nav.view === v ? "on" : ""} title={children} onClick={() => { go({ view: v }); setMOpen(false); }}><span className="nshort">{short}</span><span className="nlab">{children}</span>{cnt ? <span className="cnt">{cnt}</span> : null}</button>;
+  const toggleSb = () => { const next = sb === "rail" ? "open" : "rail"; setSb(next); localStorage.setItem("wp_sb", next); };
   return (<div className="layout">
-    <aside><Logo light /><div className="who" style={{ marginTop: 10 }}>{user.name} · {user.role}</div>
+    {mOpen && <div className="scrim" onClick={() => setMOpen(false)} />}
+    <aside className={`side ${sb === "rail" ? "rail" : ""} ${mOpen ? "mOpen" : ""}`}><div className="sideHead"><Logo /><button className="collapseBtn" title={sb === "rail" ? "Expand sidebar" : "Collapse sidebar"} onClick={toggleSb}>{sb === "rail" ? "»" : "«"}</button></div><div className="who">{user.name} · {user.role}</div>
       <select className="wsSwitch" value={user.workspace_id} onChange={async e => { if (e.target.value === "__new") { const name = prompt("New business / workspace name"); if (name) { await api("/api/workspaces", { method: "POST", body: { name } }); location.reload(); } return; } await api("/api/workspaces/switch", { method: "POST", body: { workspace_id: e.target.value } }); location.reload(); }}>
         {workspaces.map((w: any) => <option key={w.workspace_id} value={w.workspace_id}>{w.name} ({w.role})</option>)}
         <option value="__new">+ New workspace…</option></select>
-      <NavB v="dashboard">Dashboard</NavB><NavB v="leads">Leads</NavB><NavB v="reports">Reports</NavB><NavB v="approvals" cnt={pending || undefined}>Approvals</NavB><NavB v="ai">AI Assistant</NavB><NavB v="imports">Import CSV</NavB><NavB v="demand">Demand Gap</NavB><NavB v="handoffs">Handoffs</NavB><NavB v="ops">Ops Console</NavB><NavB v="settings">Settings</NavB><NavB v="billing">Billing</NavB>
-      {user.is_platform_admin ? <NavB v="admin">Platform Admin</NavB> : null}
-      <button onClick={async () => { await fetch("/api/auth/logout", { method: "POST" }).catch(() => {}); setUser(null); }}><span>Sign out</span></button>
+      <NavB v="dashboard" short="DA">Dashboard</NavB><NavB v="leads" short="LE">Leads</NavB><NavB v="reports" short="RE">Reports</NavB><NavB v="approvals" short="AP" cnt={pending || undefined}>Approvals</NavB><NavB v="ai" short="AI">AI Assistant</NavB><NavB v="imports" short="IM">Import CSV</NavB><NavB v="demand" short="DG">Demand Gap</NavB><NavB v="handoffs" short="HA">Handoffs</NavB><NavB v="ops" short="OP">Ops Console</NavB><NavB v="settings" short="SE">Settings</NavB><NavB v="billing" short="BI">Billing</NavB>
+      {user.is_platform_admin ? <NavB v="admin" short="AD">Platform Admin</NavB> : null}
+      <div className="sideFoot"><button title="Sign out" onClick={async () => { await fetch("/api/auth/logout", { method: "POST" }).catch(() => {}); setUser(null); }}><span className="nshort">⏻</span><span className="nlab">Sign out</span></button></div>
     </aside>
     <main>
-      <div className="topbar"><div className="search"><input type="search" placeholder="Search everything — name, phone, service… (opens Leads)" onKeyDown={e => { if (e.key === "Enter") go({ view: "leads", leads: { q: (e.target as HTMLInputElement).value } }); }} /></div>
+      <div className="topbar"><button className="btn ghost burger" onClick={() => setMOpen(o => !o)}>☰</button><div className="search"><input type="search" placeholder="Search everything — name, phone, service… (opens Leads)" onKeyDown={e => { if (e.key === "Enter") go({ view: "leads", leads: { q: (e.target as HTMLInputElement).value } }); }} /></div>
         <button className="btn" onClick={() => setCreating(true)}>+ New Lead</button></div>
       <EB>
       {nav.view === "dashboard" && <Dashboard go={go} openLead={setLeadId} />}
