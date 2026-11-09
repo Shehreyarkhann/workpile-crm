@@ -1,0 +1,45 @@
+// LeadFlow OS — single Metrics Service (spec §10.2: every KPI computed exactly once, here)
+import { db } from "./db.ts";
+
+export function metrics(workspaceId: string) {
+  const q = (sql: string, ...p: any[]) => db.prepare(sql).get(...p) as any;
+  const qa = (sql: string, ...p: any[]) => db.prepare(sql).all(...p) as any[];
+  const leads = qa("SELECT * FROM leads WHERE workspace_id=?", workspaceId);
+  const byState: Record<string, number> = {};
+  for (const l of leads) byState[l.state] = (byState[l.state] || 0) + 1;
+  const decided = q("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL", workspaceId).c;
+  const approvedClean = q("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision='approved' AND (edits_diff IS NULL OR edits_diff='{}')", workspaceId).c;
+  const approvals = qa("SELECT * FROM approvals WHERE workspace_id=? AND decided_at IS NOT NULL", workspaceId);
+  const cycleHrs = approvals.length ? approvals.map(a => (new Date(a.decided_at).getTime() - new Date(a.submitted_at).getTime()) / 3600000).sort((x, y) => x - y)[Math.floor(approvals.length / 2)] : null;
+  const won = byState["WON"] || 0, lost = byState["LOST"] || 0;
+  const backlogStates = ["NEW", "TRIAGED"];
+  const backlogRemaining = leads.filter(l => backlogStates.includes(l.state)).length;
+  const overdueFollowups = qa("SELECT COUNT(*) c FROM tasks WHERE workspace_id=? AND status='open' AND due_at < ?", workspaceId, new Date().toISOString()).c;
+  const noNextStep = leads.filter(l => !["WON", "LOST", "NO_RESPONSE", "UNSERVICEABLE", "JUNK", "DUPLICATE"].includes(l.state) && !l.next_action_due_at).length;
+  const pipelineOpen = leads.filter(l => ["QUALIFIED", "READY_FOR_APPROVAL", "APPROVED", "PROPOSAL_DRAFTED", "PROPOSAL_SENT", "IN_FOLLOW_UP"].includes(l.state)).reduce((s, l) => s + (l.est_value || 0), 0);
+  const bySource = qa(`SELECT s.name as source, COUNT(*) leads, SUM(CASE WHEN l.state='WON' THEN 1 ELSE 0 END) won FROM leads l LEFT JOIN sources s ON s.id=l.source_id WHERE l.workspace_id=? GROUP BY s.name`, workspaceId);
+  const byOwner = qa(`SELECT u.name, COUNT(*) active, SUM(CASE WHEN l.state='WON' THEN 1 ELSE 0 END) won, SUM(CASE WHEN l.state='LOST' THEN 1 ELSE 0 END) lost FROM leads l LEFT JOIN users u ON u.id=l.owner_id WHERE l.workspace_id=? GROUP BY u.name`, workspaceId);
+  const frt = leads.filter(l => l.first_response_at);
+  const frtMedianMin = frt.length ? frt.map(l => (new Date(l.first_response_at).getTime() - new Date(l.created_at).getTime()) / 60000).sort((a, b) => a - b)[Math.floor(frt.length / 2)] : null;
+  const frCompliance = q("SELECT COUNT(*) t, SUM(CASE WHEN status='submitted' THEN 1 ELSE 0 END) s FROM field_reports WHERE workspace_id=?", workspaceId);
+  return {
+    total_leads: leads.length, by_state: byState,
+    first_pass_approval_rate: decided ? Math.round(1000 * approvedClean / decided) / 10 : null,
+    approvals_decided: decided, approval_cycle_median_hrs: cycleHrs !== null ? Math.round(cycleHrs * 10) / 10 : null,
+    win_rate: won + lost ? Math.round(1000 * won / (won + lost)) / 10 : null, won, lost,
+    backlog_remaining: backlogRemaining,
+    overdue_followups: overdueFollowups, leads_no_next_step: noNextStep,
+    pipeline_open_value: pipelineOpen, first_response_median_min: frtMedianMin !== null && frtMedianMin !== undefined ? Math.round(frtMedianMin) : null,
+    by_source: bySource, by_owner: byOwner,
+    field_report_compliance_pct: frCompliance.t ? Math.round(100 * (frCompliance.s || 0) / frCompliance.t) : null,
+  };
+}
+
+export function morningBrief(workspaceId: string) {
+  const m = metrics(workspaceId);
+  const qa = (sql: string, ...p: any[]) => db.prepare(sql).all(...p) as any[];
+  const pendingApprovals = qa("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NULL", workspaceId)[0].c;
+  const stuck = qa("SELECT id, service_requested, state, next_action_due_at FROM leads WHERE workspace_id=? AND next_action_due_at < ? AND state NOT IN ('WON','LOST','NO_RESPONSE','UNSERVICEABLE','JUNK','DUPLICATE') ORDER BY next_action_due_at LIMIT 10", workspaceId, new Date().toISOString());
+  const undelivered = qa("SELECT COUNT(*) c FROM outcome_deliveries WHERE workspace_id=? AND last_status IN ('pending','failed')", workspaceId)[0].c;
+  return { generated_at: new Date().toISOString(), headline: `${pendingApprovals} approvals waiting · ${m.backlog_remaining} in backlog · ${stuck.length} stuck`, pending_approvals: pendingApprovals, stuck, undelivered_finals: undelivered, metrics_snapshot: { fpar: m.first_pass_approval_rate, win_rate: m.win_rate, pipeline_open_value: m.pipeline_open_value } };
+}
