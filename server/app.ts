@@ -11,6 +11,7 @@ import { createDeposit, markPaid, verifyStripeSignature, handleStripeEvent, stri
 import { getFlags, setFlag, workspaceHealth, runSynthetics } from "./admin.ts";
 import { billingStatus, createCheckout, handleBillingEvent, PLANS, ensureSubscription } from "./billing.ts";
 import { cleanupPreview, cleanupApply, insights, reactivateStale, scoreLead } from "./ai.ts";
+import { emitEvent, EVENTS } from "./integrations.ts";
 import { providerStatus, authUrl, listConnections } from "./oauth.ts";
 
 export const app = express();
@@ -69,6 +70,7 @@ function createLead(workspaceId: string, actor: string, input: any) {
       "First contact", new Date(Date.now() + 4 * 3600000).toISOString(), new Date(Date.now() + 4 * 3600000).toISOString(), input.message || "", typeof input.location === "string" ? input.location : input.location?.address || "", input.consent?.contact_ok ? 1 : 0, input.consent ? (input.source || "form") : null, created, now());
   if (input.temperature_note) { /* reserved */ }
   logEvent(workspaceId, id, actor, "created", null, "NEW", { source: input.source || "manual", triage });
+  emitEvent(workspaceId, "lead.created", { lead_id: id, contact_name: input.contact?.name || null, service_requested: input.service_requested || null, state: "NEW", est_value: input.est_value ?? null, source: input.source || "manual" });
   if (owner) db.prepare("INSERT INTO tasks (id,workspace_id,lead_id,assignee_id,type,title,due_at,created_at) VALUES (?,?,?,?,?,?,?,?)")
     .run(uid("tsk"), workspaceId, id, owner, "follow_up", "First contact", new Date(Date.now() + 4 * 3600000).toISOString(), now());
   return { lead: leadView(db.prepare("SELECT * FROM leads WHERE id=?").get(id)), duplicate: false };
@@ -124,7 +126,8 @@ function transition(workspaceId: string, actor: string, lead: any, toState: stri
   db.prepare(`UPDATE leads SET ${sets.join(",")} WHERE id=?`).run(toState, now(), ...Object.values(extra), lead.id);
   const updated = db.prepare("SELECT * FROM leads WHERE id=?").get(lead.id) as any;
   logEvent(workspaceId, lead.id, actor, "state_changed", lead.state, toState, extra);
-  if (FINAL_STATES.includes(toState)) finalizeLead(workspaceId, actor, updated, toState);
+  emitEvent(workspaceId, "lead.state_changed", { lead_id: lead.id, from_state: lead.state, to_state: toState });
+  if (FINAL_STATES.includes(toState)) { finalizeLead(workspaceId, actor, updated, toState); if (actor !== "api") emitEvent(workspaceId, "outcome.final", { lead_id: lead.id, outcome: OUTCOME_OF[toState], state: toState }); }
   return { lead: leadView(updated) };
 }
 
@@ -263,6 +266,7 @@ app.post("/api/approvals/:id/decide", requireAuth, (req: any, res) => {
   if (!["approved", "changes", "rejected"].includes(decision)) return res.status(422).json({ error: { code: "bad_decision" } });
   if (decision !== "approved" && !reason_code) return res.status(422).json({ error: { code: "reason_required", message: "Reject/change requires a reason code (§6.5)" } });
   db.prepare("UPDATE approvals SET decision=?, reason_code=?, edits_diff=?, decided_at=? WHERE id=?").run(decision, reason_code || null, edits_diff ? JSON.stringify(edits_diff) : null, now(), a.id);
+  emitEvent(req.user.workspace_id, "approval.decided", { lead_id: a.lead_id, approval_id: a.id, decision });
   const l = db.prepare("SELECT * FROM leads WHERE id=?").get(a.lead_id) as any;
   if (decision === "approved" && l.state === "READY_FOR_APPROVAL") transition(req.user.workspace_id, req.user.id, l, "APPROVED");
   if (decision !== "approved" && l.state === "READY_FOR_APPROVAL") transition(req.user.workspace_id, req.user.id, l, "QUALIFIED");
@@ -351,7 +355,7 @@ app.get("/api/webhooks", requireAuth, (req: any, res) => res.json(db.prepare("SE
 app.post("/api/webhooks", requireAuth, (req: any, res) => {
   if (!["OWNER", "ADMIN", "OPS_ADMIN"].includes(req.user.role)) return res.status(403).json({ error: { code: "forbidden" } });
   const id = uid("whk");
-  db.prepare("INSERT INTO webhook_endpoints (id,workspace_id,url,secret,events,created_at) VALUES (?,?,?,?,?,?)").run(id, req.user.workspace_id, req.body.url, req.body.secret || randomBytes(18).toString("hex"), req.body.events || "lead.finalized", now());
+  db.prepare("INSERT INTO webhook_endpoints (id,workspace_id,url,secret,events,created_at) VALUES (?,?,?,?,?,?)").run(id, req.user.workspace_id, req.body.url, req.body.secret || randomBytes(18).toString("hex"), req.body.events || "outcome.final", now());
   res.status(201).json({ id, url: req.body.url });
 });
 app.delete("/api/webhooks/:id", requireAuth, (req: any, res) => { db.prepare("UPDATE webhook_endpoints SET active=0 WHERE id=? AND workspace_id=?").run(req.params.id, req.user.workspace_id); res.json({ ok: true }); });
@@ -619,6 +623,74 @@ app.post("/api/ai/cleanup/preview", requireAuth, (req: any, res) => res.json(cle
 app.post("/api/ai/cleanup/apply", requireAuth, (req: any, res) => res.json(cleanupApply(req.user.workspace_id, req.user.id, req.body.actions || [])));
 app.post("/api/ai/reactivate", requireAuth, (req: any, res) => res.json(reactivateStale(req.user.workspace_id, req.user.id)));
 
+// ---------- slice 7: two-way API, OpenAPI, integrations catalog ----------
+app.get("/v1/leads", requireApiKey(["leads:read"]), (req: any, res) => {
+  const limit = Math.min(200, Math.max(1, Number(req.query.limit || 50)));
+  const rows = db.prepare("SELECT * FROM leads WHERE workspace_id=? ORDER BY created_at DESC LIMIT ?").all(req.workspace_id, limit) as any[];
+  const filtered = req.query.state ? rows.filter(l => l.state === req.query.state) : rows;
+  res.json({ data: filtered.map(l => leadView(l)), count: filtered.length });
+});
+app.get("/v1/leads/:id", requireApiKey(["leads:read"]), (req: any, res) => {
+  const l = db.prepare("SELECT * FROM leads WHERE id=? AND workspace_id=?").get(req.params.id, req.workspace_id) as any;
+  if (!l) return res.status(404).json({ error: { code: "not_found" } });
+  res.json(leadView(l));
+});
+app.post("/v1/leads/:id/outcome", requireApiKey(["outcomes:write"]), (req: any, res) => {
+  // Two-way sync: their system pushes a final outcome BACK (e.g. job done in their platform).
+  // suppressOutcome: the final is recorded here without echoing a fresh handoff delivery back to them.
+  const l = db.prepare("SELECT * FROM leads WHERE id=? AND workspace_id=?").get(req.params.id, req.workspace_id) as any;
+  if (!l) return res.status(404).json({ error: { code: "not_found" } });
+  const map: Record<string, string> = { won: "WON", lost: "LOST", no_response: "NO_RESPONSE", na_unserviceable: "UNSERVICEABLE", junk: "JUNK", duplicate: "DUPLICATE" };
+  const to = map[String(req.body.outcome || "").toLowerCase()];
+  if (!to) return res.status(422).json({ error: { code: "bad_outcome", allowed: Object.keys(map) } });
+  const extra: any = { lost_reason: req.body.reason_code || null, outcome_reason_detail: "Pushed from external system via API" };
+  if (req.body.external_ref && !l.external_id) extra.external_id = String(req.body.external_ref);
+  if (FINAL_STATES.includes(l.state)) return res.status(409).json({ error: { code: "already_final", state: l.state } });
+  // The pushing system is the source of truth for this final: finalize directly from any
+  // open state (the interactive state machine stays strict for in-app transitions).
+  const sets = ["state=?", "updated_at=?", ...Object.keys(extra).map(k => `${k}=?`)];
+  db.prepare(`UPDATE leads SET ${sets.join(",")} WHERE id=?`).run(to, now(), ...Object.values(extra), l.id);
+  const updated = db.prepare("SELECT * FROM leads WHERE id=?").get(l.id) as any;
+  logEvent(req.workspace_id, l.id, "api", "state_changed", l.state, to, { origin: "api_outcome_push" });
+  finalizeLead(req.workspace_id, "api", updated, to);
+  emitEvent(req.workspace_id, "lead.state_changed", { lead_id: l.id, from_state: l.state, to_state: to, origin: "api" });
+  res.json({ ok: true, lead_id: l.id, state: to, origin: "api" });
+});
+app.post("/v1/inbox", requireApiKey(["leads:write"]), (req: any, res) => {
+  const e = req.body; const parsed = parseEmail(e);
+  if (parsed.is_lead) { const r = createLead(req.workspace_id, "inbox-api", { contact: { name: e.from_name || "", phone: parsed.phone, email: e.from_email || "" }, service_requested: "", message: `${e.subject || ""}\n${e.body || ""}`, source: "email-api", created_at: e.received_at }); return res.status(201).json({ category: "lead", lead_id: r.lead.id, duplicate: r.duplicate }); }
+  const id = uid("inb"); db.prepare("INSERT INTO inbox_items (id,workspace_id,category,from_name,from_email,subject,body,owner_id,next_action_due_at,received_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(id, req.workspace_id, parsed.category, e.from_name || "", e.from_email || "", e.subject || "", e.body || "", null, new Date(Date.now() + 86400000).toISOString(), e.received_at || now(), now());
+  res.status(201).json({ category: parsed.category, inbox_item_id: id });
+});
+app.get("/openapi.json", (_req: any, res) => res.json(OPENAPI_SPEC));
+app.get("/api/integrations", requireAuth, (req: any, res) => {
+  const ws = db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.user.workspace_id) as any;
+  const keys = (db.prepare("SELECT COUNT(*) c FROM api_keys WHERE workspace_id=? AND revoked_at IS NULL").get(req.user.workspace_id) as any).c;
+  const eps = (db.prepare("SELECT COUNT(*) c FROM webhook_endpoints WHERE workspace_id=? AND active=1").get(req.user.workspace_id) as any).c;
+  res.json({ integrations: [
+    { id: "rest_api", name: "REST API (two-way)", status: keys ? "connected" : "not_configured", detail: "Create + read leads, push outcomes back, pull finals. Bearer API keys with scopes. Spec at /openapi.json" },
+    { id: "webhooks", name: "Event Webhooks", status: eps ? "connected" : "not_configured", detail: "HMAC-signed push events: " + EVENTS.join(", ") },
+    { id: "sync", name: "Lead Sync (pull)", status: ws.source_api_url ? "connected" : "demo_source", detail: ws.last_sync_at ? "Last sync " + ws.last_sync_at : "Date-range pull from your lead system; daily auto-sync available." },
+    { id: "csv", name: "CSV Import / Export", status: "connected", detail: "Backlog import with dedupe, plus full report exports." },
+    { id: "embed", name: "Website Form Embed", status: "connected", detail: "TCPA-consented lead capture snippet for any website." },
+    { id: "email_in", name: "Email-In API", status: "connected", detail: "POST /v1/inbox — every message AI-triaged into a lead or an owned item." },
+    { id: "gmail_outlook", name: "Gmail + Outlook", status: ws.gmail_refresh_token || ws.ms_refresh_token ? "connected" : "not_configured", detail: "OAuth connectors; activate with platform credentials." },
+    { id: "slack", name: "Slack Notifications", status: ws.slack_webhook_url ? "connected" : "not_configured", detail: "New-lead and approval alerts to any Slack channel." },
+    { id: "stripe", name: "Stripe", status: process.env.STRIPE_SECRET_KEY ? "connected" : "test_mode", detail: "Deposits on signature + Workpile subscriptions." },
+    { id: "zapier_make", name: "Zapier / Make / n8n", status: "connected", detail: "Works today through the REST API + webhooks — thousands of apps reachable." },
+    { id: "handoff", name: "Final Outcome Handoff", status: eps ? "connected" : "not_configured", detail: "Won → project package into their platform, ack-tracked; every final delivered." },
+  ] });
+});
+const OPENAPI_SPEC: any = { openapi: "3.0.0", info: { title: "Workpile API", version: "1.0.0", description: "Two-way integration API for Workpile. Base URL https://workpile.io — Bearer API key from Settings → Integrations." }, servers: [{ url: "https://workpile.io" }], paths: {
+  "/v1/leads": { post: { summary: "Create lead — idempotent, deduped by phone/email", security: [{ bearer: [] }] }, get: { summary: "List leads (leads:read)", security: [{ bearer: [] }] } },
+  "/v1/leads/{id}": { get: { summary: "Get one lead (leads:read)", security: [{ bearer: [] }] } },
+  "/v1/leads/{id}/outcome": { post: { summary: "Push a final outcome back into Workpile (outcomes:write)", security: [{ bearer: [] }] } },
+  "/v1/inbox": { post: { summary: "Ingest an email for AI triage (leads:write)", security: [{ bearer: [] }] } },
+  "/v1/outcomes": { get: { summary: "Pull final outcomes (outcomes:read)", security: [{ bearer: [] }] } },
+  "/v1/outcomes/{id}/ack": { post: { summary: "Acknowledge outcome with your system ID (outcomes:read)", security: [{ bearer: [] }] } },
+  "/v1/projects/{leadId}": { get: { summary: "Won lead project package (projects:read)", security: [{ bearer: [] }] } },
+}, components: { securitySchemes: { bearer: { type: "http", scheme: "bearer" } } } };
+
 // ---------- slice 5: scale + CRUD + settings (competitor-grade UX data layer) ----------
 // Paginated leads: GET /api/leads?paged=1&page=1&page_size=50&state=&q=&owner_id=&service=&sort=value|recent
 app.patch("/api/leads/:id", requireAuth, (req: any, res) => {
@@ -655,7 +727,7 @@ app.patch("/api/users/:id", requireAuth, (req: any, res) => { if (!["OWNER", "AD
 
 // Workspace settings
 app.get("/api/settings", requireAuth, (req: any, res) => { const ws = db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.user.workspace_id); const counts = db.prepare("SELECT (SELECT COUNT(*) FROM leads WHERE workspace_id=?) leads, (SELECT COUNT(*) FROM users WHERE workspace_id=?) users, (SELECT COUNT(*) FROM price_book_items WHERE workspace_id=?) price_items").get(req.user.workspace_id, req.user.workspace_id, req.user.workspace_id); res.json({ workspace: ws, counts }); });
-app.patch("/api/settings", requireAuth, (req: any, res) => { if (req.user.role !== "OWNER") return res.status(403).json({ error: { code: "owner_only" } }); const b = req.body; db.prepare("UPDATE workspaces SET name=COALESCE(?,name), vertical=COALESCE(?,vertical), timezone=COALESCE(?,timezone), deposit_pct=COALESCE(?,deposit_pct), autonomy_level=COALESCE(?,autonomy_level), source_api_url=COALESCE(?,source_api_url), source_api_key=COALESCE(?,source_api_key), sync_enabled=COALESCE(?,sync_enabled) WHERE id=?").run(b.name ?? null, b.vertical ?? null, b.timezone ?? null, b.deposit_pct ?? null, b.autonomy_level ?? null, b.source_api_url ?? null, b.source_api_key ?? null, b.sync_enabled === undefined ? null : (b.sync_enabled ? 1 : 0), req.user.workspace_id); res.json(db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.user.workspace_id)); });
+app.patch("/api/settings", requireAuth, (req: any, res) => { if (req.user.role !== "OWNER") return res.status(403).json({ error: { code: "owner_only" } }); const b = req.body; db.prepare("UPDATE workspaces SET name=COALESCE(?,name), vertical=COALESCE(?,vertical), timezone=COALESCE(?,timezone), deposit_pct=COALESCE(?,deposit_pct), autonomy_level=COALESCE(?,autonomy_level), source_api_url=COALESCE(?,source_api_url), source_api_key=COALESCE(?,source_api_key), sync_enabled=COALESCE(?,sync_enabled), slack_webhook_url=COALESCE(?,slack_webhook_url) WHERE id=?").run(b.name ?? null, b.vertical ?? null, b.timezone ?? null, b.deposit_pct ?? null, b.autonomy_level ?? null, b.source_api_url ?? null, b.source_api_key ?? null, b.sync_enabled === undefined ? null : (b.sync_enabled ? 1 : 0), b.slack_webhook_url ?? null, req.user.workspace_id); res.json(db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.user.workspace_id)); });
 
 // API keys management
 app.get("/api/api-keys", requireAuth, (req: any, res) => res.json(db.prepare("SELECT id,label,scopes,last_used_at,revoked_at FROM api_keys WHERE workspace_id=?").all(req.user.workspace_id)));

@@ -5,6 +5,7 @@
 // automatically on the key swap, no code change (same pattern as spec §14.5 test mode).
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { db, uid, now } from "./db.ts";
+import { emitEvent } from "./integrations.ts";
 
 export function stripeMode(): "live" | "test" { return process.env.STRIPE_SECRET_KEY ? "live" : "test"; }
 
@@ -43,6 +44,8 @@ export function markPaid(paymentId: string): boolean {
   if (!pay || pay.status === "paid") return false;
   db.prepare("UPDATE payments SET status='paid', paid_at=? WHERE id=?").run(now(), paymentId);
   db.prepare("UPDATE proposals SET payment_status='deposit_paid' WHERE id=?").run(pay.proposal_id);
+  const prop2 = db.prepare("SELECT lead_id FROM proposals WHERE id=?").get(pay.proposal_id) as any;
+  emitEvent(pay.workspace_id, "deposit.paid", { lead_id: prop2?.lead_id, proposal_id: pay.proposal_id, amount: pay.amount });
   db.prepare("INSERT INTO outbox (id,workspace_id,kind,payload,idempotency_key,created_at) VALUES (?,?,?,?,?,?)")
     .run(uid("out"), pay.workspace_id, "payment.deposit_paid", JSON.stringify({ payment_id: paymentId, proposal_id: pay.proposal_id, amount: pay.amount }), `pay-${paymentId}`, now());
   return true;
