@@ -61,6 +61,7 @@ export function initSchema() {
   CREATE TABLE IF NOT EXISTS subscriptions (id TEXT PRIMARY KEY, workspace_id TEXT, plan TEXT, status TEXT DEFAULT 'trialing', stripe_customer_id TEXT, stripe_subscription_id TEXT, current_period_end TEXT, created_at TEXT, updated_at TEXT);
   CREATE TABLE IF NOT EXISTS oauth_connections (id TEXT PRIMARY KEY, workspace_id TEXT, provider TEXT, account_email TEXT, status TEXT DEFAULT 'not_configured', token_ref TEXT, last_poll_at TEXT, last_error TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS portal_uploads (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, filename TEXT, note TEXT, created_at TEXT);
+  CREATE TABLE IF NOT EXISTS memberships (user_id TEXT, workspace_id TEXT, role TEXT, created_at TEXT, PRIMARY KEY (user_id, workspace_id));
   `);
   // additive columns for existing DBs (expand step of expand-migrate-contract)
   for (const stmt of [
@@ -70,6 +71,13 @@ export function initSchema() {
     "ALTER TABLE workspaces ADD COLUMN trial_ends_at TEXT",
     "ALTER TABLE leads ADD COLUMN consent_contact_ok INTEGER DEFAULT 0",
     "ALTER TABLE leads ADD COLUMN consent_source TEXT",
+    "ALTER TABLE leads ADD COLUMN ai_score INTEGER",
+    "ALTER TABLE leads ADD COLUMN ai_flags TEXT",
+    "ALTER TABLE workspaces ADD COLUMN source_api_url TEXT",
+    "ALTER TABLE workspaces ADD COLUMN source_api_key TEXT",
+    "ALTER TABLE workspaces ADD COLUMN sync_enabled INTEGER DEFAULT 0",
+    "ALTER TABLE workspaces ADD COLUMN last_sync_at TEXT",
+    "ALTER TABLE workspaces ADD COLUMN last_sync_stats TEXT",
   ]) { try { db.exec(stmt); } catch { /* already present */ } }
 }
 

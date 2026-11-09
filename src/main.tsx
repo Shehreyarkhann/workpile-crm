@@ -18,8 +18,8 @@ export const BUCKETS: [string, string][] = [["new", "New"], ["working", "Working
 type Nav = { view: string; leads?: any; leadId?: string };
 
 function Dashboard({ go, openLead }: any) {
-  const [d, setD] = useState<any>(null);
-  useEffect(() => { api("/api/dashboard").then(setD).catch(() => {}); }, []);
+  const [d, setD] = useState<any>(null); const [ins, setIns] = useState<any[]>([]);
+  useEffect(() => { api("/api/dashboard").then(setD).catch(() => {}); api("/api/ai/insights").then(setIns).catch(() => {}); }, []);
   if (!d) return <p className="muted">Loading dashboard…</p>;
   const m = d.metrics;
   const maxF = Math.max(1, ...d.funnel.map((f: any) => f.count));
@@ -37,6 +37,7 @@ function Dashboard({ go, openLead }: any) {
       <K lab="Overdue follow-ups" val={num(m.overdue_followups)} hint={`${num(m.leads_no_next_step)} leads with no next step`} onClick={() => go({ view: "leads", leads: { bucket: "working" } })} />
       <K lab="Avg won deal" val={money(d.avg_won_value)} hint={`First response median ${m.first_response_median_min ?? "—"} min`} onClick={() => go({ view: "leads", leads: { bucket: "won" } })} />
     </div>
+    {ins.length > 0 && <div className="card"><h3>🤖 AI insights <span className="more" onClick={() => go({ view: "ai" })}>Open AI Assistant →</span></h3>{ins.slice(0, 3).map((i: any, k: number) => <div className="insight" key={k}><div className="ic">{i.icon}</div><div><b>{i.title}</b><p>{i.detail}</p></div></div>)}</div>}
     <div className="grid3">
       <div className="card funnel"><h3>Pipeline funnel <span className="more" onClick={() => go({ view: "leads" })}>Open leads →</span></h3>
         {d.funnel.map((f: any) => <div className="row" key={f.state} onClick={() => go({ view: "leads", leads: { state: f.state } })}><div className="fl">{f.state.replaceAll("_", " ")}</div><div className="bar" style={{ width: `${Math.max(2, 100 * f.count / maxF)}%` }} /><div className="fv">{num(f.count)} · {money(f.value)}</div></div>)}
@@ -72,16 +73,19 @@ function Dashboard({ go, openLead }: any) {
 }
 
 function Leads({ initial, openLead, users, me }: any) {
+  const [syncOpen, setSyncOpen] = useState(false);
   const [mode, setMode] = useState<"table" | "board">("table");
   const [f, setF] = useState<any>(initial || {});
   const [data, setData] = useState<any>({ items: [], total: 0, page: 1, pages: 1 });
   const [board, setBoard] = useState<Record<string, any>>({});
+  const [tickFix, setTickFix] = useState(0);
   const load = () => { const qs = new URLSearchParams({ paged: "1", page: String(f.page || 1), page_size: "50", sort: f.sort || "recent" }); for (const k of ["state", "bucket", "q", "service", "owner_id", "overdue", "min_value", "unassigned"]) if (f[k]) qs.set(k, f[k]); api("/api/leads?" + qs).then(setData).catch(() => {}); };
-  useEffect(load, [JSON.stringify(f)]);
+  useEffect(load, [JSON.stringify(f), tickFix]);
   useEffect(() => { if (mode === "board") { const o: any = {}; Promise.all(BUCKETS.map(([b]) => api(`/api/leads?paged=1&bucket=${b}&page=1&page_size=25`).then(r => { o[b] = r; }))).then(() => setBoard({ ...o })); } }, [mode]);
   const Pager = () => <div className="pager"><span>{num(data.total)} leads · page {data.page} of {num(data.pages)}</span><button className="btn ghost small" disabled={data.page <= 1} onClick={() => setF({ ...f, page: data.page - 1 })}>← Prev</button><button className="btn ghost small" disabled={data.page >= data.pages} onClick={() => setF({ ...f, page: data.page + 1 })}>Next →</button></div>;
   return (<div>
-    <h2 className="pt">Leads</h2><p className="sub">Search, filter, sort — built for thousands of records. Click any row to open the full record.</p>
+    <h2 className="pt">Leads <button className="btn" style={{ float: "right" }} onClick={() => setSyncOpen(true)}>⇅ Sync leads</button></h2><p className="sub">Search, filter, sort — built for thousands of records. Click any row to open the full record.</p>
+    {syncOpen && <SyncModal close={() => setSyncOpen(false)} done={() => setTickFix(t => t + 1)} />}
     <div className="rowflex">
       <div style={{ flex: 1, minWidth: 220 }}><input type="search" placeholder="Search name, phone, email, service, notes…" value={f.q || ""} onChange={e => setF({ ...f, q: e.target.value, page: 1 })} /></div>
       <select style={{ width: 180 }} value={f.sort || "recent"} onChange={e => setF({ ...f, sort: e.target.value })}><option value="recent">Newest first</option><option value="value">Highest value</option></select>
@@ -102,8 +106,8 @@ function Leads({ initial, openLead, users, me }: any) {
       <select style={{ width: 200 }} value={f.state || ""} onChange={e => setF({ ...f, state: e.target.value, bucket: "", page: 1 })}><option value="">Any exact state…</option>{STATES.map(s => <option key={s} value={s}>{s.replaceAll("_", " ")}</option>)}</select>
       {f.service && <button className="chip on" onClick={() => setF({ ...f, service: "" })}>Service: {f.service} ✕</button>}
     </div>
-    {mode === "table" ? (<div className="card" style={{ padding: 6 }}><table><thead><tr><th>Contact</th><th>Service</th><th>State</th><th>Value</th><th>Owner</th><th>Next step</th><th>Created</th></tr></thead><tbody>
-      {data.items.map((l: any) => <tr className="clickable" key={l.id} onClick={() => openLead(l.id)}><td><b>{l.contact_name}</b><br /><span className="muted">{l.contact_phone || l.contact_email || ""}</span></td><td>{l.service_requested}</td><td><Badge s={l.state} /></td><td>{money(l.est_value)}</td><td>{l.owner_name || "—"}</td><td>{l.next_action || "—"}<br /><span className="muted">{dOnly(l.next_action_due_at)}</span></td><td>{dOnly(l.created_at)}</td></tr>)}
+    {mode === "table" ? (<div className="card" style={{ padding: 6 }}><table><thead><tr><th>Contact</th><th>Service</th><th>AI Score</th><th>State</th><th>Value</th><th>Owner</th><th>Next step</th><th>Created</th></tr></thead><tbody>
+      {data.items.map((l: any) => <tr className="clickable" key={l.id} onClick={() => openLead(l.id)}><td><b>{l.contact_name}</b><br /><span className="muted">{l.contact_phone || l.contact_email || ""}</span></td><td>{l.service_requested}</td><td>{l.ai_score !== null && l.ai_score !== undefined ? <span className={`score ${JSON.parse(l.ai_flags || "{}").temperature || "cold"}`}>{l.ai_score}</span> : <span className="muted">—</span>}</td><td><Badge s={l.state} /></td><td>{money(l.est_value)}</td><td>{l.owner_name || "—"}</td><td>{l.next_action || "—"}<br /><span className="muted">{dOnly(l.next_action_due_at)}</span></td><td>{dOnly(l.created_at)}</td></tr>)}
       {data.items.length === 0 && <tr><td colSpan={7} className="muted">No leads match these filters.</td></tr>}
     </tbody></table><Pager /></div>) : (
       <div className="kanban">{BUCKETS.map(([b, lab]) => <div className="kcol" key={b}><h4>{lab}<span>{num(board[b]?.total ?? 0)}</span></h4>
@@ -286,6 +290,8 @@ function Settings({ users, setUsers, priceBook, setPriceBook }: any) {
       <div><label className="f">Deposit % on signed proposals</label><input type="number" value={s.workspace.deposit_pct ?? 25} onChange={e => setS({ ...s, workspace: { ...s.workspace, deposit_pct: Number(e.target.value) } })} /></div>
       <div><label className="f">Autonomy level (1 draft-only · 2 bulk-approve · 3 scoped auto)</label><select value={s.workspace.autonomy_level ?? 1} onChange={e => setS({ ...s, workspace: { ...s.workspace, autonomy_level: Number(e.target.value) } })}><option value={1}>1 — draft only</option><option value={2}>2 — bulk approve</option><option value={3}>3 — scoped auto-approval</option></select></div>
       <div><label className="f">Counts</label><p className="muted">{num(s.counts.leads)} leads · {num(s.counts.users)} users · {num(s.counts.price_items)} price items</p></div>
+      <div><label className="f">Lead source API URL (for Sync)</label><input value={s.workspace.source_api_url || ""} placeholder="Leave blank to use the built-in demo source" onChange={e => setS({ ...s, workspace: { ...s.workspace, source_api_url: e.target.value } })} /></div>
+      <div><label className="f">Lead source API key (if required)</label><input value={s.workspace.source_api_key || ""} placeholder="Bearer key for your source system" onChange={e => setS({ ...s, workspace: { ...s.workspace, source_api_key: e.target.value } })} /></div>
     </div><button className="btn" style={{ marginTop: 14 }} onClick={async () => { await api("/api/settings", { method: "PATCH", body: s.workspace }); setMsg("Workspace settings saved ✓"); }}>Save workspace</button></div>}
     {tab === "pricebook" && <div className="card"><table><thead><tr><th>Item</th><th>Unit</th><th>Standard</th><th>Floor</th><th></th></tr></thead><tbody>
       {priceBook.map((p: any) => <tr key={p.id}><td>{p.name}</td><td>{p.unit}</td><td>{money(p.standard_price)}</td><td>{money(p.floor_price)}</td><td><button className="btn ghost small" onClick={async () => { const v = prompt("New standard price ($)", p.standard_price); if (v) { await api(`/api/price-book/${p.id}`, { method: "PATCH", body: { standard_price: Number(v) } }); loadAll(); } }}>Edit price</button> <button className="btn ghost small" onClick={async () => { await api(`/api/price-book/${p.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></td></tr>)}
@@ -373,28 +379,129 @@ function Reports() {
 
 class EB extends React.Component<any, any> { state = { err: "" }; static getDerivedStateFromError(e: any) { return { err: String(e && e.message || e) }; } componentDidCatch(e: any, info: any) { console.error("EB-CATCH:", e.message, (info.componentStack || "").slice(0, 900)); } render() { return this.state.err ? <div className="err">Render error: {this.state.err}</div> : this.props.children; } }
 
+function Logo({ light }: any) { return <span className="logo" style={light ? { color: "#fff" } : {}}><span className="mark">↗</span>LeadFlow&nbsp;OS</span>; }
+
+function Landing({ onAuth }: any) {
+  const [mode, setMode] = useState<"home" | "login" | "register">("home");
+  const [f, setF] = useState<any>({ name: "", email: "", password: "", business_name: "" });
+  const [err, setErr] = useState("");
+  const submit = async () => { try { setErr(""); const r = mode === "register" ? await api("/api/auth/register", { method: "POST", body: f }) : await api("/api/auth/login", { method: "POST", body: { email: f.email, password: f.password } }); onAuth(r.user); } catch (e: any) { setErr(e.message); } };
+  if (mode !== "home") return (<div className="authWrap">
+    <div className="authBrand"><Logo light /><h2>The backlog ends here.</h2><p>Every lead owned, every packet complete before it reaches you, every proposal priced from your own book — and every final outcome delivered into the system you already run.</p>
+      {[["Completeness Gate", "Nothing reaches approval half-empty — that's how owners hit 90%+ first-pass approvals."], ["AI that does the chasing", "Lead scoring, duplicate cleanup, auto-assignment, stale-lead reactivation — you approve, it executes."], ["Your system stays the boss", "Won becomes a project in YOUR platform, acknowledged with your ID. Lost and N/A delivered too."]].map(([t, d]) => <div className="pt" key={t}><span>✓</span><div><b style={{ color: "#fff" }}>{t}</b><br />{d}</div></div>)}
+    </div>
+    <div className="authForm"><div className="authCard">
+      <button className="btn ghost small" onClick={() => setMode("home")}>← Back</button>
+      <h3 style={{ marginTop: 16 }}>{mode === "register" ? "Start your 30-day free trial" : "Welcome back"}</h3>
+      <p className="muted">{mode === "register" ? "No card required. Your workspace, price book, and templates are created for you." : "Sign in to your workspace."}</p>
+      {err && <div className="err">{err}</div>}
+      {mode === "register" && <><label className="f">Your name</label><input value={f.name} onChange={e => setF({ ...f, name: e.target.value })} placeholder="Jordan Ellis" /><label className="f">Business name</label><input value={f.business_name} onChange={e => setF({ ...f, business_name: e.target.value })} placeholder="Ellis Restoration Group" /></>}
+      <label className="f">Work email</label><input value={f.email} onChange={e => setF({ ...f, email: e.target.value })} placeholder="you@company.com" />
+      <label className="f">Password</label><input type="password" value={f.password} onChange={e => setF({ ...f, password: e.target.value })} placeholder={mode === "register" ? "8+ characters" : "Your password"} />
+      <button className="btn" style={{ width: "100%", marginTop: 12, padding: 12 }} onClick={submit}>{mode === "register" ? "Create my workspace →" : "Sign in →"}</button>
+      <p className="muted" style={{ fontSize: 13, marginTop: 12 }}>{mode === "register" ? <>Already have an account? <a href="#" onClick={e => { e.preventDefault(); setMode("login"); }}>Sign in</a></> : <>New to LeadFlow? <a href="#" onClick={e => { e.preventDefault(); setMode("register"); }}>Start free trial</a></>}</p>
+      <p className="muted" style={{ fontSize: 12.5 }}>Demo workspace: owner@demo.test / demo1234</p>
+    </div></div></div>);
+  const FEATS: [string, string, string][] = [
+    ["🧹", "Backlog Clear", "Import or sync years of piled-up leads. AI triages, dedupes, scores, and buckets them hot / warm / stale with a projected clear date."],
+    ["✅", "One-Tap Approvals", "Only complete packets reach you — contact, scope, site visit, PM, price-book pricing verified by the Completeness Gate. Approve in 10 seconds."],
+    ["📄", "Generative Proposals", "Proposals drafted from your templates and your price book. Never an invented number; below-floor pricing flags itself."],
+    ["🤖", "AI Operations", "Lead scoring, duplicate archiving, spam filtering, round-robin auto-assignment, stale-lead reactivation, and a 6 AM Morning Brief."],
+    ["🔁", "Final Outcome Handoff", "Won becomes a project in your own platform — pull API, signed webhooks, acknowledgment tracking. Lost, no-response, and N/A delivered too."],
+    ["📈", "Demand Gap", "See the services customers keep asking for that you don't sell yet, clustered and valued from your own lost leads."],
+    ["✍️", "E-Sign + Deposits", "Signed proposal links with ESIGN evidence certificates, and deposit collection via Stripe the moment they sign."],
+    ["🏢", "Multi-Business Ready", "Multiple workspaces under one login, per-business price books, teams, and roles. Owners see everything; staff see their work."],
+  ];
+  return (<div>
+    <nav className="landNav"><Logo /><div className="links"><a href="#features">Features</a><a href="#how">How it works</a><a href="#compare">vs Salesforce</a><a href="#pricing">Pricing</a><button className="btn ghost" onClick={() => setMode("login")}>Sign in</button><button className="btn" onClick={() => setMode("register")}>Start free</button></div></nav>
+    <div className="hero"><div>
+      <h1>Your lead backlog, <em>cleared</em>. Your approvals, one tap. Your proposals, generated.</h1>
+      <p className="lede">LeadFlow OS is the operations layer for owner-operated service businesses: it ingests leads from your website, inbox, spreadsheets, and systems — then triages, routes, prices, and follows up until every single one reaches a final outcome in your own platform.</p>
+      <div className="rowflex"><button className="btn" style={{ padding: "13px 22px", fontSize: 15 }} onClick={() => setMode("register")}>Start 30-day free trial</button><button className="btn ghost" style={{ padding: "13px 22px", fontSize: 15 }} onClick={() => setMode("login")}>See the demo →</button></div>
+      <p className="muted" style={{ marginTop: 12 }}>No card · Set up in minutes · Your data stays yours</p></div>
+      <div className="heroMock"><div className="hm-kpis"><div className="hm"><span>Total leads</span><b>2,613</b></div><div className="hm"><span>Won</span><b>2,001</b></div><div className="hm"><span>First-pass approval</span><b>100%</b></div></div>
+        <div className="hm-row"><span>✅ Packet approved — Water damage, $4,550</span><b>10s</b></div>
+        <div className="hm-row"><span>🔥 17 hot leads scored 70+ today</span><b>AI</b></div>
+        <div className="hm-row"><span>🔁 Won → project GC-JOB-1042 acknowledged</span><b>✓</b></div>
+        <div className="hm-row"><span>🧹 23 duplicates archived by AI cleanup</span><b>✓</b></div></div></div>
+    <div className="section" id="features"><h2>Everything between "new lead" and "final outcome"</h2><p className="sub2">Salesforce tracks your pipeline. LeadFlow finishes it — with the approval discipline, pricing guardrails, and handoff plumbing a working business actually needs.</p>
+      <div className="featGrid">{FEATS.map(([ic, t, d]) => <div className="feat" key={t}><div className="ic">{ic}</div><h4>{t}</h4><p>{d}</p></div>)}</div></div>
+    <div className="section" id="how"><h2>How it works</h2><div className="steps">
+      <div className="step"><b>1</b><h4>Connect & clear</h4><p>Sync from your lead system by date range, upload the CSV pile, connect your inbox and website form. AI cleans, dedupes, scores, and assigns everything.</p></div>
+      <div className="step"><b>2</b><h4>Approve & propose</h4><p>Your team works leads on a Salesforce-style Path. Complete packets land in your Approval Inbox; proposals generate from your price book, get e-signed, and collect the deposit.</p></div>
+      <div className="step"><b>3</b><h4>Hand off & learn</h4><p>Every final — won, lost, no-response, N/A — is delivered into your own platform with acknowledgment tracking, while Demand Gap shows you what to sell next.</p></div></div></div>
+    <div className="section" id="compare"><h2>Why teams switch from Salesforce</h2><p className="sub2">Salesforce is a database you configure for six months. LeadFlow is the workflow, finished — at a tenth of the seat cost.</p>
+      <div className="tableWrap"><table className="cmp"><thead><tr><th></th><th>LeadFlow OS</th><th>Salesforce</th></tr></thead><tbody>
+        {[["Backlog clearing & AI triage built in", 1, 0], ["Completeness Gate before approvals", 1, 0], ["Proposals generated from your price book", 1, 0], ["Final outcomes delivered into your other systems", 1, 0], ["Pipeline, Path, reports & dashboards", 1, 1], ["Live in an afternoon, no admin required", 1, 0], ["Flat per-business pricing from $299/mo", 1, 0]].map(([t, a, b]: any) => <tr key={t}><td>{t}</td><td className={a ? "yes" : "no"}>{a ? "✓ Included" : "—"}</td><td className={b ? "yes" : "no"}>{b ? "✓" : "Add-on / custom build"}</td></tr>)}
+      </tbody></table></div></div>
+    <div className="section" id="pricing"><h2>Pricing — 30 days free, no card</h2><div className="featGrid">
+      {[["Starter", "$299/mo", "500 leads/mo · 5 seats · backlog clear, approvals, proposals, handoff"], ["Growth", "$599/mo", "2,000 leads/mo · 15 seats · + AI operations, demand gap, customer portal"], ["Pro", "$999/mo", "Unlimited leads · 30 seats · + priority support, advanced reports"]].map(([n, p, d]) => <div className="feat" key={n}><span className="muted" style={{ textTransform: "uppercase", fontWeight: 700, fontSize: 12 }}>{n}</span><h4 style={{ fontSize: 24 }}>{p}</h4><p>{d}</p><button className="btn" style={{ marginTop: 12 }} onClick={() => setMode("register")}>Start free</button></div>)}</div></div>
+    <div className="section"><h2>Questions</h2>
+      {[["Do I have to replace my current system?", "No — LeadFlow is the front door, not the house. Won jobs become projects in YOUR platform via API or webhooks; every final outcome is delivered and acknowledged there."], ["How do leads get in?", "Four ways: sync from your lead system's API by date range (daily auto-sync available), CSV upload, website form embed with TCPA consent, and inbox/API ingestion."], ["Is the AI allowed to send things on its own?", "Never. Agents draft, score, and organize; every customer-facing send and every price-bearing decision needs a human approval. That's a product invariant, not a setting."], ["What happens to duplicates?", "Ingestion dedupes by phone/email automatically. AI Cleanup finds the rest — same name + service — and archives them as duplicates of the original, with the merge recorded."]].map(([q, a]) => <div className="faq" key={q}><b>{q}</b><p>{a}</p></div>)}</div>
+    <footer className="landFoot"><Logo /><span>© 2026 LeadFlow OS · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/dpa">DPA</a></span><span>Built for the businesses that answer the phone.</span></footer>
+  </div>);
+}
+
+function AIAssistant({ go }: any) {
+  const [ins, setIns] = useState<any[]>([]); const [prev, setPrev] = useState<any>(null); const [acts, setActs] = useState<any>({ dedupe: true, spam: true, score: true, assign: false });
+  const [result, setResult] = useState<any>(null); const [msg, setMsg] = useState("");
+  useEffect(() => { api("/api/ai/insights").then(setIns).catch(() => {}); }, []);
+  const scan = async () => { setPrev(await api("/api/ai/cleanup/preview", { method: "POST", body: {} })); setResult(null); };
+  const apply = async () => { const chosen = Object.entries(acts).filter(([, v]) => v).map(([k]) => k); const r = await api("/api/ai/cleanup/apply", { method: "POST", body: { actions: chosen } }); setResult(r); setPrev(null); api("/api/ai/insights").then(setIns).catch(() => {}); };
+  return (<div><h2 className="pt">AI Assistant</h2><p className="sub">Agents do the chasing, sorting, and scoring — nothing customer-facing ever sends without your approval. Every action here is preview first, apply second.</p>
+    {msg && <div className="ok">{msg}</div>}
+    <div className="card"><h3>Insights — what needs you today</h3>
+      {ins.map((i: any, k: number) => <div className="insight" key={k}><div className="ic">{i.icon}</div><div style={{ flex: 1 }}><b>{i.title}</b><p>{i.detail}</p></div>{i.kind === "stale" && <button className="btn ghost small" onClick={async () => { const r = await api("/api/ai/reactivate", { method: "POST", body: {} }); setMsg(`Reactivation tasks created: ${r.tasks_created} ✓`); }}>Create tasks</button>}{i.kind === "hot" && <button className="btn ghost small" onClick={() => go({ view: "leads", leads: { sort: "value" } })}>View leads</button>}</div>)}
+      {ins.length === 0 && <p className="muted">All clear — no duplicates, no unassigned leads, nothing stale. The AI is watching.</p>}</div>
+    <div className="card"><h3>AI Cleanup — duplicates, spam, scoring, assignment</h3>
+      {!prev && !result && <button className="btn" onClick={scan}>Run cleanup scan</button>}
+      {prev && <div><p><b>{prev.duplicate_count}</b> duplicates · <b>{prev.spam_count}</b> spam/invalid · <b>{prev.unassigned_count}</b> unassigned · <b>{prev.unscored_count}</b> unscored — of {num(prev.total_leads)} leads</p>
+        {prev.duplicates.slice(0, 6).map((d: any) => <p className="muted" key={d.id} style={{ margin: "3px 0" }}>Duplicate: {d.name} — {d.service} (original kept)</p>)}
+        {prev.spam.slice(0, 4).map((d: any) => <p className="muted" key={d.id} style={{ margin: "3px 0" }}>Spam/invalid: {d.name || "—"} — {d.service}</p>)}
+        <div style={{ margin: "12px 0" }}>{[["dedupe", "Archive duplicates (original kept, merge recorded)"], ["spam", "Mark spam/invalid as Junk"], ["score", "Score every lead (hot / warm / cold)"], ["assign", "Auto-assign unassigned leads round-robin"]].map(([k, lab]) => <label className="check" key={k}><input type="checkbox" style={{ width: "auto" }} checked={acts[k]} onChange={e => setActs({ ...acts, [k]: e.target.checked })} /><span>{lab}</span></label>)}</div>
+        <div className="rowflex"><button className="btn" onClick={apply}>Apply cleanup</button><button className="btn ghost" onClick={() => setPrev(null)}>Cancel</button></div></div>}
+      {result && <div className="ok">Cleanup applied ✓ — {result.archived_duplicates} duplicates archived · {result.marked_spam} spam marked · {result.scored} leads scored · {result.assigned} auto-assigned. <button className="btn ghost small" onClick={scan}>Scan again</button></div>}
+    </div>
+    <div className="card"><h3>How the agents work</h3><p className="muted" style={{ lineHeight: 1.6 }}>Triage classifies every incoming lead (service, urgency, value band, spam) the second it lands. Scoring ranks the pile so humans call hot leads first. Cleanup keeps the data honest. The Completeness Gate is the bouncer: no packet reaches an approver missing contact, scope, visit, PM, or price-book pricing. Agents never invent prices and never send anything customer-facing — that line is enforced in code, not policy.</p></div>
+  </div>);
+}
+
+function SyncModal({ close, done }: any) {
+  const [preset, setPreset] = useState("30"); const [from, setFrom] = useState(""); const [to, setTo] = useState("");
+  const [cfg, setCfg] = useState<any>(null); const [res, setRes] = useState<any>(null); const [busy, setBusy] = useState(false); const [err, setErr] = useState("");
+  useEffect(() => { api("/api/settings").then(r => setCfg(r.workspace)).catch(() => {}); }, []);
+  const range = () => { const days = Number(preset); if (preset === "custom") return { from: new Date(from).toISOString(), to: new Date(to).toISOString() }; const end = new Date(); const start = new Date(Date.now() - (days - 1) * 86400000); start.setHours(0, 0, 0, 0); return { from: start.toISOString(), to: end.toISOString() }; };
+  const run = async () => { setBusy(true); setErr(""); try { const r = await api("/api/sync/run", { method: "POST", body: range() }); setRes(r); } catch (e: any) { setErr(e.message); } setBusy(false); };
+  return (<div className="modalWrap"><div className="modal" style={{ maxWidth: 560 }}><h3 style={{ marginTop: 0 }}>Sync leads from your source system</h3>
+    <p className="muted">Pulls leads created in the selected window and imports them — duplicates are detected by phone/email and skipped, never double-created. Source: <b>{cfg?.source_api_url ? cfg.source_api_url : "Demo source (built-in sample system)"}</b>{cfg?.last_sync_at ? <> · last sync {dt(cfg.last_sync_at)}</> : ""}</p>
+    {err && <div className="err">{err}</div>}
+    <label className="f">How far back?</label>
+    <div className="chipRow">{[["1", "Today"], ["7", "Last 7 days"], ["30", "Last 30 days"], ["90", "Last 90 days"], ["custom", "Custom range"]].map(([k, lab]) => <button key={k} className={`chip ${preset === k ? "on" : ""}`} onClick={() => setPreset(k)}>{lab}</button>)}</div>
+    {preset === "custom" && <div className="formgrid"><div><label className="f">From</label><input type="date" value={from} onChange={e => setFrom(e.target.value)} /></div><div><label className="f">To</label><input type="date" value={to} onChange={e => setTo(e.target.value)} /></div></div>}
+    <label className="check" style={{ marginTop: 12 }}><input type="checkbox" style={{ width: "auto" }} checked={!!cfg?.sync_enabled} onChange={async e => { await api("/api/settings", { method: "PATCH", body: { sync_enabled: e.target.checked } }); setCfg({ ...cfg, sync_enabled: e.target.checked ? 1 : 0 }); }} /><span><b>Daily auto-sync</b> — pull yesterday's leads every morning automatically</span></label>
+    {res && <div className="ok">Sync complete ✓ — fetched {res.fetched} · created {res.created} · duplicates skipped {res.duplicates} · errors {res.errors}</div>}
+    <div className="rowflex" style={{ marginTop: 14 }}><button className="btn" disabled={busy} onClick={run}>{busy ? "Syncing…" : "⇅ Run sync"}</button><button className="btn ghost" onClick={() => { close(); if (res) done(); }}>Close</button></div>
+    <p className="muted" style={{ fontSize: 12.5 }}>Prefer a file? Use Import CSV — same dedupe, same ownership rules. Point the source at your real system in Settings → Workspace (Source API URL).</p>
+  </div></div>);
+}
+
 function App() {
   const [user, setUser] = useState<any>(null); const [login, setLogin] = useState({ email: "", password: "" }); const [err, setErr] = useState("");
   const [nav, setNav] = useState<Nav>({ view: "dashboard" }); const [users, setUsers] = useState<any[]>([]); const [priceBook, setPriceBook] = useState<any[]>([]);
   const [brief, setBrief] = useState<any>(null); const [pending, setPending] = useState(0); const [creating, setCreating] = useState(false); const [leadId, setLeadId] = useState<string | null>(null); const [tick, setTick] = useState(0);
-  useEffect(() => { api("/api/auth/me").then(r => setUser(r.user)).catch(() => {}); }, []);
+  const [workspaces, setWorkspaces] = useState<any[]>([]); const [newWs, setNewWs] = useState("");
+  useEffect(() => { if (user) api("/api/workspaces").then(r => setWorkspaces(r.workspaces || [])).catch(() => {}); }, [user?.id]);
+  useEffect(() => { api("/api/auth/me").then(r => { setUser(r.user); setWorkspaces(r.workspaces || []); }).catch(() => {}); }, []);
   useEffect(() => { if (user) { api("/api/users").then(setUsers).catch(() => {}); api("/api/price-book").then(setPriceBook).catch(() => {}); api("/api/brief").then(setBrief).catch(() => {}); api("/api/approvals").then(r => setPending(r.length)).catch(() => {}); } }, [user, tick]);
-  if (!user) return (<div className="landing">
-    <h1>LeadFlow OS</h1><p className="tag">Your lead backlog, cleared. Your approvals, one tap. Your proposals, generated.</p>
-    <p>Built for owner-operated service businesses drowning in leads: connect your website, inbox, or spreadsheet — we triage the pile, route only complete packets to your approval, generate the proposal from your own prices, and hand every final outcome — won, lost, or N/A — straight into your own system.</p>
-    <div className="tiles">{[["Backlog Clear", "1,000-lead pile → hot / warm / stale with a projected clear date"], ["90%+ First-Pass Approvals", "Completeness Gate + price-book guardrails"], ["Generative Proposals", "From your templates and your prices. Never invented numbers."], ["Demand Gap", "The services customers ask for that you don't sell yet"]].map(([k, v]) => <div className="tile" key={k}><span>{k}</span><b style={{ fontSize: 14.5 }}>{v}</b></div>)}</div>
-    <h3>Pricing — 30-day free trial, no card</h3>
-    <div className="tiles">{[["Starter", "$299/mo · 500 leads · 5 seats"], ["Growth", "$599/mo · 2,000 leads · 15 seats"], ["Pro", "$999/mo · unlimited leads · 30 seats"]].map(([k, v]) => <div className="tile" key={k}><span>{k}</span><b style={{ fontSize: 14.5 }}>{v}</b></div>)}</div>
-    <div className="card login"><h3>Sign in</h3>{err && <div className="err">{err}</div>}
-      <input placeholder="Email" value={login.email} onChange={e => setLogin({ ...login, email: e.target.value })} />
-      <input type="password" placeholder="Password" value={login.password} onChange={e => setLogin({ ...login, password: e.target.value })} />
-      <button className="btn" style={{ width: "100%" }} onClick={async () => { try { const r = await api("/api/auth/login", { method: "POST", body: login }); setUser(r.user); setErr(""); } catch (e: any) { setErr(e.message); } }}>Sign in</button>
-      <p className="muted" style={{ fontSize: 12.5 }}>Demo: owner@demo.test / demo1234 · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/dpa">DPA</a></p></div></div>);
+  if (!user) return <Landing onAuth={(u: any) => { setUser(u); }} />;
   const go = (n: Nav) => setNav(n);
   const NavB = ({ v, children, cnt }: any) => <button className={nav.view === v ? "on" : ""} onClick={() => go({ view: v })}><span>{children}</span>{cnt ? <span className="cnt">{cnt}</span> : null}</button>;
   return (<div className="layout">
-    <aside><h1>LeadFlow OS</h1><div className="who">{user.name} · {user.role}</div>
-      <NavB v="dashboard">Dashboard</NavB><NavB v="leads">Leads</NavB><NavB v="reports">Reports</NavB><NavB v="approvals" cnt={pending || undefined}>Approvals</NavB><NavB v="imports">Import CSV</NavB><NavB v="demand">Demand Gap</NavB><NavB v="handoffs">Handoffs</NavB><NavB v="ops">Ops Console</NavB><NavB v="settings">Settings</NavB><NavB v="billing">Billing</NavB>
+    <aside><Logo light /><div className="who" style={{ marginTop: 10 }}>{user.name} · {user.role}</div>
+      <select className="wsSwitch" value={user.workspace_id} onChange={async e => { if (e.target.value === "__new") { const name = prompt("New business / workspace name"); if (name) { await api("/api/workspaces", { method: "POST", body: { name } }); location.reload(); } return; } await api("/api/workspaces/switch", { method: "POST", body: { workspace_id: e.target.value } }); location.reload(); }}>
+        {workspaces.map((w: any) => <option key={w.workspace_id} value={w.workspace_id}>{w.name} ({w.role})</option>)}
+        <option value="__new">+ New workspace…</option></select>
+      <NavB v="dashboard">Dashboard</NavB><NavB v="leads">Leads</NavB><NavB v="reports">Reports</NavB><NavB v="approvals" cnt={pending || undefined}>Approvals</NavB><NavB v="ai">AI Assistant</NavB><NavB v="imports">Import CSV</NavB><NavB v="demand">Demand Gap</NavB><NavB v="handoffs">Handoffs</NavB><NavB v="ops">Ops Console</NavB><NavB v="settings">Settings</NavB><NavB v="billing">Billing</NavB>
       {user.is_platform_admin ? <NavB v="admin">Platform Admin</NavB> : null}
       <button onClick={async () => { await fetch("/api/auth/logout", { method: "POST" }).catch(() => {}); setUser(null); }}><span>Sign out</span></button>
       {brief && <div className="brief"><b>Morning Brief</b>{brief.headline}<br />{brief.undelivered_finals} finals not yet picked up by their system</div>}
@@ -407,6 +514,7 @@ function App() {
       {nav.view === "leads" && <Leads key={JSON.stringify(nav.leads || {}) + tick} initial={nav.leads} openLead={setLeadId} users={users} me={user} />}
       {nav.view === "reports" && <Reports />}
       {nav.view === "approvals" && <Approvals openLead={setLeadId} />}
+      {nav.view === "ai" && <AIAssistant go={go} />}
       {nav.view === "imports" && <Imports />}
       {nav.view === "demand" && <Demand />}
       {nav.view === "handoffs" && <Handoffs />}

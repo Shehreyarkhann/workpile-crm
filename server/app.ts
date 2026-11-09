@@ -9,7 +9,8 @@ import { proposalDocx } from "./docx.ts";
 import { ensureSignToken, getByToken, sign } from "./sign.ts";
 import { createDeposit, markPaid, verifyStripeSignature, handleStripeEvent, stripeMode } from "./payments.ts";
 import { getFlags, setFlag, workspaceHealth, runSynthetics } from "./admin.ts";
-import { billingStatus, createCheckout, handleBillingEvent, PLANS } from "./billing.ts";
+import { billingStatus, createCheckout, handleBillingEvent, PLANS, ensureSubscription } from "./billing.ts";
+import { cleanupPreview, cleanupApply, insights, reactivateStale, scoreLead } from "./ai.ts";
 import { providerStatus, authUrl, listConnections } from "./oauth.ts";
 
 export const app = express();
@@ -159,7 +160,7 @@ app.post("/api/auth/login", (req, res) => {
   res.setHeader("Set-Cookie", `lf_session=${sid}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax`);
   res.json({ user: { id: u.id, name: u.name, email: u.email, role: u.role, workspace_id: u.workspace_id, is_platform_admin: !!u.is_platform_admin }, session: sid });
 });
-app.get("/api/auth/me", requireAuth, (req: any, res) => res.json({ user: { id: req.user.id, name: req.user.name, email: req.user.email, role: req.user.role, workspace_id: req.user.workspace_id, is_platform_admin: !!req.user.is_platform_admin } }));
+app.get("/api/auth/me", requireAuth, (req: any, res) => { ensureMembership(req.user); const ws = db.prepare("SELECT name FROM workspaces WHERE id=?").get(req.user.workspace_id) as any; res.json({ user: { id: req.user.id, name: req.user.name, email: req.user.email, role: req.user.role, workspace_id: req.user.workspace_id, workspace_name: ws?.name, is_platform_admin: !!req.user.is_platform_admin }, workspaces: membershipsOf(req.user.id) }); });
 
 // ---------- routes: workspace data ----------
 app.get("/api/users", requireAuth, (req: any, res) => res.json(db.prepare("SELECT id,name,email,role,approval_limit FROM users WHERE workspace_id=?").all(req.user.workspace_id)));
@@ -545,6 +546,79 @@ app.get("/terms", legalPage("Terms of Service", "<p>LeadFlow OS provides lead ma
 app.get("/privacy", legalPage("Privacy Policy", "<p>We collect account data and the lead/contact data our customers submit or connect. We use it solely to operate the service. We do not sell personal data. AI processing sub-processors are listed in our DPA. Customers may export or request deletion of their data at any time. US state privacy rights (including CCPA/CPRA) are honored via privacy requests to support.</p>"));
 app.get("/dpa", legalPage("Data Processing Addendum", "<p>LeadFlow OS acts as a processor/service provider for customer-submitted personal data. Sub-processors: cloud hosting, Stripe (payments), and AI model providers used for drafting/classification features. Security: encryption in transit and at rest, tenant isolation, audit logging. Breach notification within 72 hours of confirmation.</p>"));
 
+// ---------- slice 6: multi-tenant, lead sync, AI ----------
+export function workspaceDefaults(wsId: string) {
+  const svc = (name: string) => { const id = uid("svc"); db.prepare("INSERT INTO services (id,workspace_id,name) VALUES (?,?,?)").run(id, wsId, name); return id; };
+  const s1 = svc("Water damage cleanup"); svc("Mold remediation"); svc("Fire & smoke restoration");
+  const pb = (service: string, name: string, price: number, floor: number) => db.prepare("INSERT INTO price_book_items (id,workspace_id,service_id,name,unit,standard_price,floor_price) VALUES (?,?,?,?,?,?,?)").run(uid("pb"), wsId, service, name, "job", price, floor);
+  pb(s1, "Water extraction & drying", 3200, 2600); pb(s1, "Dehumidification (per day)", 450, 350);
+  db.prepare("INSERT INTO templates (id,workspace_id,service_id,kind,name,body) VALUES (?,?,?,?,?,?)").run(uid("tpl"), wsId, s1, "proposal", "Standard Proposal", "Scope: {{scope}}\nLine items from price book.\nTerms: Net 14, proposal valid 14 days.");
+}
+function membershipsOf(userId: string) { return db.prepare("SELECT m.workspace_id, m.role, w.name FROM memberships m JOIN workspaces w ON w.id=m.workspace_id WHERE m.user_id=?").all(userId); }
+function ensureMembership(user: any) { const ex = db.prepare("SELECT * FROM memberships WHERE user_id=? AND workspace_id=?").get(user.id, user.workspace_id); if (!ex) db.prepare("INSERT INTO memberships (user_id,workspace_id,role,created_at) VALUES (?,?,?,?)").run(user.id, user.workspace_id, user.role, now()); }
+app.post("/api/auth/register", (req: any, res) => {
+  const { name, email, password, business_name } = req.body || {};
+  if (!name || !email || !password || password.length < 8) return res.status(422).json({ error: { code: "invalid", message: "Name, email and an 8+ character password are required." } });
+  if (db.prepare("SELECT id FROM users WHERE email=?").get(email)) return res.status(409).json({ error: { code: "email_taken" } });
+  const wsId = uid("ws"); db.prepare("INSERT INTO workspaces (id,name,vertical,timezone,created_at) VALUES (?,?,?,?,?)").run(wsId, business_name || name + "'s Business", "field-services", "America/New_York", now());
+  workspaceDefaults(wsId); ensureSubscription(wsId);
+  const userId = uid("usr"); db.prepare("INSERT INTO users (id,workspace_id,name,email,password_hash,role,approval_limit) VALUES (?,?,?,?,?,?,?)").run(userId, wsId, name, email, hashPassword(password), "OWNER", 100000);
+  db.prepare("INSERT INTO memberships (user_id,workspace_id,role,created_at) VALUES (?,?,?,?)").run(userId, wsId, "OWNER", now());
+  const sid = uid("ses"); db.prepare("INSERT INTO sessions (id,user_id,created_at,expires_at) VALUES (?,?,?,?)").run(sid, userId, now(), new Date(Date.now() + 7 * 86400000).toISOString());
+  res.setHeader("Set-Cookie", `lf_session=${sid}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax`);
+  res.status(201).json({ user: { id: userId, name, email, role: "OWNER", workspace_id: wsId }, workspaces: membershipsOf(userId) });
+});
+app.get("/api/workspaces", requireAuth, (req: any, res) => { ensureMembership(req.user); res.json({ current: req.user.workspace_id, workspaces: membershipsOf(req.user.id) }); });
+app.post("/api/workspaces", requireAuth, (req: any, res) => {
+  const wsId = uid("ws"); db.prepare("INSERT INTO workspaces (id,name,vertical,timezone,created_at) VALUES (?,?,?,?,?)").run(wsId, req.body.name || "New Business", "field-services", "America/New_York", now());
+  workspaceDefaults(wsId); ensureSubscription(wsId);
+  db.prepare("INSERT INTO memberships (user_id,workspace_id,role,created_at) VALUES (?,?,?,?)").run(req.user.id, wsId, "OWNER", now());
+  db.prepare("UPDATE users SET workspace_id=?, role='OWNER' WHERE id=?").run(wsId, req.user.id);
+  res.status(201).json({ workspace_id: wsId, workspaces: membershipsOf(req.user.id) });
+});
+app.post("/api/workspaces/switch", requireAuth, (req: any, res) => {
+  const m = db.prepare("SELECT * FROM memberships WHERE user_id=? AND workspace_id=?").get(req.user.id, req.body.workspace_id) as any;
+  if (!m) return res.status(403).json({ error: { code: "not_a_member" } });
+  db.prepare("UPDATE users SET workspace_id=?, role=? WHERE id=?").run(m.workspace_id, m.role, req.user.id);
+  res.json({ ok: true, workspace_id: m.workspace_id, role: m.role });
+});
+// Demo lead source (stands in for a customer's lead system API; same JSON shape)
+app.get("/demo-source/leads", (req: any, res) => {
+  const from = req.query.from ? new Date(String(req.query.from)).getTime() : 0;
+  const to = req.query.to ? new Date(String(req.query.to)).getTime() : Date.now();
+  const first = ["Nina", "Carl", "Dana", "Victor", "Paula", "Henry", "Grace", "Oscar", "Tina", "Walter"];
+  const last = ["Shaw", "Reed", "Frost", "Lane", "Boyd", "Hart", "Webb", "Cole", "Nash", "Page"];
+  const svcs = ["Water damage cleanup", "Mold remediation", "Fire & smoke restoration", "Storm damage repair"];
+  const out: any[] = [];
+  for (let i = 0; i < 24; i++) {
+    const t = Date.now() - ((i * 37) % 85) * 86400000;
+    if (t < from || t > to) continue;
+    const phone = i < 3 ? `+1516555010${i + 1}` : `+15165557${String(100 + i)}`; // first 3 deliberately collide with seeded leads (dedupe proof)
+    out.push({ contact: { name: `${first[i % 10]} ${last[(i * 3) % 10]}`, phone, email: `sync${i}@example.com` }, service_requested: svcs[i % 4], est_value: 1200 + (i * 733) % 15000, message: "Synced from source system", location: "Long Island, NY", source: "api-sync", created_at: new Date(t).toISOString() });
+  }
+  res.json(out);
+});
+app.post("/api/sync/run", requireAuth, async (req: any, res) => {
+  const ws = db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.user.workspace_id) as any;
+  const from = req.body.from || new Date(Date.now() - 30 * 86400000).toISOString();
+  const to = req.body.to || new Date().toISOString();
+  const base = `${req.protocol}://${req.get("host")}`;
+  const url = ws.source_api_url || `${base}/demo-source/leads`;
+  let rows: any[] = [];
+  try { const r = await fetch(`${url}${url.includes("?") ? "&" : "?"}from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, { headers: ws.source_api_key ? { Authorization: `Bearer ${ws.source_api_key}` } : {} }); if (!r.ok) return res.status(502).json({ error: { code: "source_error", message: `Source returned ${r.status}` } }); rows = await r.json(); if (!Array.isArray(rows)) return res.status(502).json({ error: { code: "source_shape", message: "Source must return a JSON array of leads." } }); }
+  catch (e: any) { return res.status(502).json({ error: { code: "source_unreachable", message: String(e.message || e) } }); }
+  let created = 0, duplicates = 0, errors = 0;
+  for (const row of rows) { try { const r = createLead(req.user.workspace_id, req.user.id, row); r.duplicate ? duplicates++ : created++; } catch { errors++; } }
+  const stats = { fetched: rows.length, created, duplicates, errors, from, to, at: now(), source: ws.source_api_url ? "custom" : "demo" };
+  db.prepare("UPDATE workspaces SET last_sync_at=?, last_sync_stats=? WHERE id=?").run(stats.at, JSON.stringify(stats), ws.id);
+  db.prepare("INSERT INTO imports (id,workspace_id,filename,mapping,totals,status,created_at) VALUES (?,?,?,?,?,?,?)").run(uid("imp"), ws.id, "api-sync", "{}", JSON.stringify({ created, dupes: duplicates }), "committed", now());
+  res.json(stats);
+});
+app.get("/api/ai/insights", requireAuth, (req: any, res) => res.json(insights(req.user.workspace_id)));
+app.post("/api/ai/cleanup/preview", requireAuth, (req: any, res) => res.json(cleanupPreview(req.user.workspace_id)));
+app.post("/api/ai/cleanup/apply", requireAuth, (req: any, res) => res.json(cleanupApply(req.user.workspace_id, req.user.id, req.body.actions || [])));
+app.post("/api/ai/reactivate", requireAuth, (req: any, res) => res.json(reactivateStale(req.user.workspace_id, req.user.id)));
+
 // ---------- slice 5: scale + CRUD + settings (competitor-grade UX data layer) ----------
 // Paginated leads: GET /api/leads?paged=1&page=1&page_size=50&state=&q=&owner_id=&service=&sort=value|recent
 app.patch("/api/leads/:id", requireAuth, (req: any, res) => {
@@ -581,7 +655,7 @@ app.patch("/api/users/:id", requireAuth, (req: any, res) => { if (!["OWNER", "AD
 
 // Workspace settings
 app.get("/api/settings", requireAuth, (req: any, res) => { const ws = db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.user.workspace_id); const counts = db.prepare("SELECT (SELECT COUNT(*) FROM leads WHERE workspace_id=?) leads, (SELECT COUNT(*) FROM users WHERE workspace_id=?) users, (SELECT COUNT(*) FROM price_book_items WHERE workspace_id=?) price_items").get(req.user.workspace_id, req.user.workspace_id, req.user.workspace_id); res.json({ workspace: ws, counts }); });
-app.patch("/api/settings", requireAuth, (req: any, res) => { if (req.user.role !== "OWNER") return res.status(403).json({ error: { code: "owner_only" } }); const b = req.body; db.prepare("UPDATE workspaces SET name=COALESCE(?,name), vertical=COALESCE(?,vertical), timezone=COALESCE(?,timezone), deposit_pct=COALESCE(?,deposit_pct), autonomy_level=COALESCE(?,autonomy_level) WHERE id=?").run(b.name ?? null, b.vertical ?? null, b.timezone ?? null, b.deposit_pct ?? null, b.autonomy_level ?? null, req.user.workspace_id); res.json(db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.user.workspace_id)); });
+app.patch("/api/settings", requireAuth, (req: any, res) => { if (req.user.role !== "OWNER") return res.status(403).json({ error: { code: "owner_only" } }); const b = req.body; db.prepare("UPDATE workspaces SET name=COALESCE(?,name), vertical=COALESCE(?,vertical), timezone=COALESCE(?,timezone), deposit_pct=COALESCE(?,deposit_pct), autonomy_level=COALESCE(?,autonomy_level), source_api_url=COALESCE(?,source_api_url), source_api_key=COALESCE(?,source_api_key), sync_enabled=COALESCE(?,sync_enabled) WHERE id=?").run(b.name ?? null, b.vertical ?? null, b.timezone ?? null, b.deposit_pct ?? null, b.autonomy_level ?? null, b.source_api_url ?? null, b.source_api_key ?? null, b.sync_enabled === undefined ? null : (b.sync_enabled ? 1 : 0), req.user.workspace_id); res.json(db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.user.workspace_id)); });
 
 // API keys management
 app.get("/api/api-keys", requireAuth, (req: any, res) => res.json(db.prepare("SELECT id,label,scopes,last_used_at,revoked_at FROM api_keys WHERE workspace_id=?").all(req.user.workspace_id)));
