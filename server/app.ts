@@ -9,6 +9,8 @@ import { proposalDocx } from "./docx.ts";
 import { ensureSignToken, getByToken, sign } from "./sign.ts";
 import { createDeposit, markPaid, verifyStripeSignature, handleStripeEvent, stripeMode } from "./payments.ts";
 import { getFlags, setFlag, workspaceHealth, runSynthetics } from "./admin.ts";
+import { billingStatus, createCheckout, handleBillingEvent, PLANS } from "./billing.ts";
+import { providerStatus, authUrl, listConnections } from "./oauth.ts";
 
 export const app = express();
 app.use((req: any, _res, next) => { // capture raw body for Stripe signature verification
@@ -60,10 +62,10 @@ function createLead(workspaceId: string, actor: string, input: any) {
   const id = uid("lead");
   const owners = db.prepare("SELECT id FROM users WHERE workspace_id=? AND role='LEAD_OWNER' AND active=1").all(workspaceId) as any[];
   const owner = input.owner_id || owners[0]?.id || null;
-  db.prepare(`INSERT INTO leads (id,workspace_id,contact_id,source_id,external_id,dedupe_key,service_requested,state,urgency,value_band,est_value,owner_id,pm_id,approver_id,next_action,next_action_due_at,sla_due_at,notes,location,created_at,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+  db.prepare(`INSERT INTO leads (id,workspace_id,contact_id,source_id,external_id,dedupe_key,service_requested,state,urgency,value_band,est_value,owner_id,pm_id,approver_id,next_action,next_action_due_at,sla_due_at,notes,location,consent_contact_ok,consent_source,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
     .run(id, workspaceId, cid, sid, input.external_id || null, key, triage.service_guess, triage.spam_score > 0.5 ? "JUNK" : "NEW", triage.urgency, triage.value_band, input.est_value || 0, owner, input.pm_id || null, input.approver_id || null,
-      "First contact", new Date(Date.now() + 4 * 3600000).toISOString(), new Date(Date.now() + 4 * 3600000).toISOString(), input.message || "", typeof input.location === "string" ? input.location : input.location?.address || "", created, now());
+      "First contact", new Date(Date.now() + 4 * 3600000).toISOString(), new Date(Date.now() + 4 * 3600000).toISOString(), input.message || "", typeof input.location === "string" ? input.location : input.location?.address || "", input.consent?.contact_ok ? 1 : 0, input.consent ? (input.source || "form") : null, created, now());
   if (input.temperature_note) { /* reserved */ }
   logEvent(workspaceId, id, actor, "created", null, "NEW", { source: input.source || "manual", triage });
   if (owner) db.prepare("INSERT INTO tasks (id,workspace_id,lead_id,assignee_id,type,title,due_at,created_at) VALUES (?,?,?,?,?,?,?,?)")
@@ -419,6 +421,7 @@ app.post("/webhooks/stripe", (req: any, res) => {
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
   if (secret) { if (!verifyStripeSignature(req.rawBody || "", req.headers["stripe-signature"] || "", secret)) return res.status(400).json({ error: { code: "invalid_signature" } }); }
   handleStripeEvent(req.body);
+  handleBillingEvent(req.body);
   res.json({ received: true });
 });
 
@@ -433,5 +436,93 @@ function requirePlatformAdmin(req: any, res: any, next: any) { if (!req.user?.is
 app.get("/api/admin/workspaces", requireAuth, requirePlatformAdmin, (_req: any, res) => res.json(workspaceHealth()));
 app.get("/api/admin/synthetics", requireAuth, requirePlatformAdmin, async (req: any, res) => { const base = `${req.protocol}://${req.get("host")}`; res.json(await runSynthetics(base)); });
 app.get("/api/admin/dlq", requireAuth, requirePlatformAdmin, (_req: any, res) => res.json(db.prepare("SELECT * FROM outcome_deliveries WHERE last_status='dead_letter' ORDER BY created_at DESC").all()));
+
+// ---------- slice 4: change orders (§26 A3) ----------
+app.get("/api/change-orders", requireAuth, (req: any, res) => res.json(db.prepare("SELECT * FROM change_orders WHERE workspace_id=? ORDER BY created_at DESC").all(req.user.workspace_id)));
+app.post("/api/change-orders", requireAuth, (req: any, res) => {
+  const proj = db.prepare("SELECT * FROM projects WHERE id=? AND workspace_id=?").get(req.body.project_id, req.user.workspace_id) as any;
+  if (!proj) return res.status(404).json({ error: { code: "project_not_found" } });
+  const items = req.body.line_items || [];
+  let delta = 0;
+  for (const it of items) { const pb = db.prepare("SELECT * FROM price_book_items WHERE id=? AND workspace_id=?").get(it.price_book_item_id, req.user.workspace_id) as any; if (!pb) return res.status(422).json({ error: { code: "price_book_only" } }); delta += (it.unit_price !== undefined ? it.unit_price : pb.standard_price) * (it.qty || 1); it.name = pb.name; }
+  const id = uid("co");
+  db.prepare("INSERT INTO change_orders (id,workspace_id,project_id,lead_id,delta_scope,delta_total,status,created_at) VALUES (?,?,?,?,?,?,?,?)")
+    .run(id, req.user.workspace_id, proj.id, proj.lead_id, JSON.stringify({ description: req.body.description || "", line_items: items }), delta, "pending_approval", now());
+  // reuse the §6 approval discipline: a change order is decided like a proposal packet
+  db.prepare("INSERT INTO approvals (id,workspace_id,lead_id,proposal_id,submitted_by,approver_id,tier,submitted_at) VALUES (?,?,?,?,?,?,?,?)")
+    .run(uid("apr"), req.user.workspace_id, proj.lead_id, null, req.user.id, proj.pm_id, Math.abs(delta) > 25000 ? "ceo" : "manager", now());
+  res.status(201).json(db.prepare("SELECT * FROM change_orders WHERE id=?").get(id));
+});
+app.post("/api/change-orders/:id/decide", requireAuth, (req: any, res) => {
+  const co = db.prepare("SELECT * FROM change_orders WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!co || co.status !== "pending_approval") return res.status(404).json({ error: { code: "not_found_or_decided" } });
+  if (!["OWNER", "APPROVER", "ADMIN"].includes(req.user.role)) return res.status(403).json({ error: { code: "not_approver" } });
+  const decision = req.body.decision === "approved" ? "approved" : "rejected";
+  if (decision === "rejected" && !req.body.reason_code) return res.status(422).json({ error: { code: "reason_required" } });
+  db.prepare("UPDATE change_orders SET status=? WHERE id=?").run(decision, co.id);
+  res.json({ ok: true, status: decision });
+});
+
+// ---------- slice 4: customer portal (signed link, flag-gated §26) ----------
+app.get("/portal/:token", (req, res) => {
+  const ctx = getByToken(req.params.token);
+  if (!ctx) return res.status(404).send("Link not found");
+  if (!getFlags(ctx.workspace.id).customer_portal) return res.status(403).send("Customer portal is not enabled for this business yet. Please use your proposal signing link or contact the office.");
+  const { proposal: p, lead, workspace: ws, signature: s } = ctx;
+  const proj = db.prepare("SELECT * FROM projects WHERE lead_id=?").get(lead.id) as any;
+  const visits = db.prepare("SELECT * FROM site_visits WHERE lead_id=? ORDER BY scheduled_at").all(lead.id) as any[];
+  res.type("html").send(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:sans-serif;max-width:640px;margin:24px auto;padding:0 16px}</style>
+  <h1>${ws.name} — Your Project Portal</h1>
+  <p>Service: ${lead.service_requested} · Status: ${lead.state}</p>
+  <p>Proposal: $${Number(p.total).toFixed(2)} · ${s.signed_at ? "✅ Signed" : "Awaiting signature"} · Deposit: ${p.payment_status || "—"}</p>
+  ${proj ? `<p>Project reference: ${proj.external_project_id || proj.id} · Project status: ${proj.status}</p>` : ""}
+  <h3>Site visits</h3>${visits.length ? visits.map((v: any) => `<p>${new Date(v.scheduled_at).toLocaleString()} — ${v.status}</p>`).join("") : "<p>None scheduled yet.</p>"}
+  <h3>Send us a document or photo</h3>
+  <form method="POST" action="/portal/${req.params.token}/upload"><input name="filename" placeholder="File name (e.g. insurance-cert.pdf)" required style="width:100%;padding:10px;margin:6px 0"><input name="note" placeholder="Note (optional)" style="width:100%;padding:10px;margin:6px 0"><button style="background:#14532d;color:#fff;border:0;padding:12px 20px;border-radius:8px;width:100%">Submit</button></form>
+  <p><small>File transfer completes in your confirmation email thread — this form records the document against your job so nothing gets lost.</small></p>`);
+});
+app.post("/portal/:token/upload", express.urlencoded({ extended: false }), (req: any, res) => {
+  const ctx = getByToken(req.params.token);
+  if (!ctx) return res.status(404).send("Link not found");
+  const id = uid("upl");
+  db.prepare("INSERT INTO portal_uploads (id,workspace_id,lead_id,filename,note,created_at) VALUES (?,?,?,?,?,?)").run(id, ctx.workspace.id, ctx.lead.id, req.body.filename || "", req.body.note || "", now());
+  db.prepare("INSERT INTO documents (id,workspace_id,lead_id,name,required,status,received_at) VALUES (?,?,?,?,?,?,?)").run(uid("doc"), ctx.workspace.id, ctx.lead.id, req.body.filename || "customer upload", 0, "received", now());
+  res.type("html").send("<h1>Received ✅</h1><p>Your document is recorded against your job. The office will confirm by email.</p>");
+});
+
+// ---------- slice 4: own billing (§18/§26 C4) ----------
+app.get("/api/billing", requireAuth, (req: any, res) => res.json({ ...billingStatus(req.user.workspace_id), plans: PLANS }));
+app.post("/api/billing/checkout", requireAuth, async (req: any, res) => { const base = `${req.protocol}://${req.get("host")}`; res.json(await createCheckout(req.user.workspace_id, req.body.plan, base)); });
+app.post("/api/billing/change-plan", requireAuth, (req: any, res) => {
+  if (req.user.role !== "OWNER") return res.status(403).json({ error: { code: "owner_only" } });
+  if (!PLANS[req.body.plan]) return res.status(422).json({ error: { code: "unknown_plan" } });
+  db.prepare("UPDATE subscriptions SET plan=?, updated_at=? WHERE workspace_id=?").run(req.body.plan, now(), req.user.workspace_id);
+  res.json(billingStatus(req.user.workspace_id));
+});
+
+// ---------- slice 4: OAuth connections (Gmail / Outlook) ----------
+app.get("/api/oauth/status", requireAuth, (req: any, res) => res.json({ google: providerStatus("google"), microsoft: providerStatus("microsoft"), connections: listConnections(req.user.workspace_id) }));
+app.get("/api/oauth/:provider/start", requireAuth, (req: any, res) => {
+  const base = `${req.protocol}://${req.get("host")}`;
+  const r = authUrl(req.params.provider, req.user.workspace_id, `${base}/api/oauth/callback`);
+  if (!r.configured) return res.status(409).json({ error: { code: "provider_not_configured", message: "Register the provider app (client ID/secret) on this deployment to enable this connection." } });
+  res.json({ url: r.url });
+});
+
+// ---------- slice 4: website embed snippet with TCPA consent (§14.4 + §26 legal) ----------
+app.get("/embed/v1.js", (req, res) => {
+  res.type("application/javascript").send(`(function(){var s=document.currentScript;var ws=s.getAttribute("data-workspace");var formSel=s.getAttribute("data-form");
+  function bind(form){ if(!form||form.__lf) return; form.__lf=1;
+    if(!form.querySelector("[name=lf_consent]")){ var l=document.createElement("label"); l.style.display="block"; l.style.fontSize="12px"; l.innerHTML="<input type=checkbox name=lf_consent required> I agree to be contacted about my request by phone, text and email. Msg/data rates may apply. Reply STOP to opt out."; form.appendChild(l); }
+    form.addEventListener("submit",function(){ var fd=new FormData(form); var payload={workspace_hint:ws,contact:{name:fd.get("name")||"",phone:fd.get("phone")||"",email:fd.get("email")||""},service_requested:fd.get("service")||"",message:fd.get("message")||"",location:fd.get("location")||"",source:"website-form",consent:{contact_ok:fd.get("lf_consent")==="on"},utm:{source:new URLSearchParams(location.search).get("utm_source")||""}};
+      navigator.sendBeacon("/v1/leads/beacon?ws="+encodeURIComponent(ws), JSON.stringify(payload)); }); }
+  document.addEventListener("DOMContentLoaded",function(){ bind(formSel?document.querySelector(formSel):document.querySelector("form")); }); })();`);
+});
+
+// ---------- slice 4: legal pages (DRAFTS — attorney review required before launch, see LAUNCH.md) ----------
+const legalPage = (title: string, body: string) => (req: any, res: any) => res.type("html").send(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:sans-serif;max-width:760px;margin:24px auto;padding:0 16px;line-height:1.55}</style><h1>${title}</h1><p><em>Draft — pending attorney review.</em></p>${body}<p><a href="/">← LeadFlow OS</a></p>`);
+app.get("/terms", legalPage("Terms of Service", "<p>LeadFlow OS provides lead management, approval workflow, proposal generation, and outcome handoff software for small and medium businesses. Customer data remains the customer's data; we process it only to provide the service. Subscriptions are billed monthly per the plan selected; trials run 30 days with no card required. AI-generated drafts require human approval before any customer-facing use. Service is provided as-is during beta/pilot periods.</p>"));
+app.get("/privacy", legalPage("Privacy Policy", "<p>We collect account data and the lead/contact data our customers submit or connect. We use it solely to operate the service. We do not sell personal data. AI processing sub-processors are listed in our DPA. Customers may export or request deletion of their data at any time. US state privacy rights (including CCPA/CPRA) are honored via privacy requests to support.</p>"));
+app.get("/dpa", legalPage("Data Processing Addendum", "<p>LeadFlow OS acts as a processor/service provider for customer-submitted personal data. Sub-processors: cloud hosting, Stripe (payments), and AI model providers used for drafting/classification features. Security: encryption in transit and at rest, tenant isolation, audit logging. Breach notification within 72 hours of confirmation.</p>"));
 
 app.get("/api/health", (_req, res) => res.json({ ok: true, service: "leadflow-os", time: now() }));

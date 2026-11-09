@@ -15,6 +15,21 @@ const BUCKETS: Record<string, string[]> = {
 };
 const money = (n: number) => "$" + (n || 0).toLocaleString();
 
+function Billing() {
+  const [b, setB] = useState<any>(null);
+  useEffect(() => { api("/api/billing").then(setB).catch(() => {}); }, []);
+  if (!b) return <p>Loading billing…</p>;
+  return (<div><h1>Billing</h1>
+    <div className="tiles">
+      <div className="tile"><span>Plan</span><strong>{b.plan.name} — ${b.plan.price}/mo</strong></div>
+      <div className="tile"><span>Status</span><strong>{b.subscription.status}{b.trial_days_left !== null ? ` · ${b.trial_days_left} trial days left` : ""}</strong></div>
+      <div className="tile"><span>Leads this month</span><strong>{b.usage.leads_this_month} / {b.usage.leads_limit} ({b.usage.leads_pct}%)</strong></div>
+      <div className="tile"><span>AI actions</span><strong>{b.usage.ai_actions_this_month} / {b.usage.ai_limit}</strong></div>
+    </div>
+    {b.usage.leads_pct >= 80 && <p className="err">Heads up: you're at {b.usage.leads_pct}% of your monthly lead cap.</p>}
+    <h3>Switch plan</h3><div className="row">{Object.entries(b.plans).map(([k, p]: any) => <button key={k} onClick={async () => { const r = await api("/api/billing/checkout", { method: "POST", body: { plan: k } }); if (r.url) location.href = r.url; else alert(r.message || "Plan change recorded — checkout opens when Stripe is configured on this deployment."); }}>{p.name} ${p.price}/mo</button>)}</div>
+  </div>);
+}
 function App() {
   const [user, setUser] = useState<any>(null);
   const [view, setView] = useState("board");
@@ -40,12 +55,20 @@ function App() {
   useEffect(() => { api("/api/auth/me").then(r => { setUser(r.user); }).catch(() => {}); }, []);
   useEffect(() => { if (user) load(); }, [user]);
 
-  if (!user) return (<div className="login"><h1>LeadFlow OS</h1><p>Backlog → Approval → Proposal → Handoff</p>
+  if (!user) return (<div className="landing">
+    <header><h1>LeadFlow OS</h1><p className="tag">Your lead backlog, cleared. Your approvals, one tap. Your proposals, generated.</p>
+    <p>Built for owner-operated service businesses drowning in leads: connect your website, inbox, or spreadsheet — we triage the pile, route only complete packets to your approval, generate the proposal from your own prices, and hand every final outcome — won, lost, or N/A — straight into your own system.</p></header>
+    <div className="tiles">
+      {[["Backlog Clear", "1,000-lead pile → hot / warm / stale with a projected clear date"], ["90%+ First-Pass Approvals", "Completeness Gate + price-book guardrails mean packets you can approve in 10 seconds"], ["Generative Proposals", "From your templates and your prices. Never invented numbers."], ["Demand Gap", "See the services customers keep asking for that you don't sell yet"]].map(([k, v]) => <div className="tile" key={k}><span>{k}</span><strong style={{ fontSize: 15 }}>{v}</strong></div>)}
+    </div>
+    <h3>Pricing — 30-day free trial, no card</h3>
+    <div className="tiles">{[["Starter", "$299/mo · 500 leads · 5 seats"], ["Growth", "$599/mo · 2,000 leads · 15 seats"], ["Pro", "$999/mo · unlimited leads · 30 seats + Demand Gap"]].map(([k, v]) => <div className="tile" key={k}><span>{k}</span><strong style={{ fontSize: 15 }}>{v}</strong></div>)}</div>
+    <div className="login"><h3>Sign in</h3>
     {err && <div className="err">{err}</div>}
     <input value={login.email} onChange={e => setLogin({ ...login, email: e.target.value })} placeholder="Email" />
     <input type="password" value={login.password} onChange={e => setLogin({ ...login, password: e.target.value })} placeholder="Password" />
     <button onClick={async () => { try { const r = await api("/api/auth/login", { method: "POST", body: login }); setUser(r.user); setErr(""); } catch (e: any) { setErr(e.message); } }}>Sign in</button>
-    <small>Demo: owner@demo.test / demo1234</small></div>);
+    <small>Demo: owner@demo.test / demo1234 · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/dpa">DPA</a></small></div></div>);
 
   const openLead = async (id: string) => { try { setSelected(await api(`/api/leads/${id}`)); } catch (e: any) { setErr(e.message); } };
   const transition = async (id: string, to: string, extra: any = {}) => { try { await api(`/api/leads/${id}/transition`, { method: "POST", body: { to_state: to, ...extra } }); await load(); if (selected) openLead(id); } catch (e: any) { setErr(e.message); alert(e.message); } };
@@ -54,7 +77,7 @@ function App() {
     <aside>
       <h2>LeadFlow OS</h2>
       <p className="who">{user.name} · {user.role}</p>
-      {["board", "approvals", "dashboard", "demand", "handoffs", "ops", ...(user.is_platform_admin ? ["admin"] : [])].map(v => <button key={v} className={view === v ? "nav on" : "nav"} onClick={() => setView(v)}>{v[0].toUpperCase() + v.slice(1)}{v === "approvals" && approvals.length ? ` (${approvals.length})` : ""}</button>)}
+      {["board", "approvals", "dashboard", "demand", "handoffs", "ops", ...(user.is_platform_admin ? ["admin"] : []), "billing"].map(v => <button key={v} className={view === v ? "nav on" : "nav"} onClick={() => setView(v)}>{v[0].toUpperCase() + v.slice(1)}{v === "approvals" && approvals.length ? ` (${approvals.length})` : ""}</button>)}
       {brief && <div className="brief"><strong>Morning Brief</strong><p>{brief.headline}</p><p>{brief.undelivered_finals} finals not yet picked up by their system</p></div>}
     </aside>
     <main>
@@ -108,6 +131,7 @@ function App() {
       {view === "handoffs" && <><h1>Handoff Monitor — Finals Delivered to Their System</h1>
         {handoffs.map(h => <div className="card wide" key={h.id}><strong>{h.outcome}</strong><span>Lead {h.lead_id.slice(0, 13)}… · status: {h.last_status} · attempts {h.attempts}{h.external_id ? ` · their ID: ${h.external_id}` : ""}</span></div>)}
       </>}
+      {view === "billing" && <Billing />}
       {view === "admin" && <><h1>Platform Admin — Workspace Health</h1>
         <button onClick={async () => setAdmin(await api("/api/admin/workspaces"))}>Load workspace health</button>
         {(admin || []).map((w: any) => <div className="card wide" key={w.workspace_id}><strong>{w.name}</strong><span>{w.leads} leads · FPAR {w.fpar ?? "—"}% · win {w.win_rate ?? "—"}% · pending finals {w.pending_finals} · DLQ {w.dead_letter_finals} · {w.health}</span></div>)}
