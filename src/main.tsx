@@ -25,6 +25,8 @@ function App() {
   const [demand, setDemand] = useState<any[]>([]);
   const [handoffs, setHandoffs] = useState<any[]>([]);
   const [ops, setOps] = useState<any>(null);
+  const [admin, setAdmin] = useState<any>(null);
+  const [flags, setFlags] = useState<any>(null);
   const [selected, setSelected] = useState<any>(null);
   const [err, setErr] = useState("");
   const [login, setLogin] = useState({ email: "owner@demo.test", password: "demo1234" });
@@ -32,7 +34,7 @@ function App() {
   const load = async () => {
     try {
       const [l, m, b, a, d, h, o] = await Promise.all([api("/api/leads"), api("/api/metrics"), api("/api/brief"), api("/api/approvals"), api("/api/demand-gap"), api("/api/handoffs"), api("/api/ops")]);
-      setLeads(l); setMetrics(m); setBrief(b); setApprovals(a); setDemand(d); setHandoffs(h); setOps(o);
+      setLeads(l); setMetrics(m); setBrief(b); setApprovals(a); setDemand(d); setHandoffs(h); setOps(o); setFlags(await api("/api/flags"));
     } catch (e: any) { setErr(e.message); }
   };
   useEffect(() => { api("/api/auth/me").then(r => { setUser(r.user); }).catch(() => {}); }, []);
@@ -52,7 +54,7 @@ function App() {
     <aside>
       <h2>LeadFlow OS</h2>
       <p className="who">{user.name} · {user.role}</p>
-      {["board", "approvals", "dashboard", "demand", "handoffs", "ops"].map(v => <button key={v} className={view === v ? "nav on" : "nav"} onClick={() => setView(v)}>{v[0].toUpperCase() + v.slice(1)}{v === "approvals" && approvals.length ? ` (${approvals.length})` : ""}</button>)}
+      {["board", "approvals", "dashboard", "demand", "handoffs", "ops", ...(user.is_platform_admin ? ["admin"] : [])].map(v => <button key={v} className={view === v ? "nav on" : "nav"} onClick={() => setView(v)}>{v[0].toUpperCase() + v.slice(1)}{v === "approvals" && approvals.length ? ` (${approvals.length})` : ""}</button>)}
       {brief && <div className="brief"><strong>Morning Brief</strong><p>{brief.headline}</p><p>{brief.undelivered_finals} finals not yet picked up by their system</p></div>}
     </aside>
     <main>
@@ -105,6 +107,12 @@ function App() {
       </>}
       {view === "handoffs" && <><h1>Handoff Monitor — Finals Delivered to Their System</h1>
         {handoffs.map(h => <div className="card wide" key={h.id}><strong>{h.outcome}</strong><span>Lead {h.lead_id.slice(0, 13)}… · status: {h.last_status} · attempts {h.attempts}{h.external_id ? ` · their ID: ${h.external_id}` : ""}</span></div>)}
+      </>}
+      {view === "admin" && <><h1>Platform Admin — Workspace Health</h1>
+        <button onClick={async () => setAdmin(await api("/api/admin/workspaces"))}>Load workspace health</button>
+        {(admin || []).map((w: any) => <div className="card wide" key={w.workspace_id}><strong>{w.name}</strong><span>{w.leads} leads · FPAR {w.fpar ?? "—"}% · win {w.win_rate ?? "—"}% · pending finals {w.pending_finals} · DLQ {w.dead_letter_finals} · {w.health}</span></div>)}
+        <h3>Feature Flags (canary — this workspace)</h3>
+        {flags && Object.entries(flags).map(([f, on]: any) => <p key={f} className="evt">{f}: <strong>{on ? "ON" : "off"}</strong> <button onClick={async () => { await api("/api/flags", { method: "POST", body: { flag: f, enabled: !on } }); setFlags(await api("/api/flags")); }}>{on ? "Disable" : "Enable"}</button></p>)}
       </>}
       {view === "ops" && ops && <><h1>Operations — Field Reports, Timesheets, Visits</h1>
         <h3>Field Reports</h3>{ops.field_reports.map((f: any) => <p key={f.id} className="evt">{f.manager} · {f.report_date} · {f.status}</p>)}

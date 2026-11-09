@@ -7,6 +7,7 @@ const ws = uid("ws");
 db.prepare("INSERT INTO workspaces (id,name,vertical,created_at) VALUES (?,?,?,?)").run(ws, "Demo Environmental Services", "environmental", now());
 const mkUser = (name: string, email: string, role: string, limit = 0) => { const id = uid("usr"); db.prepare("INSERT INTO users (id,workspace_id,name,email,password_hash,role,approval_limit) VALUES (?,?,?,?,?,?,?)").run(id, ws, name, email, hashPassword("demo1234"), role, limit); return id; };
 const owner = mkUser("Olivia Owner", "owner@demo.test", "OWNER", 100000);
+db.prepare("UPDATE users SET is_platform_admin=1 WHERE id=?").run(owner);
 const approver = mkUser("Mike Manager", "manager@demo.test", "APPROVER", 25000);
 const coord = mkUser("Sam Coordinator", "ops@demo.test", "OPS_ADMIN");
 const leadOwner = mkUser("Laura Lead", "laura@demo.test", "LEAD_OWNER");

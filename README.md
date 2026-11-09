@@ -50,4 +50,11 @@ replay — a final is only 'delivered' on a real 2xx from the customer's endpoin
 DOCX proposal export (`GET /api/proposals/:id/docx`), and inbox ingestion with full triage
 categories (lead / proposal / field / client / vendor / finance / admin) via
 `POST /api/inbox/ingest` — Gmail/Outlook OAuth pollers feed this same pipeline once a
-workspace connects credentials. See spec §20 for the full roadmap and §26 for blockers.
+workspace connects credentials. Slice 3 adds: native e-sign (signed link, ESIGN/UETA
+consent, typed-signature/name match, document-hash evidence certificate, double-sign
+rejected), deposit payments (Stripe Checkout when STRIPE_SECRET_KEY is set; explicit
+test-mode pay page until then — same status code path, flips live on the key swap;
+Stripe webhooks signature-verified, unsigned rejected), platform admin console
+(workspace health + dead-letter queue), per-workspace feature flags for canary
+rollouts, and SLO synthetic checks (5 critical journeys + invariants: every final
+has a delivery, DLQ empty). See spec §20 for the roadmap and §26 for blockers.

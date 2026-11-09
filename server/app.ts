@@ -6,8 +6,15 @@ import { triageLead, packetCheck, demandGap, injectionScan } from "./agents.ts";
 import { metrics, morningBrief } from "./metrics.ts";
 import { parseEmail } from "./inbox.ts";
 import { proposalDocx } from "./docx.ts";
+import { ensureSignToken, getByToken, sign } from "./sign.ts";
+import { createDeposit, markPaid, verifyStripeSignature, handleStripeEvent, stripeMode } from "./payments.ts";
+import { getFlags, setFlag, workspaceHealth, runSynthetics } from "./admin.ts";
 
 export const app = express();
+app.use((req: any, _res, next) => { // capture raw body for Stripe signature verification
+  if (req.path === "/webhooks/stripe") { let raw = ""; req.on("data", (c: any) => raw += c); req.on("end", () => { req.rawBody = raw; try { req.body = JSON.parse(raw || "{}"); } catch { req.body = {}; } next(); }); }
+  else next();
+});
 app.use(express.json({ limit: "5mb" }));
 
 // ---------- state machine (§5.1) ----------
@@ -148,9 +155,9 @@ app.post("/api/auth/login", (req, res) => {
   const sid = uid("ses") + randomBytes(16).toString("hex");
   db.prepare("INSERT INTO sessions (id,user_id,created_at,expires_at) VALUES (?,?,?,?)").run(sid, u.id, now(), new Date(Date.now() + 7 * 86400000).toISOString());
   res.setHeader("Set-Cookie", `lf_session=${sid}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax`);
-  res.json({ user: { id: u.id, name: u.name, email: u.email, role: u.role, workspace_id: u.workspace_id }, session: sid });
+  res.json({ user: { id: u.id, name: u.name, email: u.email, role: u.role, workspace_id: u.workspace_id, is_platform_admin: !!u.is_platform_admin }, session: sid });
 });
-app.get("/api/auth/me", requireAuth, (req: any, res) => res.json({ user: { id: req.user.id, name: req.user.name, email: req.user.email, role: req.user.role, workspace_id: req.user.workspace_id } }));
+app.get("/api/auth/me", requireAuth, (req: any, res) => res.json({ user: { id: req.user.id, name: req.user.name, email: req.user.email, role: req.user.role, workspace_id: req.user.workspace_id, is_platform_admin: !!req.user.is_platform_admin } }));
 
 // ---------- routes: workspace data ----------
 app.get("/api/users", requireAuth, (req: any, res) => res.json(db.prepare("SELECT id,name,email,role,approval_limit FROM users WHERE workspace_id=?").all(req.user.workspace_id)));
@@ -357,5 +364,74 @@ app.post("/api/inbox/ingest", requireAuth, (req: any, res) => {
   res.json({ ingested: results.length, results });
 });
 app.get("/api/inbox", requireAuth, (req: any, res) => res.json(db.prepare("SELECT * FROM inbox_items WHERE workspace_id=? ORDER BY created_at DESC").all(req.user.workspace_id)));
+
+// ---------- slice 3: e-sign + customer signing page ----------
+app.post("/api/proposals/:id/sign-link", requireAuth, (req: any, res) => {
+  const p = db.prepare("SELECT * FROM proposals WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!p) return res.status(404).json({ error: { code: "not_found" } });
+  const token = ensureSignToken(p.id);
+  const base = `${req.protocol}://${req.get("host")}`;
+  res.json({ sign_url: `${base}/sign/${token}`, token });
+});
+app.get("/sign/:token", (req, res) => {
+  const ctx = getByToken(req.params.token);
+  if (!ctx) return res.status(404).send("Link not found");
+  const { proposal: p, lead, contact, workspace: ws, signature: s } = ctx;
+  const items = JSON.parse(p.line_items || "[]").map((i: any) => `<tr><td>${i.name}</td><td>${i.qty || 1}</td><td>$${i.unit_price}</td></tr>`).join("");
+  res.type("html").send(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><title>Proposal — ${ws.name}</title>
+  <style>body{font-family:sans-serif;max-width:640px;margin:24px auto;padding:0 16px}table{width:100%;border-collapse:collapse}td{border-bottom:1px solid #ddd;padding:6px}input{width:100%;padding:10px;margin:6px 0}button{background:#14532d;color:#fff;border:0;padding:12px 20px;border-radius:8px;width:100%}</style>
+  <h1>${ws.name}</h1><h2>Proposal — ${lead.service_requested}</h2><p>Prepared for ${contact.name} · ${lead.location || ""}</p>
+  <p>${lead.notes || ""}</p><table>${items}</table><p><strong>Total: $${Number(p.total).toFixed(2)}</strong> · Payment status: ${p.payment_status || "—"}</p>
+  ${s.signed_at ? `<p>✅ Signed by ${s.signer_name} on ${new Date(s.signed_at).toLocaleString()}</p>` : `
+  <form method="POST" action="/sign/${req.params.token}">
+    <input name="signer_name" placeholder="Your full name" required>
+    <input name="signer_email" type="email" placeholder="Email">
+    <input name="typed_signature" placeholder="Type your name to sign" required>
+    <label><input type="checkbox" name="consent" value="1" style="width:auto" required> I agree to sign electronically (ESIGN/UETA) and accept this proposal.</label>
+    <button>Sign Proposal</button></form>`}`);
+});
+app.post("/sign/:token", express.urlencoded({ extended: false }), (req: any, res) => {
+  const r = sign(req.params.token, { signer_name: req.body.signer_name, signer_email: req.body.signer_email, typed_signature: req.body.typed_signature, consent: req.body.consent === "1", ip: req.ip, user_agent: req.get("user-agent") });
+  if (!r.ok) return res.status(422).send(`Signing failed: ${r.error}. Go back and check your entry.`);
+  res.type("html").send(`<!doctype html><h1>Signed ✅</h1><p>Evidence certificate: ${r.certificate.signature_id} · Document hash ${r.certificate.doc_hash.slice(0, 16)}… · ${r.certificate.signed_at}</p>`);
+});
+app.get("/api/proposals/:id/certificate", requireAuth, (req: any, res) => {
+  const s = db.prepare("SELECT * FROM signatures WHERE proposal_id=? AND signed_at IS NOT NULL").get(req.params.id) as any;
+  if (!s) return res.status(404).json({ error: { code: "not_signed" } });
+  res.json({ signature_id: s.id, signer: s.signer_name, signed_at: s.signed_at, doc_hash: s.doc_hash, ip: s.ip });
+});
+
+// ---------- slice 3: deposits (Stripe live / explicit test mode) ----------
+app.post("/api/proposals/:id/deposit", requireAuth, async (req: any, res) => {
+  try { const base = `${req.protocol}://${req.get("host")}`; const pay = await createDeposit(req.params.id, base); if (!pay) return res.status(404).json({ error: { code: "not_found" } }); res.status(201).json({ payment: pay, mode: stripeMode() }); }
+  catch (e: any) { res.status(502).json({ error: { code: "stripe_error", message: e.message } }); }
+});
+app.get("/pay/test/:paymentId", (req, res) => {
+  const pay = db.prepare("SELECT * FROM payments WHERE id=?").get(req.params.paymentId) as any;
+  if (!pay) return res.status(404).send("Not found");
+  res.type("html").send(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:sans-serif;max-width:480px;margin:24px auto;padding:0 16px}button{background:#14532d;color:#fff;border:0;padding:12px 20px;border-radius:8px;width:100%}</style>
+  <h1>Test Mode — Deposit</h1><p>Amount: <strong>$${Number(pay.amount).toFixed(2)}</strong> · Status: ${pay.status}</p>
+  ${pay.status === "paid" ? "<p>✅ Paid (test mode)</p>" : `<form method="POST" action="/pay/test/${pay.id}"><button>Pay Deposit (test)</button></form>`}
+  <p><small>No real charge. Connect STRIPE_SECRET_KEY and this becomes a live Stripe Checkout link automatically.</small></p>`);
+});
+app.post("/pay/test/:paymentId", express.urlencoded({ extended: false }), (req, res) => { markPaid(req.params.paymentId); res.redirect(`/pay/test/${req.params.paymentId}`); });
+app.post("/webhooks/stripe", (req: any, res) => {
+  const secret = process.env.STRIPE_WEBHOOK_SECRET;
+  if (secret) { if (!verifyStripeSignature(req.rawBody || "", req.headers["stripe-signature"] || "", secret)) return res.status(400).json({ error: { code: "invalid_signature" } }); }
+  handleStripeEvent(req.body);
+  res.json({ received: true });
+});
+
+// ---------- slice 3: §26 flags, admin, synthetics ----------
+app.get("/api/flags", requireAuth, (req: any, res) => res.json(getFlags(req.user.workspace_id)));
+app.post("/api/flags", requireAuth, (req: any, res) => {
+  if (!req.user.is_platform_admin && req.user.role !== "OWNER") return res.status(403).json({ error: { code: "forbidden" } });
+  const ok = setFlag(req.user.workspace_id, req.body.flag, !!req.body.enabled);
+  res.status(ok ? 200 : 422).json({ ok });
+});
+function requirePlatformAdmin(req: any, res: any, next: any) { if (!req.user?.is_platform_admin) return res.status(403).json({ error: { code: "platform_admin_only" } }); next(); }
+app.get("/api/admin/workspaces", requireAuth, requirePlatformAdmin, (_req: any, res) => res.json(workspaceHealth()));
+app.get("/api/admin/synthetics", requireAuth, requirePlatformAdmin, async (req: any, res) => { const base = `${req.protocol}://${req.get("host")}`; res.json(await runSynthetics(base)); });
+app.get("/api/admin/dlq", requireAuth, requirePlatformAdmin, (_req: any, res) => res.json(db.prepare("SELECT * FROM outcome_deliveries WHERE last_status='dead_letter' ORDER BY created_at DESC").all()));
 
 app.get("/api/health", (_req, res) => res.json({ ok: true, service: "leadflow-os", time: now() }));
