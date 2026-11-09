@@ -127,10 +127,15 @@ function Leads({ initial, openLead, users, me }: any) {
 
 function MessagesPanel({ lead }: any) {
   const [msgs, setMsgs] = useState<any[]>([]); const [ch, setCh] = useState("email"); const [subject, setSubject] = useState(""); const [body, setBody] = useState(""); const [note, setNote] = useState("");
+  const [fups, setFups] = useState<any[]>([]);
+  const loadF = () => { api(`/api/leads/${lead.id}/followups`).then(setFups).catch(() => {}); };
+  useEffect(loadF, []);
   const load = () => { api(`/api/leads/${lead.id}/messages`).then(setMsgs).catch(() => {}); };
   useEffect(load, []);
   const send = async () => { const r = await api(`/api/leads/${lead.id}/message`, { method: "POST", body: { channel: ch, subject, body } }).catch((e: any) => ({ error: e.message })); if (r.error) { setNote("Not sent: " + r.error); return; } setNote(`Queued via ${ch} → status: ${r.status}${r.status === "test_mode" ? " (test mode — recorded in the outbox, not actually sent until provider keys are set)" : ""}`); setBody(""); setSubject(""); load(); };
+  const activeFup = fups.find((f: any) => f.status === "active");
   return <div className="card"><h3 style={{ marginTop: 0 }}>Messages to {lead.contact_name || "customer"}</h3>
+    {activeFup && <div className="ok" style={{ marginBottom: 10 }}>🔁 Automatic follow-ups running — step {(activeFup.step_idx || 0) + 1}, next nudge {dt(activeFup.next_due_at)}. Stops on signature or final outcome. <button className="btn ghost small" onClick={async () => { await api(`/api/leads/${lead.id}/followups/stop`, { method: "POST", body: {} }); loadF(); }}>Stop sequence</button></div>}
     <div className="chipRow"><button className={`chip ${ch === "email" ? "on" : ""}`} onClick={() => setCh("email")}>✉ Email {lead.contact_email || "(none on file)"}</button><button className={`chip ${ch === "sms" ? "on" : ""}`} onClick={() => setCh("sms")}>💬 SMS {lead.contact_phone || "(none)"}{lead.consent_contact_ok ? "" : " · no consent"}</button></div>
     {ch === "email" && <input placeholder="Subject" value={subject} onChange={e => setSubject(e.target.value)} style={{ marginBottom: 8 }} />}
     <textarea placeholder={ch === "sms" ? "Text message…" : "Message…"} value={body} onChange={e => setBody(e.target.value)} rows={4} style={{ width: "100%" }} />
@@ -219,7 +224,7 @@ function Approvals({ openLead }: any) {
   useEffect(load, []);
   const decide = async (a: any, decision: string) => { try { await api(`/api/approvals/${a.id}/decide`, { method: "POST", body: { decision, reason_code: reason[a.id] || undefined } }); load(); } catch (e: any) { alert(e.message === "reason_required" ? "Rejections need a reason — pick one first." : e.message); } };
   return (<div><h2 className="pt">Approval Inbox</h2><p className="sub">Complete packets only — the Gate already verified contact, scope, visit, PM and price-book pricing. Target: approve in under 10 seconds.</p>
-    {rows.length === 0 && <div className="card">Inbox zero 🎉 — nothing waiting on an approver.</div>}
+    {rows.length === 0 && <div className="card" style={{ textAlign: "center", padding: 34 }}><div style={{ fontSize: 34 }}>🎉</div><b>Inbox zero.</b><p className="muted">Nothing is waiting on an approver. Every packet that needed a decision got one — this is what a cleared pile looks like. New submissions land here the second they pass the Completeness Gate.</p></div>}
     {rows.map(a => <div className="card" key={a.id}>
       <div className="rowflex" style={{ justifyContent: "space-between" }}><div><b style={{ fontSize: 16 }}>{a.service_requested}</b> <span className="muted">for {a.contact_name}</span><br /><span className="muted">{money(a.est_value)} · {a.tier} tier · submitted {dt(a.submitted_at)} · age {a.age_hours}h</span></div>
       <button className="btn ghost small" onClick={() => openLead(a.lead_id)}>Open full record →</button></div>
@@ -324,6 +329,7 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump }: any) {
       <div><label className="f">Slack webhook URL (new-lead + approval alerts)</label><input value={s.workspace.slack_webhook_url || ""} placeholder="https://hooks.slack.com/services/…" onChange={e => setS({ ...s, workspace: { ...s.workspace, slack_webhook_url: e.target.value } })} /></div>
       <div><label className="f">Lead source API key (if required)</label><input value={s.workspace.source_api_key || ""} placeholder="Bearer key for your source system" onChange={e => setS({ ...s, workspace: { ...s.workspace, source_api_key: e.target.value } })} /></div>
     </div><button className="btn" style={{ marginTop: 14 }} onClick={async () => { await api("/api/settings", { method: "PATCH", body: s.workspace }); setMsg("Workspace settings saved ✓"); }}>Save workspace</button></div>}
+    {tab === "workspace" && s && <FollowupSettings key={s.workspace.id} ws={s.workspace} />}
     {tab === "pricebook" && <div className="card"><table><thead><tr><th>Item</th><th>Unit</th><th>Standard</th><th>Floor</th><th></th></tr></thead><tbody>
       {priceBook.map((p: any) => <tr key={p.id}><td>{p.name}</td><td>{p.unit}</td><td>{money(p.standard_price)}</td><td>{money(p.floor_price)}</td><td><button className="btn ghost small" onClick={async () => { const v = prompt("New standard price ($)", p.standard_price); if (v) { await api(`/api/price-book/${p.id}`, { method: "PATCH", body: { standard_price: Number(v) } }); loadAll(); } }}>Edit price</button> <button className="btn ghost small" onClick={async () => { await api(`/api/price-book/${p.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></td></tr>)}
     </tbody></table>
@@ -443,9 +449,9 @@ function Reports() {
   return (<div><h2 className="pt">Reports</h2><p className="sub">Tabular reports over your live data — the Salesforce Reports equivalent, without the report-builder maze. Export anything to CSV.</p>
     <div className="chips">{[["by_owner", "By owner"], ["by_service", "By service"], ["by_stage", "By stage"], ["by_source", "By source"], ["lost_reasons", "Lost reasons"]].map(([k, lab]) => <button key={k} className={`chip ${ds === k ? "on" : ""}`} onClick={() => setDs(k)}>{lab}</button>)}
       <a className="btn small" style={{ textDecoration: "none" }} href={`/api/reports/export?dataset=${ds}`}>⬇ Export CSV</a></div>
-    <div className="card" style={{ padding: 6 }}><table><thead><tr><th>{ds.replaceAll("_", " ")}</th><th>Leads</th><th>Won</th><th>Lost</th><th>Pipeline value</th><th>Won value</th></tr></thead><tbody>
-      {rows.map((r, i) => <tr key={i}><td><b>{r.label}</b></td><td>{num(r.leads)}</td><td>{num(r.won || 0)}</td><td>{num(r.lost || 0)}</td><td>{money(r.value)}</td><td>{money(r.won_value || 0)}</td></tr>)}
-      <tr style={{ background: "#f8fafc" }}><td><b>Total</b></td><td><b>{num(tot.leads)}</b></td><td><b>{num(tot.won)}</b></td><td><b>{num(tot.lost)}</b></td><td><b>{money(tot.value)}</b></td><td><b>{money(tot.won_value)}</b></td></tr>
+    <div className="card" style={{ padding: 6 }}><table><thead><tr><th>{ds.replaceAll("_", " ")}</th><th>Leads</th><th>Won</th><th>Lost</th>{ds === "by_source" && <th>Win rate</th>}<th>Pipeline value</th><th>Won value</th></tr></thead><tbody>
+      {rows.map((r, i) => <tr key={i}><td><b>{r.label}</b></td><td>{num(r.leads)}</td><td>{num(r.won || 0)}</td><td>{num(r.lost || 0)}</td>{ds === "by_source" && <td>{r.leads ? Math.round(100 * (r.won || 0) / r.leads) + "%" : "—"}</td>}<td>{money(r.value)}</td><td>{money(r.won_value || 0)}</td></tr>)}
+      <tr style={{ background: "#f8fafc" }}><td><b>Total</b></td><td><b>{num(tot.leads)}</b></td><td><b>{num(tot.won)}</b></td><td><b>{num(tot.lost)}</b></td>{ds === "by_source" && <td><b>{tot.leads ? Math.round(100 * tot.won / tot.leads) + "%" : "—"}</b></td>}<td><b>{money(tot.value)}</b></td><td><b>{money(tot.won_value)}</b></td></tr>
     </tbody></table></div></div>);
 }
 
@@ -567,12 +573,91 @@ function SyncModal({ close, done }: any) {
   </div></div>);
 }
 
+
+const relTime = (s: any) => { if (!s) return ""; const m = Math.max(1, Math.round((Date.now() - new Date(s).getTime()) / 60000)); if (m < 60) return m + "m ago"; const h = Math.round(m / 60); if (h < 24) return h + "h ago"; return Math.round(h / 24) + "d ago"; };
+const EV_ICON: Record<string, string> = { created: "🆕", state_changed: "➡️", proposal_created: "📄", proposal_sent: "📨", message_email: "✉️", message_sms: "💬", task: "✅", note: "📝", approval_requested: "🙋", approval_decided: "⚖️", signed: "✍️" };
+function Pulse({ openLead }: any) {
+  const [evs, setEvs] = useState<any[]>([]);
+  useEffect(() => { api("/api/activity").then(r => setEvs(r.events)).catch(() => {}); }, []);
+  return (<div><h2 className="pt">Pulse</h2><p className="sub">Everything happening in the business, as it happens — every lead, proposal, signature and decision in one stream.</p>
+    <div className="card" style={{ padding: "6px 14px" }}>{evs.length === 0 && <p className="muted">No activity yet.</p>}
+      {evs.map((e: any) => <div key={e.id} className="pulseRow" onClick={() => openLead(e.lead_id)}><span className="pulseIco">{EV_ICON[e.event_type] || "•"}</span><div style={{ flex: 1 }}><b>{e.contact_name || "Lead"}</b> <span className="muted">· {e.service_requested || ""}</span><br /><span>{e.event_type.replaceAll("_", " ")}{e.from_state ? ` ${e.from_state.replaceAll("_", " ")} → ${e.to_state.replaceAll("_", " ")}` : ""}</span> <span className="muted">— {e.actor_name || "system"}</span></div><span className="muted" style={{ fontSize: 12, whiteSpace: "nowrap" }}>{relTime(e.created_at)}</span></div>)}
+    </div></div>);
+}
+
+function CommandPalette({ close, go, openLead, newLead }: any) {
+  const [q, setQ] = useState(""); const [leads, setLeads] = useState<any[]>([]); const [recents, setRecents] = useState<any[]>([]); const [idx, setIdx] = useState(0);
+  const ACTIONS = [
+    { label: "Dashboard", hint: "G then D", run: () => go({ view: "dashboard" }) },
+    { label: "Pulse — activity stream", hint: "G then P", run: () => go({ view: "pulse" }) },
+    { label: "Leads", hint: "G then L", run: () => go({ view: "leads" }) },
+    { label: "Approvals", hint: "G then A", run: () => go({ view: "approvals" }) },
+    { label: "Reports", hint: "G then R", run: () => go({ view: "reports" }) },
+    { label: "AI Assistant", hint: "", run: () => go({ view: "ai" }) },
+    { label: "Import CSV", hint: "", run: () => go({ view: "imports" }) },
+    { label: "Demand Gap", hint: "", run: () => go({ view: "demand" }) },
+    { label: "Handoffs", hint: "", run: () => go({ view: "handoffs" }) },
+    { label: "Ops Console", hint: "", run: () => go({ view: "ops" }) },
+    { label: "Settings", hint: "G then S", run: () => go({ view: "settings" }) },
+    { label: "Billing", hint: "", run: () => go({ view: "billing" }) },
+    { label: "＋ New lead", hint: "N", run: () => newLead() },
+  ];
+  useEffect(() => { const ids: string[] = JSON.parse(localStorage.getItem("wp_recent") || "[]"); Promise.all(ids.slice(0, 5).map(id => api(`/api/leads/${id}`).then(r => r.lead || r).catch(() => null))).then(rs => setRecents(rs.filter(Boolean))); }, []);
+  useEffect(() => { if (!q.trim()) { setLeads([]); return; } const t = setTimeout(() => { api(`/api/leads?paged=1&page=1&page_size=6&q=${encodeURIComponent(q)}`).then(r => setLeads(r.items || [])).catch(() => {}); }, 160); return () => clearTimeout(t); }, [q]);
+  const acts = ACTIONS.filter(a => a.label.toLowerCase().includes(q.toLowerCase()));
+  const items: any[] = [...(q ? [] : recents.map((l: any) => ({ label: `${l.contact_name || "Lead"} — ${l.service_requested || ""}`, sub: "Recent", run: () => openLead(l.id) }))), ...acts.map(a => ({ ...a, sub: "Go / do" })), ...leads.map((l: any) => ({ label: `${l.contact_name || "Lead"} — ${l.service_requested || ""}`, sub: l.state, run: () => openLead(l.id) }))];
+  useEffect(() => { setIdx(0); }, [q]);
+  const pick = (it: any) => { if (it) { close(); it.run(); } };
+  return (<div className="modalWrap" onClick={close}><div className="palette" onClick={e => e.stopPropagation()}>
+    <input autoFocus placeholder="Search leads, jump to a view, run an action…" value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => { if (e.key === "ArrowDown") { e.preventDefault(); setIdx(i => Math.min(items.length - 1, i + 1)); } if (e.key === "ArrowUp") { e.preventDefault(); setIdx(i => Math.max(0, i - 1)); } if (e.key === "Enter") pick(items[idx]); if (e.key === "Escape") close(); }} />
+    <div className="palList">{items.length === 0 && <p className="muted" style={{ padding: "10px 12px" }}>No matches.</p>}
+      {items.map((it, i) => <div key={i} className={`palItem ${i === idx ? "on" : ""}`} onMouseEnter={() => setIdx(i)} onClick={() => pick(it)}><span style={{ flex: 1 }}>{it.label}</span><span className="muted" style={{ fontSize: 12 }}>{it.sub}{it.hint ? ` · ${it.hint}` : ""}</span></div>)}
+    </div>
+    <div className="palFoot">↑↓ navigate · Enter open · Esc close</div>
+  </div></div>);
+}
+
+const DEF_STEPS = [
+  { day: 2, channel: "email", template: "Hi {name}, just floating your proposal from {business} back to the top of your inbox — total {total}. Review & sign here: {link}" },
+  { day: 5, channel: "sms", template: "{business}: your proposal ({total}) is waiting — review & sign: {link}" },
+  { day: 10, channel: "email", template: "Hi {name}, last nudge from {business} — your proposal ({total}) is still open here: {link}" },
+];
+function FollowupSettings({ ws }: any) {
+  const initSteps = (() => { try { const p = JSON.parse(ws.followup_steps || "null"); if (Array.isArray(p) && p.length) return p; } catch {} return DEF_STEPS; })();
+  const [on, setOn] = useState(!!ws.followup_enabled); const [steps, setSteps] = useState<any[]>(initSteps);
+  const [revOn, setRevOn] = useState(!!ws.review_on_won); const [revUrl, setRevUrl] = useState(ws.review_url || ""); const [note, setNote] = useState("");
+  const save = async () => { await api("/api/settings", { method: "PATCH", body: { followup_enabled: on, followup_steps: steps, review_on_won: revOn, review_url: revUrl } }); setNote("Saved ✓"); };
+  return (<div className="card" style={{ marginTop: 14 }}><h3 style={{ marginTop: 0 }}>🔁 Follow-up cadence <span className="muted" style={{ fontWeight: 400, fontSize: 13 }}>— automatic nudges while a proposal waits (the follow-up machine every field-service CRM runs)</span></h3>
+    <label className="check" style={{ display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={on} onChange={e => setOn(e.target.checked)} style={{ width: "auto" }} /> Turn on automatic follow-ups for sent proposals</label>
+    {steps.map((st, i) => <div className="rowflex" key={i} style={{ marginTop: 8 }}><span className="muted">Day</span><input type="number" style={{ width: 70 }} value={st.day} onChange={e => { const c = [...steps]; c[i] = { ...c[i], day: Number(e.target.value) }; setSteps(c); }} /><select style={{ width: 110 }} value={st.channel} onChange={e => { const c = [...steps]; c[i] = { ...c[i], channel: e.target.value }; setSteps(c); }}><option value="email">Email</option><option value="sms">SMS</option></select><input style={{ flex: 1 }} value={st.template} onChange={e => { const c = [...steps]; c[i] = { ...c[i], template: e.target.value }; setSteps(c); }} /></div>)}
+    <p className="muted">Merge fields: {"{name} {business} {total} {link}"}. Stops automatically on signature, final outcome, or a manual stop on the lead. SMS steps need the lead's texting consent (TCPA).</p>
+    <h3>⭐ Reviews & referrals</h3>
+    <label className="check" style={{ display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={revOn} onChange={e => setRevOn(e.target.checked)} style={{ width: "auto" }} /> When a lead is Won, email the customer a review request</label>
+    <div style={{ marginTop: 8 }}><label className="f">Google review link</label><input value={revUrl} placeholder="https://g.page/r/…" onChange={e => setRevUrl(e.target.value)} /></div>
+    <div className="rowflex" style={{ marginTop: 12 }}><button className="btn" onClick={save}>Save follow-ups & reviews</button>{note && <span className="muted">{note}</span>}</div>
+  </div>);
+}
+
 function App() {
   const [user, setUser] = useState<any>(null); const [login, setLogin] = useState({ email: "", password: "" }); const [err, setErr] = useState("");
   const [nav, setNav] = useState<Nav>({ view: "dashboard" }); const [users, setUsers] = useState<any[]>([]); const [priceBook, setPriceBook] = useState<any[]>([]);
 const [sb, setSb] = useState(() => localStorage.getItem("wp_sb") || "open"); const [mOpen, setMOpen] = useState(false);
   const [notifs, setNotifs] = useState<any[]>([]); const [unread, setUnread] = useState(0); const [bellOpen, setBellOpen] = useState(false); const [verifyMsg, setVerifyMsg] = useState("");
 const [pending, setPending] = useState(0); const [creating, setCreating] = useState(false); const [leadId, setLeadId] = useState<string | null>(null); const [tick, setTick] = useState(0);
+  const [palOpen, setPalOpen] = useState(false); const [helpOpen, setHelpOpen] = useState(false);
+  const openLead = (id: string) => { setLeadId(id); try { const r = JSON.parse(localStorage.getItem("wp_recent") || "[]").filter((x: string) => x !== id); r.unshift(id); localStorage.setItem("wp_recent", JSON.stringify(r.slice(0, 6))); } catch {} };
+  useEffect(() => { if (!user) return; let gAt = 0;
+    const h = (e: KeyboardEvent) => { const t = e.target as HTMLElement; const typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setPalOpen(o => !o); return; }
+      if (typing || palOpen) return;
+      if (e.key === "Escape") { setHelpOpen(false); return; }
+      if (e.key === "?" || (e.key === "/" && e.shiftKey)) { setHelpOpen(o => !o); return; }
+      if (e.key === "/") { e.preventDefault(); setPalOpen(true); return; }
+      if (e.key.toLowerCase() === "n") { setCreating(true); return; }
+      if (e.key.toLowerCase() === "g") { gAt = Date.now(); return; }
+      if (gAt && Date.now() - gAt < 900) { const m: Record<string, string> = { d: "dashboard", p: "pulse", l: "leads", a: "approvals", r: "reports", s: "settings", b: "billing" }; const v = m[e.key.toLowerCase()]; if (v) { setNav({ view: v }); gAt = 0; } }
+    };
+    window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, [user, palOpen]);
   const [workspaces, setWorkspaces] = useState<any[]>([]); const [newWs, setNewWs] = useState("");
   useEffect(() => { if (user) api("/api/workspaces").then(r => setWorkspaces(r.workspaces || [])).catch(() => {}); }, [user?.id]);
   useEffect(() => { api("/api/auth/me").then(r => { setUser(r.user); setWorkspaces(r.workspaces || []); }).catch(() => {}); }, []);
@@ -588,23 +673,24 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       <select className="wsSwitch" value={user.workspace_id} onChange={async e => { if (e.target.value === "__new") { const name = prompt("New business / workspace name"); if (name) { await api("/api/workspaces", { method: "POST", body: { name } }); location.reload(); } return; } await api("/api/workspaces/switch", { method: "POST", body: { workspace_id: e.target.value } }); location.reload(); }}>
         {workspaces.map((w: any) => <option key={w.workspace_id} value={w.workspace_id}>{w.name} ({w.role})</option>)}
         <option value="__new">+ New workspace…</option></select>
-      <NavB v="dashboard" short="DA">Dashboard</NavB><NavB v="leads" short="LE">Leads</NavB><NavB v="reports" short="RE">Reports</NavB><NavB v="approvals" short="AP" cnt={pending || undefined}>Approvals</NavB><NavB v="ai" short="AI">AI Assistant</NavB><NavB v="imports" short="IM">Import CSV</NavB><NavB v="demand" short="DG">Demand Gap</NavB><NavB v="handoffs" short="HA">Handoffs</NavB><NavB v="ops" short="OP">Ops Console</NavB><NavB v="settings" short="SE">Settings</NavB><NavB v="billing" short="BI">Billing</NavB>
+      <NavB v="dashboard" short="DA">Dashboard</NavB><NavB v="pulse" short="PU">Pulse</NavB><NavB v="leads" short="LE">Leads</NavB><NavB v="reports" short="RE">Reports</NavB><NavB v="approvals" short="AP" cnt={pending || undefined}>Approvals</NavB><NavB v="ai" short="AI">AI Assistant</NavB><NavB v="imports" short="IM">Import CSV</NavB><NavB v="demand" short="DG">Demand Gap</NavB><NavB v="handoffs" short="HA">Handoffs</NavB><NavB v="ops" short="OP">Ops Console</NavB><NavB v="settings" short="SE">Settings</NavB><NavB v="billing" short="BI">Billing</NavB>
       {user.is_platform_admin ? <NavB v="admin" short="AD">Platform Admin</NavB> : null}
       <div className="sideFoot"><button title="Sign out" onClick={async () => { await fetch("/api/auth/logout", { method: "POST" }).catch(() => {}); setUser(null); }}><span className="nshort">⏻</span><span className="nlab">Sign out</span></button></div>
     </aside>
     <main>
-      <div className="topbar"><button className="btn ghost burger" onClick={() => setMOpen(o => !o)}>☰</button><div className="search"><input type="search" placeholder="Search everything — name, phone, service… (opens Leads)" onKeyDown={e => { if (e.key === "Enter") go({ view: "leads", leads: { q: (e.target as HTMLInputElement).value } }); }} /></div>
+      <div className="topbar"><button className="btn ghost burger" onClick={() => setMOpen(o => !o)}>☰</button><div className="search"><input type="search" readOnly placeholder="Search leads, jump anywhere…  ( ⌘K )" onFocus={() => setPalOpen(true)} /></div>
         <div style={{ position: "relative" }}><button className="btn ghost" onClick={() => setBellOpen(o => !o)}>🔔{unread ? <span className="cnt" style={{ background: "#dc2626", color: "#fff", borderRadius: 99, fontSize: 11, padding: "1px 7px", fontWeight: 700, marginLeft: 4 }}>{unread}</span> : null}</button>
         {bellOpen && <div className="bellPanel"><div className="rowflex" style={{ justifyContent: "space-between" }}><b>Notifications</b><button className="btn ghost small" onClick={async () => { await api("/api/notifications/read-all", { method: "POST", body: {} }); setUnread(0); setNotifs(notifs.map(n => ({ ...n, read_at: n.read_at || "now" }))); }}>Mark all read</button></div>
         {notifs.length === 0 && <p className="muted">Nothing yet \u2014 approvals, signatures, deposits, and new leads land here.</p>}
-        {notifs.map(n => <div key={n.id} className="bellItem" style={n.read_at ? {} : { background: "#f0f9f1" }} onClick={async () => { await api(`/api/notifications/${n.id}/read`, { method: "POST", body: {} }); setUnread(u => Math.max(0, u - (n.read_at ? 0 : 1))); if (n.lead_id) { setLeadId(n.lead_id); setBellOpen(false); } }}><b>{n.title}</b><br /><span className="muted">{n.body}</span><br /><span className="muted" style={{ fontSize: 11.5 }}>{dt(n.created_at)}</span></div>)}</div>}</div>
+        {notifs.map(n => <div key={n.id} className="bellItem" style={n.read_at ? {} : { background: "#f0f9f1" }} onClick={async () => { await api(`/api/notifications/${n.id}/read`, { method: "POST", body: {} }); setUnread(u => Math.max(0, u - (n.read_at ? 0 : 1))); if (n.lead_id) { openLead(n.lead_id); setBellOpen(false); } }}><b>{n.title}</b><br /><span className="muted">{n.body}</span><br /><span className="muted" style={{ fontSize: 11.5 }}>{dt(n.created_at)}</span></div>)}</div>}</div>
         <button className="btn" onClick={() => setCreating(true)}>+ New Lead</button></div>
       {user && user.email_verified === 0 && <div className="verifyBar">✉️ Verify your email to secure your account and enable password recovery. <button className="btn ghost small" onClick={async () => { const r = await api("/api/auth/resend-verify", { method: "POST", body: {} }).catch((e: any) => ({ error: e.message })); setVerifyMsg(r.verify_url ? "Test mode \u2014 verify here: " + r.verify_url : r.error ? r.error : "Verification email sent \u2014 check your inbox."); }}>Resend verification</button>{verifyMsg && <span style={{ marginLeft: 8 }}>{verifyMsg}</span>}</div>}
       <EB>
-      {nav.view === "dashboard" && <Dashboard go={go} openLead={setLeadId} />}
-      {nav.view === "leads" && <Leads key={JSON.stringify(nav.leads || {}) + tick} initial={nav.leads} openLead={setLeadId} users={users} me={user} />}
+      {nav.view === "dashboard" && <Dashboard go={go} openLead={openLead} />}
+      {nav.view === "pulse" && <Pulse openLead={openLead} />}
+      {nav.view === "leads" && <Leads key={JSON.stringify(nav.leads || {}) + tick} initial={nav.leads} openLead={openLead} users={users} me={user} />}
       {nav.view === "reports" && <Reports />}
-      {nav.view === "approvals" && <Approvals openLead={setLeadId} />}
+      {nav.view === "approvals" && <Approvals openLead={openLead} />}
       {nav.view === "ai" && <AIAssistant go={go} />}
       {nav.view === "imports" && <Imports />}
       {nav.view === "demand" && <Demand />}
@@ -614,7 +700,9 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       {nav.view === "billing" && <Billing />}
       {nav.view === "admin" && <Admin />}
       </EB>
-      {creating && <CreateLead users={users} done={(id: any) => { setCreating(false); setTick(t => t + 1); if (id) setLeadId(id); }} />}
+      {creating && <CreateLead users={users} done={(id: any) => { setCreating(false); setTick(t => t + 1); if (id) openLead(id); }} />}
+      {palOpen && <CommandPalette close={() => setPalOpen(false)} go={go} openLead={openLead} newLead={() => setCreating(true)} />}
+      {helpOpen && <div className="modalWrap" onClick={() => setHelpOpen(false)}><div className="card" style={{ maxWidth: 430, margin: "10vh auto" }} onClick={e => e.stopPropagation()}><h3 style={{ marginTop: 0 }}>Keyboard shortcuts</h3><table><tbody>{[["⌘K or /", "Command palette — search + jump"], ["N", "New lead"], ["G then D / P / L / A / R / S / B", "Go to Dashboard / Pulse / Leads / Approvals / Reports / Settings / Billing"], ["?", "This help"], ["Esc", "Close dialogs"]].map(([k, v]) => <tr key={k}><td style={{ whiteSpace: "nowrap" }}><span className="kbd">{k}</span></td><td>{v}</td></tr>)}</tbody></table></div></div>}
       {leadId && <LeadDetail id={leadId} users={users} priceBook={priceBook} close={() => setLeadId(null)} refresh={() => setTick(t => t + 1)} />}
     </main>
   </div>);

@@ -13,6 +13,7 @@ import { billingStatus, createCheckout, handleBillingEvent, PLANS, ensureSubscri
 import { cleanupPreview, cleanupApply, insights, reactivateStale, scoreLead } from "./ai.ts";
 import { emitEvent, EVENTS } from "./integrations.ts";
 import { queueAndDeliver, notify, notifyOwners, emailConfigured, smsConfigured } from "./comms.ts";
+import { enrollFollowup, stopFollowups } from "./followups.ts";
 
 import { providerStatus, authUrl, listConnections } from "./oauth.ts";
 
@@ -30,7 +31,7 @@ export const TRANSITIONS: Record<string, string[]> = {
   QUALIFYING: ["QUALIFIED", "UNSERVICEABLE", "JUNK", "DUPLICATE", "NO_RESPONSE"],
   QUALIFIED: ["READY_FOR_APPROVAL", "ON_HOLD"],
   READY_FOR_APPROVAL: ["APPROVED", "QUALIFIED", "ON_HOLD"],
-  APPROVED: ["PROPOSAL_DRAFTED"],
+  APPROVED: ["PROPOSAL_DRAFTED", "PROPOSAL_SENT"],
   PROPOSAL_DRAFTED: ["PROPOSAL_SENT"],
   PROPOSAL_SENT: ["IN_FOLLOW_UP", "WON", "LOST"],
   IN_FOLLOW_UP: ["WON", "LOST", "NO_RESPONSE"],
@@ -131,7 +132,9 @@ function transition(workspaceId: string, actor: string, lead: any, toState: stri
   const updated = db.prepare("SELECT * FROM leads WHERE id=?").get(lead.id) as any;
   logEvent(workspaceId, lead.id, actor, "state_changed", lead.state, toState, extra);
   emitEvent(workspaceId, "lead.state_changed", { lead_id: lead.id, from_state: lead.state, to_state: toState });
-  if (FINAL_STATES.includes(toState)) { finalizeLead(workspaceId, actor, updated, toState); notifyOwners(workspaceId, "outcome.final", `Lead finalized: ${toState}`, `${leadView(updated).contact_name || lead.id} is now ${toState}`, lead.id); if (actor !== "api") emitEvent(workspaceId, "outcome.final", { lead_id: lead.id, outcome: OUTCOME_OF[toState], state: toState }); }
+  if (FINAL_STATES.includes(toState)) { finalizeLead(workspaceId, actor, updated, toState); stopFollowups(lead.id, "finalized"); notifyOwners(workspaceId, "outcome.final", `Lead finalized: ${toState}`, `${leadView(updated).contact_name || lead.id} is now ${toState}`, lead.id); if (actor !== "api") emitEvent(workspaceId, "outcome.final", { lead_id: lead.id, outcome: OUTCOME_OF[toState], state: toState });
+    if (toState === "WON") { const wsx: any = db.prepare("SELECT * FROM workspaces WHERE id=?").get(workspaceId); const cv = leadView(updated);
+      if (wsx?.review_on_won && wsx?.review_url && cv.contact_email) queueAndDeliver(workspaceId, { lead_id: lead.id, channel: "email", to: cv.contact_email, subject: `Thanks from ${wsx.name} — how did we do?`, body: `Hi ${cv.contact_name || "there"},\n\nThanks for choosing ${wsx.name}. If we earned it, a quick Google review helps a local business like ours more than any ad: ${wsx.review_url}\n\nAnd if a neighbor ever needs the same help, we'd be grateful for the referral.` }).catch(() => {}); } }
   return { lead: leadView(updated) };
 }
 
@@ -662,6 +665,7 @@ app.post("/api/proposals/:id/send", requireAuth, async (req: any, res) => {
   const r: any = await queueAndDeliver(req.user.workspace_id, { lead_id: l.id, channel, to, subject: `Your proposal from ${ws.name} — $${p.total}`, body });
   db.prepare("UPDATE proposals SET status='sent' WHERE id=?").run(p.id);
   if (l.state === "APPROVED") { const t: any = transition(req.user.workspace_id, req.user.id, l, "PROPOSAL_SENT"); if (t.error) { /* stay APPROVED */ } }
+  enrollFollowup(req.user.workspace_id, l.id, p.id);
   logEvent(req.user.workspace_id, l.id, req.user.id, "proposal_sent", null, null, { channel, status: r.status });
   res.status(201).json({ status: r.status, channel, to, sign_link: link });
 });
@@ -822,7 +826,7 @@ app.patch("/api/users/:id", requireAuth, (req: any, res) => { if (!["OWNER", "AD
 
 // Workspace settings
 app.get("/api/settings", requireAuth, (req: any, res) => { const ws = db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.user.workspace_id); const counts = db.prepare("SELECT (SELECT COUNT(*) FROM leads WHERE workspace_id=?) leads, (SELECT COUNT(*) FROM users WHERE workspace_id=?) users, (SELECT COUNT(*) FROM price_book_items WHERE workspace_id=?) price_items").get(req.user.workspace_id, req.user.workspace_id, req.user.workspace_id); res.json({ workspace: ws, counts }); });
-app.patch("/api/settings", requireAuth, (req: any, res) => { if (req.user.role !== "OWNER") return res.status(403).json({ error: { code: "owner_only" } }); const b = req.body; db.prepare("UPDATE workspaces SET name=COALESCE(?,name), vertical=COALESCE(?,vertical), timezone=COALESCE(?,timezone), deposit_pct=COALESCE(?,deposit_pct), autonomy_level=COALESCE(?,autonomy_level), source_api_url=COALESCE(?,source_api_url), source_api_key=COALESCE(?,source_api_key), sync_enabled=COALESCE(?,sync_enabled), slack_webhook_url=COALESCE(?,slack_webhook_url), from_name=COALESCE(?,from_name), from_email=COALESCE(?,from_email) WHERE id=?").run(b.name ?? null, b.vertical ?? null, b.timezone ?? null, b.deposit_pct ?? null, b.autonomy_level ?? null, b.source_api_url ?? null, b.source_api_key ?? null, b.sync_enabled === undefined ? null : (b.sync_enabled ? 1 : 0), b.slack_webhook_url ?? null, b.from_name ?? null, b.from_email ?? null, req.user.workspace_id); res.json(db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.user.workspace_id)); });
+app.patch("/api/settings", requireAuth, (req: any, res) => { if (req.user.role !== "OWNER") return res.status(403).json({ error: { code: "owner_only" } }); const b = req.body; db.prepare("UPDATE workspaces SET name=COALESCE(?,name), vertical=COALESCE(?,vertical), timezone=COALESCE(?,timezone), deposit_pct=COALESCE(?,deposit_pct), autonomy_level=COALESCE(?,autonomy_level), source_api_url=COALESCE(?,source_api_url), source_api_key=COALESCE(?,source_api_key), sync_enabled=COALESCE(?,sync_enabled), slack_webhook_url=COALESCE(?,slack_webhook_url), from_name=COALESCE(?,from_name), from_email=COALESCE(?,from_email), followup_enabled=COALESCE(?,followup_enabled), followup_steps=COALESCE(?,followup_steps), review_url=COALESCE(?,review_url), review_on_won=COALESCE(?,review_on_won) WHERE id=?").run(b.name ?? null, b.vertical ?? null, b.timezone ?? null, b.deposit_pct ?? null, b.autonomy_level ?? null, b.source_api_url ?? null, b.source_api_key ?? null, b.sync_enabled === undefined ? null : (b.sync_enabled ? 1 : 0), b.slack_webhook_url ?? null, b.from_name ?? null, b.from_email ?? null, b.followup_enabled === undefined ? null : (b.followup_enabled ? 1 : 0), b.followup_steps === undefined ? null : JSON.stringify(b.followup_steps), b.review_url ?? null, b.review_on_won === undefined ? null : (b.review_on_won ? 1 : 0), req.user.workspace_id); res.json(db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.user.workspace_id)); });
 
 // API keys management
 app.get("/api/api-keys", requireAuth, (req: any, res) => res.json(db.prepare("SELECT id,label,scopes,last_used_at,revoked_at FROM api_keys WHERE workspace_id=?").all(req.user.workspace_id)));
@@ -852,7 +856,7 @@ app.get("/api/reports", requireAuth, (req: any, res) => {
     by_owner: "SELECT COALESCE(u.name,'Unassigned') label, COUNT(*) leads, SUM(CASE WHEN l.state='WON' THEN 1 ELSE 0 END) won, SUM(CASE WHEN l.state='LOST' THEN 1 ELSE 0 END) lost, SUM(l.est_value) value, SUM(CASE WHEN l.state='WON' THEN l.est_value ELSE 0 END) won_value FROM leads l LEFT JOIN users u ON u.id=l.owner_id WHERE l.workspace_id=? GROUP BY label ORDER BY leads DESC",
     by_service: "SELECT service_requested label, COUNT(*) leads, SUM(CASE WHEN state='WON' THEN 1 ELSE 0 END) won, SUM(CASE WHEN state='LOST' THEN 1 ELSE 0 END) lost, SUM(est_value) value, SUM(CASE WHEN state='WON' THEN est_value ELSE 0 END) won_value FROM leads WHERE workspace_id=? GROUP BY service_requested ORDER BY leads DESC",
     by_stage: "SELECT state label, COUNT(*) leads, SUM(est_value) value FROM leads WHERE workspace_id=? GROUP BY state ORDER BY leads DESC",
-    by_source: "SELECT COALESCE(s.name,'Unknown') label, COUNT(*) leads, SUM(CASE WHEN l.state='WON' THEN 1 ELSE 0 END) won, SUM(l.est_value) value FROM leads l LEFT JOIN sources s ON s.id=l.source_id WHERE l.workspace_id=? GROUP BY label ORDER BY leads DESC",
+    by_source: "SELECT COALESCE(s.name,'Unknown') label, COUNT(*) leads, SUM(CASE WHEN l.state='WON' THEN 1 ELSE 0 END) won, SUM(CASE WHEN l.state='LOST' THEN 1 ELSE 0 END) lost, SUM(l.est_value) value, SUM(CASE WHEN l.state='WON' THEN l.est_value ELSE 0 END) won_value FROM leads l LEFT JOIN sources s ON s.id=l.source_id WHERE l.workspace_id=? GROUP BY label ORDER BY won_value DESC",
     lost_reasons: "SELECT COALESCE(lost_reason,'UNSPECIFIED') label, COUNT(*) leads, SUM(est_value) value FROM leads WHERE workspace_id=? AND state IN ('LOST','NO_RESPONSE','UNSERVICEABLE') GROUP BY label ORDER BY leads DESC",
   };
   const rows = db.prepare(Q[kind] || Q.by_owner).all(ws);
@@ -865,4 +869,11 @@ app.get("/api/reports/export", requireAuth, (req: any, res) => {
   res.type("text/csv").setHeader("Content-Disposition", `attachment; filename="workpile-${kind}.csv"`).send(csv);
 });
 
+// ---------- slice 9: activity pulse + follow-ups ----------
+app.get("/api/activity", requireAuth, (req: any, res) => {
+  const rows = db.prepare(`SELECT e.*, e.type AS event_type, c.name contact_name, l.service_requested, u.name actor_name FROM lead_events e JOIN leads l ON l.id=e.lead_id LEFT JOIN contacts c ON c.id=l.contact_id LEFT JOIN users u ON u.id=e.actor WHERE e.workspace_id=? ORDER BY e.created_at DESC LIMIT 60`).all(req.user.workspace_id);
+  res.json({ events: rows });
+});
+app.get("/api/leads/:id/followups", requireAuth, (req: any, res) => res.json(db.prepare("SELECT * FROM followup_enrollments WHERE lead_id=? AND workspace_id=? ORDER BY created_at DESC").all(req.params.id, req.user.workspace_id)));
+app.post("/api/leads/:id/followups/stop", requireAuth, (req: any, res) => { stopFollowups(req.params.id, "manual"); res.json({ ok: true }); });
 app.get("/api/health", (_req, res) => res.json({ ok: true, service: "leadflow-os", time: now() }));

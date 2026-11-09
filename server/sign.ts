@@ -7,6 +7,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { db, uid, now } from "./db.ts";
 import { emitEvent } from "./integrations.ts";
 import { notifyOwners } from "./comms.ts";
+import { stopFollowups } from "./followups.ts";
 
 export function docHash(p: any): string {
   return createHash("sha256").update(JSON.stringify({ id: p.id, version: p.version, line_items: p.line_items, total: p.total })).digest("hex");
@@ -47,6 +48,7 @@ export function sign(token: string, input: { signer_name: string; signer_email: 
   db.prepare("UPDATE signatures SET signer_name=?, signer_email=?, typed_signature=?, consent=1, ip=?, user_agent=?, signed_at=? WHERE id=?")
     .run(input.signer_name, input.signer_email || "", input.typed_signature, input.ip || "", input.user_agent || "", signedAt, s.id);
   db.prepare("UPDATE proposals SET status='signed', signed_at=? WHERE id=?").run(signedAt, proposal.id);
+  stopFollowups(proposal.lead_id, "signed");
   emitEvent(proposal.workspace_id, "proposal.signed", { lead_id: proposal.lead_id, proposal_id: proposal.id, signer: input.signer_name });
   notifyOwners(proposal.workspace_id, "proposal.signed", "Proposal signed ✍️", `${input.signer_name} signed proposal ${proposal.id}`, proposal.lead_id);
   const certificate = { signature_id: s.id, proposal_id: proposal.id, doc_hash: s.doc_hash, signer: input.signer_name, signed_at: signedAt, evidence: "ESIGN/UETA consent recorded; typed signature matched signer name; document hash verified at signing" };
