@@ -39,7 +39,7 @@ test("webhook worker delivers signed final outcome and marks it delivered", asyn
   dbm.db.prepare("INSERT INTO outcome_deliveries (id,workspace_id,lead_id,outcome,payload_hash,created_at) VALUES (?,?,?,?,?,?)").run(dlv, ws, lead, "won", "abc", dbm.now());
   const secret = "test-secret";
   let received: any = null;
-  const receiver = http.createServer((req, res) => { let b = ""; req.on("data", c => b += c); req.on("end", () => { received = { sig: req.headers["x-leadflow-signature"], body: b }; res.writeHead(200); res.end("{}"); }); });
+  const receiver = http.createServer((req, res) => { let b = ""; req.on("data", c => b += c); req.on("end", () => { received = { sig: req.headers["x-workpile-signature"], body: b }; res.writeHead(200); res.end("{}"); }); });
   await new Promise<void>(r => receiver.listen(0, r));
   const port = (receiver.address() as any).port;
   dbm.db.prepare("INSERT INTO webhook_endpoints (id,workspace_id,url,secret,created_at) VALUES (?,?,?,?,?)").run(dbm.uid("whk"), ws, `http://127.0.0.1:${port}/hook`, secret, dbm.now());
