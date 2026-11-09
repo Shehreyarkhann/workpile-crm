@@ -4,6 +4,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { db, uid, now, hashPassword, verifyPassword, apiKeyHash, logEvent, audit } from "./db.ts";
 import { triageLead, packetCheck, demandGap, injectionScan } from "./agents.ts";
 import { metrics, morningBrief } from "./metrics.ts";
+import { parseEmail } from "./inbox.ts";
+import { proposalDocx } from "./docx.ts";
 
 export const app = express();
 app.use(express.json({ limit: "5mb" }));
@@ -313,5 +315,47 @@ app.post("/v1/outcomes/:deliveryId/ack", requireApiKey(["outcomes:read"]), (req:
 });
 app.get("/api/handoffs", requireAuth, (req: any, res) => res.json(db.prepare("SELECT * FROM outcome_deliveries WHERE workspace_id=? ORDER BY created_at DESC").all(req.user.workspace_id)));
 app.get("/api/outbox", requireAuth, (req: any, res) => res.json(db.prepare("SELECT id,kind,status,attempts,last_error,created_at FROM outbox WHERE workspace_id=? ORDER BY created_at DESC LIMIT 100").all(req.user.workspace_id)));
+
+// ---------- slice 2: webhook endpoints + delivery worker controls ----------
+app.get("/api/webhooks", requireAuth, (req: any, res) => res.json(db.prepare("SELECT id,url,events,active,created_at FROM webhook_endpoints WHERE workspace_id=?").all(req.user.workspace_id)));
+app.post("/api/webhooks", requireAuth, (req: any, res) => {
+  if (!["OWNER", "ADMIN", "OPS_ADMIN"].includes(req.user.role)) return res.status(403).json({ error: { code: "forbidden" } });
+  const id = uid("whk");
+  db.prepare("INSERT INTO webhook_endpoints (id,workspace_id,url,secret,events,created_at) VALUES (?,?,?,?,?,?)").run(id, req.user.workspace_id, req.body.url, req.body.secret || randomBytes(18).toString("hex"), req.body.events || "lead.finalized", now());
+  res.status(201).json({ id, url: req.body.url });
+});
+app.delete("/api/webhooks/:id", requireAuth, (req: any, res) => { db.prepare("UPDATE webhook_endpoints SET active=0 WHERE id=? AND workspace_id=?").run(req.params.id, req.user.workspace_id); res.json({ ok: true }); });
+app.post("/api/worker/run", requireAuth, async (req: any, res) => { const { processDeliveries } = await import("./worker.ts"); res.json(await processDeliveries()); });
+app.post("/api/handoffs/:id/replay", requireAuth, async (req: any, res) => { const { replayDelivery } = await import("./worker.ts"); const ok = replayDelivery(req.params.id); res.status(ok ? 200 : 404).json({ ok }); });
+
+// ---------- slice 2: DOCX proposal export (§25) ----------
+app.get("/api/proposals/:id/docx", requireAuth, async (req: any, res) => {
+  const out = await proposalDocx(req.params.id);
+  if (!out) return res.status(404).json({ error: { code: "not_found" } });
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+  res.setHeader("Content-Disposition", `attachment; filename="${out.filename}"`);
+  res.send(out.buffer);
+});
+
+// ---------- slice 2: inbox ingestion + triage (§25 P0-2) ----------
+app.post("/api/inbox/ingest", requireAuth, (req: any, res) => {
+  const emails = Array.isArray(req.body.emails) ? req.body.emails : [req.body];
+  const results: any[] = [];
+  const ops = db.prepare("SELECT id FROM users WHERE workspace_id=? AND role='OPS_ADMIN' AND active=1").get(req.user.workspace_id) as any;
+  for (const e of emails) {
+    const parsed = parseEmail(e);
+    if (parsed.is_lead) {
+      const r = createLead(req.user.workspace_id, "inbox", { contact: { name: e.from_name || "", phone: parsed.phone, email: e.from_email || "" }, service_requested: "", message: `${e.subject || ""}\n${e.body || ""}`, source: "email-inbox", created_at: e.received_at });
+      results.push({ category: "lead", lead_id: r.lead.id, duplicate: r.duplicate });
+    } else {
+      const id = uid("inb");
+      db.prepare("INSERT INTO inbox_items (id,workspace_id,category,from_name,from_email,subject,body,owner_id,next_action_due_at,received_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+        .run(id, req.user.workspace_id, parsed.category, e.from_name || "", e.from_email || "", e.subject || "", e.body || "", ops?.id || req.user.id, new Date(Date.now() + 86400000).toISOString(), e.received_at || now(), now());
+      results.push({ category: parsed.category, inbox_item_id: id });
+    }
+  }
+  res.json({ ingested: results.length, results });
+});
+app.get("/api/inbox", requireAuth, (req: any, res) => res.json(db.prepare("SELECT * FROM inbox_items WHERE workspace_id=? ORDER BY created_at DESC").all(req.user.workspace_id)));
 
 app.get("/api/health", (_req, res) => res.json({ ok: true, service: "leadflow-os", time: now() }));

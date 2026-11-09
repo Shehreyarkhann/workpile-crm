@@ -53,6 +53,8 @@ export function initSchema() {
   CREATE TABLE IF NOT EXISTS site_visits (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, assigned_to TEXT, scheduled_at TEXT, status TEXT DEFAULT 'scheduled', outcome TEXT, notes TEXT);
   CREATE TABLE IF NOT EXISTS change_orders (id TEXT PRIMARY KEY, workspace_id TEXT, project_id TEXT, lead_id TEXT, delta_scope TEXT, delta_total REAL DEFAULT 0, status TEXT DEFAULT 'draft', created_at TEXT);
   CREATE TABLE IF NOT EXISTS audit_log (id TEXT PRIMARY KEY, workspace_id TEXT, user_id TEXT, action TEXT, entity TEXT, entity_id TEXT, diff TEXT, created_at TEXT);
+  CREATE TABLE IF NOT EXISTS webhook_endpoints (id TEXT PRIMARY KEY, workspace_id TEXT, url TEXT, secret TEXT, events TEXT DEFAULT 'lead.finalized', active INTEGER DEFAULT 1, created_at TEXT);
+  CREATE TABLE IF NOT EXISTS inbox_items (id TEXT PRIMARY KEY, workspace_id TEXT, category TEXT, from_name TEXT, from_email TEXT, subject TEXT, body TEXT, lead_id TEXT, owner_id TEXT, next_action_due_at TEXT, received_at TEXT, created_at TEXT);
   `);
 }
 

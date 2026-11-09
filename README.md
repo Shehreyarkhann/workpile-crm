@@ -45,4 +45,9 @@ npm run smoke   # end-to-end journey on a temp DB (create → gate → approve �
 
 ## Status
 Phase 0 + Phase 1 core + Phase 2 essentials (proposals, approvals, KPIs, handoffs) implemented
-and smoke-verified. See spec §20 for the full roadmap and §26 for production blockers.
+and smoke-verified. Slice 2 adds: HMAC-signed webhook delivery worker (retries, dead-letter,
+replay — a final is only 'delivered' on a real 2xx from the customer's endpoint), editable
+DOCX proposal export (`GET /api/proposals/:id/docx`), and inbox ingestion with full triage
+categories (lead / proposal / field / client / vendor / finance / admin) via
+`POST /api/inbox/ingest` — Gmail/Outlook OAuth pollers feed this same pipeline once a
+workspace connects credentials. See spec §20 for the full roadmap and §26 for blockers.

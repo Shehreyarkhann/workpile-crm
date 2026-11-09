@@ -4,6 +4,7 @@ import fs from "node:fs";
 import { initSchema } from "./db.ts";
 import { app } from "./app.ts";
 initSchema();
+import("./worker.ts").then(w => w.startWorker()).catch(() => {});
 const PORT = Number(process.env.PORT || 4173);
 const dist = path.join(process.cwd(), "dist");
 if (fs.existsSync(dist)) {
