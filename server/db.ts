@@ -63,6 +63,9 @@ export function initSchema() {
   CREATE TABLE IF NOT EXISTS portal_uploads (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, filename TEXT, note TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS memberships (user_id TEXT, workspace_id TEXT, role TEXT, created_at TEXT, PRIMARY KEY (user_id, workspace_id));
   CREATE TABLE IF NOT EXISTS webhook_deliveries (id TEXT PRIMARY KEY, workspace_id TEXT, endpoint_id TEXT, event TEXT, payload TEXT, attempts INTEGER DEFAULT 0, last_status TEXT DEFAULT 'pending', last_error TEXT, next_attempt_at TEXT, created_at TEXT, delivered_at TEXT);
+  CREATE TABLE IF NOT EXISTS messages_outbox (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, channel TEXT, to_addr TEXT, subject TEXT, body TEXT, status TEXT DEFAULT 'queued', provider TEXT, provider_id TEXT, error TEXT, created_at TEXT, sent_at TEXT);
+  CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY, workspace_id TEXT, user_id TEXT, type TEXT, title TEXT, body TEXT, lead_id TEXT, read_at TEXT, created_at TEXT);
+  CREATE TABLE IF NOT EXISTS auth_tokens (id TEXT PRIMARY KEY, user_id TEXT, kind TEXT, token_hash TEXT, expires_at TEXT, used_at TEXT, created_at TEXT);
   `);
   // additive columns for existing DBs (expand step of expand-migrate-contract)
   for (const stmt of [
@@ -80,6 +83,9 @@ export function initSchema() {
     "ALTER TABLE workspaces ADD COLUMN last_sync_at TEXT",
     "ALTER TABLE workspaces ADD COLUMN last_sync_stats TEXT",
     "ALTER TABLE workspaces ADD COLUMN slack_webhook_url TEXT",
+    "ALTER TABLE workspaces ADD COLUMN from_name TEXT",
+    "ALTER TABLE workspaces ADD COLUMN from_email TEXT",
+    "ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0",
     "ALTER TABLE webhook_endpoints ADD COLUMN events TEXT DEFAULT 'outcome.final'",
   ]) { try { db.exec(stmt); } catch { /* already present */ } }
 }

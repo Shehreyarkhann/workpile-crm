@@ -124,6 +124,23 @@ function Leads({ initial, openLead, users, me }: any) {
   </div>);
 }
 
+
+function MessagesPanel({ lead }: any) {
+  const [msgs, setMsgs] = useState<any[]>([]); const [ch, setCh] = useState("email"); const [subject, setSubject] = useState(""); const [body, setBody] = useState(""); const [note, setNote] = useState("");
+  const load = () => { api(`/api/leads/${lead.id}/messages`).then(setMsgs).catch(() => {}); };
+  useEffect(load, []);
+  const send = async () => { const r = await api(`/api/leads/${lead.id}/message`, { method: "POST", body: { channel: ch, subject, body } }).catch((e: any) => ({ error: e.message })); if (r.error) { setNote("Not sent: " + r.error); return; } setNote(`Queued via ${ch} → status: ${r.status}${r.status === "test_mode" ? " (test mode — recorded in the outbox, not actually sent until provider keys are set)" : ""}`); setBody(""); setSubject(""); load(); };
+  return <div className="card"><h3 style={{ marginTop: 0 }}>Messages to {lead.contact_name || "customer"}</h3>
+    <div className="chipRow"><button className={`chip ${ch === "email" ? "on" : ""}`} onClick={() => setCh("email")}>✉ Email {lead.contact_email || "(none on file)"}</button><button className={`chip ${ch === "sms" ? "on" : ""}`} onClick={() => setCh("sms")}>💬 SMS {lead.contact_phone || "(none)"}{lead.consent_contact_ok ? "" : " · no consent"}</button></div>
+    {ch === "email" && <input placeholder="Subject" value={subject} onChange={e => setSubject(e.target.value)} style={{ marginBottom: 8 }} />}
+    <textarea placeholder={ch === "sms" ? "Text message…" : "Message…"} value={body} onChange={e => setBody(e.target.value)} rows={4} style={{ width: "100%" }} />
+    <div className="rowflex" style={{ marginTop: 8 }}><button className="btn" disabled={!body.trim()} onClick={send}>Send {ch === "sms" ? "text" : "email"}</button>{note && <span className="muted">{note}</span>}</div>
+    <h4 style={{ marginBottom: 6 }}>History</h4>
+    {msgs.length === 0 && <p className="muted">Nothing sent yet.</p>}
+    {msgs.map((m: any) => <p key={m.id} style={{ margin: "6px 0", borderBottom: "1px solid #eef2f7", paddingBottom: 6 }}><b>{m.channel === "sms" ? "💬" : "✉"} {m.to_addr}</b> · <span className="tinyBadge">{m.status}</span> <span className="muted">{dt(m.created_at)}</span>{m.subject ? <><br /><b>{m.subject}</b></> : ""}<br /><span className="muted">{m.body.slice(0, 220)}</span></p>)}
+  </div>;
+}
+
 function LeadDetail({ id, users, priceBook, close, refresh }: any) {
   const [d, setD] = useState<any>(null); const [edit, setEdit] = useState<any>(null); const [msg, setMsg] = useState("");
   const [act, setAct] = useState<any>({ type: "call", body: "", outcome: "" });
@@ -145,7 +162,7 @@ function LeadDetail({ id, users, priceBook, close, refresh }: any) {
       : <div className="pathFinal" style={{ background: "#fee2e2", color: "#991b1b" }}>Final state: {l.state.replaceAll("_", " ")}{l.lost_reason ? " · " + l.lost_reason : ""}</div>}
     <p className="muted" style={{ fontSize: 12, margin: "2px 0 6px" }}>Path — click a stage to move (the Completeness Gate still applies: nothing reaches approval incomplete).</p>
     {msg && <div className={msg.includes("✓") ? "ok" : "err"}>{msg}</div>}
-    <div className="tabs"><button className={tab === "details" ? "on" : ""} onClick={() => setTab("details")}>Details</button><button className={tab === "activity" ? "on" : ""} onClick={() => setTab("activity")}>Activity & Tasks</button><button className={tab === "proposals" ? "on" : ""} onClick={() => setTab("proposals")}>Proposals & Files ({d.proposals.length})</button></div>
+    <div className="tabs"><button className={tab === "details" ? "on" : ""} onClick={() => setTab("details")}>Details</button><button className={tab === "activity" ? "on" : ""} onClick={() => setTab("activity")}>Activity & Tasks</button><button className={tab === "proposals" ? "on" : ""} onClick={() => setTab("proposals")}>Proposals & Files ({d.proposals.length})</button><button className={tab === "messages" ? "on" : ""} onClick={() => setTab("messages")}>Messages</button></div>
     {tab === "details" && <div>
       <div className="formgrid">
         <div><label className="f">Contact name</label><input value={edit.contact_name || ""} onChange={e => setEdit({ ...edit, contact_name: e.target.value })} /></div>
@@ -174,13 +191,16 @@ function LeadDetail({ id, users, priceBook, close, refresh }: any) {
         {d.tasks.map((t: any) => <div className="check" key={t.id}><span className={`st ${t.status === "done" ? "pass" : ""}`}>{t.status === "done" ? "✓" : "○"}</span><span style={{ flex: 1 }}>{t.title} <span className="muted">due {dOnly(t.due_at)}</span></span>{t.status === "open" && <button className="btn ghost small" onClick={async () => { await api(`/api/tasks/${t.id}/complete`, { method: "POST", body: {} }); load(); }}>Done</button>}</div>)}
         <div className="feed" style={{ marginTop: 12 }}><h3>Timeline</h3>{d.events.map((e: any) => <div className="ev" key={e.id}>{e.type.replaceAll("_", " ")}{e.to_state ? ` → ${e.to_state}` : ""} <span>· {dt(e.created_at)}</span></div>)}</div></div>
     </div>}
+    {tab === "messages" && <MessagesPanel lead={d.lead} />}
     {tab === "proposals" && <div>
       <div className="card"><h3>Proposals</h3>
         {d.proposals.map((p: any) => <div key={p.id} style={{ borderBottom: "1px solid #eef2f7", padding: "8px 0" }}><b>v{p.version} · {money(p.total)}</b> · {p.status}{p.signed_at ? " · ✅ signed" : ""} · payment {p.payment_status || "—"}<br />
           <span className="rowflex" style={{ marginTop: 5 }}><button className="btn ghost small" onClick={async () => { const r = await api(`/api/proposals/${p.id}/sign-link`, { method: "POST", body: {} }); navigator.clipboard && navigator.clipboard.writeText(location.origin + "/sign/" + r.token); setMsg("Sign link copied: /sign/" + r.token); }}>Copy sign link</button>
           <button className="btn ghost small" onClick={async () => { const r = await api(`/api/proposals/${p.id}/deposit`, { method: "POST", body: {} }); setMsg(`Deposit link (${r.mode}): ${r.link}`); }}>Deposit link</button>
           <a className="btn ghost small" style={{ textDecoration: "none" }} href={`/api/proposals/${p.id}/docx`}>DOCX</a>
-          <button className="btn ghost small" onClick={() => transit("PROPOSAL_SENT")}>Mark sent</button></span></div>)}
+          <button className="btn ghost small" onClick={() => transit("PROPOSAL_SENT")}>Mark sent</button>
+          <button className="btn small" onClick={async () => { const r = await api(`/api/proposals/${p.id}/send`, { method: "POST", body: { channel: "email" } }).catch((e: any) => ({ error: e.message })); setMsg(r.error ? "Send failed: " + r.error : `Proposal emailed to customer — delivery status: ${r.status}${r.status === "test_mode" ? " (test mode: recorded, not sent — add RESEND_API_KEY to go live)" : ""}`); load(); }}>✉ Send to customer</button>
+          <button className="btn ghost small" onClick={async () => { const r = await api(`/api/proposals/${p.id}/send`, { method: "POST", body: { channel: "sms" } }).catch((e: any) => ({ error: e.message })); setMsg(r.error ? "SMS failed: " + r.error : `Proposal texted — status: ${r.status}`); load(); }}>💬 Text it</button></span></div>)}
         <label className="f">Build proposal — price book only</label>
         {items.map((it, i) => <div className="rowflex" key={i}><select style={{ flex: 2 }} value={it.price_book_item_id || ""} onChange={e => { const n = [...items]; n[i] = { ...n[i], price_book_item_id: e.target.value }; setItems(n); }}><option value="">Choose item…</option>{priceBook.map((pb: any) => <option key={pb.id} value={pb.id}>{pb.name} — {money(pb.standard_price)}</option>)}</select><input style={{ width: 70 }} type="number" value={it.qty || 1} onChange={e => { const n = [...items]; n[i] = { ...n[i], qty: e.target.value }; setItems(n); }} /><button className="btn ghost small" onClick={() => setItems(items.filter((_, x) => x !== i))}>✕</button></div>)}
         <div className="rowflex" style={{ marginTop: 8 }}><button className="btn ghost small" onClick={() => setItems([...items, { qty: 1 }])}>+ Line item</button><button className="btn small" onClick={buildProposal}>Draft proposal</button></div></div>
@@ -299,6 +319,8 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump }: any) {
       <div><label className="f">Autonomy level (1 draft-only · 2 bulk-approve · 3 scoped auto)</label><select value={s.workspace.autonomy_level ?? 1} onChange={e => setS({ ...s, workspace: { ...s.workspace, autonomy_level: Number(e.target.value) } })}><option value={1}>1 — draft only</option><option value={2}>2 — bulk approve</option><option value={3}>3 — scoped auto-approval</option></select></div>
       <div><label className="f">Counts</label><p className="muted">{num(s.counts.leads)} leads · {num(s.counts.users)} users · {num(s.counts.price_items)} price items</p></div>
       <div><label className="f">Lead source API URL (for Sync)</label><input value={s.workspace.source_api_url || ""} placeholder="Leave blank to use the built-in demo source" onChange={e => setS({ ...s, workspace: { ...s.workspace, source_api_url: e.target.value } })} /></div>
+      <div><label className="f">Sender name (outgoing email)</label><input value={s.workspace.from_name || ""} placeholder="Your business name" onChange={e => setS({ ...s, workspace: { ...s.workspace, from_name: e.target.value } })} /></div>
+      <div><label className="f">Sender email (outgoing email)</label><input value={s.workspace.from_email || ""} placeholder="you@yourbusiness.com" onChange={e => setS({ ...s, workspace: { ...s.workspace, from_email: e.target.value } })} /></div>
       <div><label className="f">Slack webhook URL (new-lead + approval alerts)</label><input value={s.workspace.slack_webhook_url || ""} placeholder="https://hooks.slack.com/services/…" onChange={e => setS({ ...s, workspace: { ...s.workspace, slack_webhook_url: e.target.value } })} /></div>
       <div><label className="f">Lead source API key (if required)</label><input value={s.workspace.source_api_key || ""} placeholder="Bearer key for your source system" onChange={e => setS({ ...s, workspace: { ...s.workspace, source_api_key: e.target.value } })} /></div>
     </div><button className="btn" style={{ marginTop: 14 }} onClick={async () => { await api("/api/settings", { method: "PATCH", body: s.workspace }); setMsg("Workspace settings saved ✓"); }}>Save workspace</button></div>}
@@ -432,7 +454,10 @@ class EB extends React.Component<any, any> { state = { err: "" }; static getDeri
 function Logo({ light }: any) { return <span className="logo" style={light ? { color: "#fff" } : {}}><span className="mark">↗</span><span className="ltxt">Workpile</span></span>; }
 
 function Landing({ onAuth }: any) {
-  const [mode, setMode] = useState<"home" | "login" | "register">("home");
+  const qs = new URLSearchParams(location.search);
+  const [mode, setMode] = useState<"home" | "login" | "register" | "forgot" | "reset">(qs.get("reset") ? "reset" : "home");
+  const [resetToken] = useState(qs.get("reset") || ""); const [authNote, setAuthNote] = useState("");
+  useEffect(() => { const v = qs.get("verify"); if (v) { api("/api/auth/verify", { method: "POST", body: { token: v } }).then(() => { setAuthNote("Email verified \u2713 \u2014 sign in to continue."); setMode("login"); }).catch(() => { setAuthNote("That verification link is invalid or expired."); setMode("login"); }); } }, []);
   const [f, setF] = useState<any>({ name: "", email: "", password: "", business_name: "" });
   const [err, setErr] = useState("");
   const submit = async () => { try { setErr(""); const r = mode === "register" ? await api("/api/auth/register", { method: "POST", body: f }) : await api("/api/auth/login", { method: "POST", body: { email: f.email, password: f.password } }); onAuth(r.user); } catch (e: any) { setErr(e.message); } };
@@ -442,15 +467,22 @@ function Landing({ onAuth }: any) {
     </div>
     <div className="authForm"><div className="authCard">
       <button className="btn ghost small" onClick={() => setMode("home")}>← Back</button>
-      <h3 style={{ marginTop: 16 }}>{mode === "register" ? "Start your 30-day free trial" : "Welcome back"}</h3>
-      <p className="muted">{mode === "register" ? "No card required. Your workspace, price book, and templates are created for you." : "Sign in to your workspace."}</p>
+      {mode === "forgot" && <><h3 style={{ marginTop: 16 }}>Reset your password</h3><p className="muted">We'll email you a one-hour reset link.</p>{authNote && <div className="ok" style={{ marginBottom: 8 }}>{authNote}</div>}
+        <label className="f">Work email</label><input value={f.email} onChange={e => setF({ ...f, email: e.target.value })} placeholder="you@company.com" />
+        <button className="btn" style={{ width: "100%", marginTop: 12, padding: 12 }} onClick={async () => { const r = await api("/api/auth/forgot", { method: "POST", body: { email: f.email } }).catch((e: any) => ({ error: e.message })); if (r.reset_url) setAuthNote("Test mode (no email provider configured): use this link \u2014 " + r.reset_url); else setAuthNote(r.error ? r.error : "If that email has an account, a reset link is on its way."); }}>Send reset link \u2192</button>
+        <p className="muted" style={{ fontSize: 13, marginTop: 12 }}><a href="#" onClick={e => { e.preventDefault(); setMode("login"); }}>Back to sign in</a></p></>}
+      {mode === "reset" && <><h3 style={{ marginTop: 16 }}>Choose a new password</h3>{authNote && <div className="ok" style={{ marginBottom: 8 }}>{authNote}</div>}{err && <div className="err">{err}</div>}
+        <label className="f">New password</label><input type="password" value={f.password} onChange={e => setF({ ...f, password: e.target.value })} placeholder="8+ characters" />
+        <button className="btn" style={{ width: "100%", marginTop: 12, padding: 12 }} onClick={async () => { try { await api("/api/auth/reset", { method: "POST", body: { token: resetToken, password: f.password } }); setAuthNote("Password updated \u2014 sign in with it now."); setMode("login"); history.replaceState({}, "", "/app"); } catch (e: any) { setErr(e.message); } }}>Update password</button></>}
+      {mode !== "forgot" && mode !== "reset" && <><h3 style={{ marginTop: 16 }}>{mode === "register" ? "Start your 30-day free trial" : "Welcome back"}</h3>
+      <p className="muted">{mode === "register" ? "No card required. Your workspace, price book, and templates are created for you." : "Sign in to your workspace."}</p>{authNote && mode === "login" && <div className="ok" style={{ marginBottom: 8 }}>{authNote}</div>}
       {err && <div className="err">{err}</div>}
       {mode === "register" && <><label className="f">Your name</label><input value={f.name} onChange={e => setF({ ...f, name: e.target.value })} placeholder="Jordan Ellis" /><label className="f">Business name</label><input value={f.business_name} onChange={e => setF({ ...f, business_name: e.target.value })} placeholder="Ellis Restoration Group" /></>}
       <label className="f">Work email</label><input value={f.email} onChange={e => setF({ ...f, email: e.target.value })} placeholder="you@company.com" />
       <label className="f">Password</label><input type="password" value={f.password} onChange={e => setF({ ...f, password: e.target.value })} placeholder={mode === "register" ? "8+ characters" : "Your password"} />
       <button className="btn" style={{ width: "100%", marginTop: 12, padding: 12 }} onClick={submit}>{mode === "register" ? "Create my workspace →" : "Sign in →"}</button>
-      <p className="muted" style={{ fontSize: 13, marginTop: 12 }}>{mode === "register" ? <>Already have an account? <a href="#" onClick={e => { e.preventDefault(); setMode("login"); }}>Sign in</a></> : <>New to Workpile? <a href="#" onClick={e => { e.preventDefault(); setMode("register"); }}>Start free trial</a></>}</p>
-      <p className="muted" style={{ fontSize: 12.5 }}>Demo workspace: owner@demo.test / demo1234</p>
+      <p className="muted" style={{ fontSize: 13, marginTop: 12 }}>{mode === "register" ? <>Already have an account? <a href="#" onClick={e => { e.preventDefault(); setMode("login"); }}>Sign in</a></> : <>New to Workpile? <a href="#" onClick={e => { e.preventDefault(); setMode("register"); }}>Start free trial</a> · <a href="#" onClick={e => { e.preventDefault(); setMode("forgot"); }}>Forgot password?</a></>}</p>
+      <p className="muted" style={{ fontSize: 12.5 }}>Demo workspace: owner@demo.test / demo1234</p></>}
     </div></div></div>);
   const FEATS: [string, string, string][] = [
     ["🧹", "Backlog Clear", "Import or sync years of piled-up leads. AI triages, dedupes, scores, and buckets them hot / warm / stale with a projected clear date."],
@@ -539,10 +571,12 @@ function App() {
   const [user, setUser] = useState<any>(null); const [login, setLogin] = useState({ email: "", password: "" }); const [err, setErr] = useState("");
   const [nav, setNav] = useState<Nav>({ view: "dashboard" }); const [users, setUsers] = useState<any[]>([]); const [priceBook, setPriceBook] = useState<any[]>([]);
 const [sb, setSb] = useState(() => localStorage.getItem("wp_sb") || "open"); const [mOpen, setMOpen] = useState(false);
+  const [notifs, setNotifs] = useState<any[]>([]); const [unread, setUnread] = useState(0); const [bellOpen, setBellOpen] = useState(false); const [verifyMsg, setVerifyMsg] = useState("");
 const [pending, setPending] = useState(0); const [creating, setCreating] = useState(false); const [leadId, setLeadId] = useState<string | null>(null); const [tick, setTick] = useState(0);
   const [workspaces, setWorkspaces] = useState<any[]>([]); const [newWs, setNewWs] = useState("");
   useEffect(() => { if (user) api("/api/workspaces").then(r => setWorkspaces(r.workspaces || [])).catch(() => {}); }, [user?.id]);
   useEffect(() => { api("/api/auth/me").then(r => { setUser(r.user); setWorkspaces(r.workspaces || []); }).catch(() => {}); }, []);
+  useEffect(() => { if (user) api("/api/notifications").then(r => { setNotifs(r.notifications); setUnread(r.unread); }).catch(() => {}); }, [user, tick]);
   useEffect(() => { if (user) { api("/api/users").then(setUsers).catch(() => {}); api("/api/price-book").then(setPriceBook).catch(() => {}); api("/api/approvals").then(r => setPending(r.length)).catch(() => {}); } }, [user, tick]);
   if (!user) return <Landing onAuth={(u: any) => { setUser(u); }} />;
   const go = (n: Nav) => setNav(n);
@@ -560,7 +594,12 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
     </aside>
     <main>
       <div className="topbar"><button className="btn ghost burger" onClick={() => setMOpen(o => !o)}>☰</button><div className="search"><input type="search" placeholder="Search everything — name, phone, service… (opens Leads)" onKeyDown={e => { if (e.key === "Enter") go({ view: "leads", leads: { q: (e.target as HTMLInputElement).value } }); }} /></div>
+        <div style={{ position: "relative" }}><button className="btn ghost" onClick={() => setBellOpen(o => !o)}>🔔{unread ? <span className="cnt" style={{ background: "#dc2626", color: "#fff", borderRadius: 99, fontSize: 11, padding: "1px 7px", fontWeight: 700, marginLeft: 4 }}>{unread}</span> : null}</button>
+        {bellOpen && <div className="bellPanel"><div className="rowflex" style={{ justifyContent: "space-between" }}><b>Notifications</b><button className="btn ghost small" onClick={async () => { await api("/api/notifications/read-all", { method: "POST", body: {} }); setUnread(0); setNotifs(notifs.map(n => ({ ...n, read_at: n.read_at || "now" }))); }}>Mark all read</button></div>
+        {notifs.length === 0 && <p className="muted">Nothing yet \u2014 approvals, signatures, deposits, and new leads land here.</p>}
+        {notifs.map(n => <div key={n.id} className="bellItem" style={n.read_at ? {} : { background: "#f0f9f1" }} onClick={async () => { await api(`/api/notifications/${n.id}/read`, { method: "POST", body: {} }); setUnread(u => Math.max(0, u - (n.read_at ? 0 : 1))); if (n.lead_id) { setLeadId(n.lead_id); setBellOpen(false); } }}><b>{n.title}</b><br /><span className="muted">{n.body}</span><br /><span className="muted" style={{ fontSize: 11.5 }}>{dt(n.created_at)}</span></div>)}</div>}</div>
         <button className="btn" onClick={() => setCreating(true)}>+ New Lead</button></div>
+      {user && user.email_verified === 0 && <div className="verifyBar">✉️ Verify your email to secure your account and enable password recovery. <button className="btn ghost small" onClick={async () => { const r = await api("/api/auth/resend-verify", { method: "POST", body: {} }).catch((e: any) => ({ error: e.message })); setVerifyMsg(r.verify_url ? "Test mode \u2014 verify here: " + r.verify_url : r.error ? r.error : "Verification email sent \u2014 check your inbox."); }}>Resend verification</button>{verifyMsg && <span style={{ marginLeft: 8 }}>{verifyMsg}</span>}</div>}
       <EB>
       {nav.view === "dashboard" && <Dashboard go={go} openLead={setLeadId} />}
       {nav.view === "leads" && <Leads key={JSON.stringify(nav.leads || {}) + tick} initial={nav.leads} openLead={setLeadId} users={users} me={user} />}

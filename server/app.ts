@@ -12,6 +12,8 @@ import { getFlags, setFlag, workspaceHealth, runSynthetics } from "./admin.ts";
 import { billingStatus, createCheckout, handleBillingEvent, PLANS, ensureSubscription } from "./billing.ts";
 import { cleanupPreview, cleanupApply, insights, reactivateStale, scoreLead } from "./ai.ts";
 import { emitEvent, EVENTS } from "./integrations.ts";
+import { queueAndDeliver, notify, notifyOwners, emailConfigured, smsConfigured } from "./comms.ts";
+
 import { providerStatus, authUrl, listConnections } from "./oauth.ts";
 
 export const app = express();
@@ -71,6 +73,7 @@ function createLead(workspaceId: string, actor: string, input: any) {
   if (input.temperature_note) { /* reserved */ }
   logEvent(workspaceId, id, actor, "created", null, "NEW", { source: input.source || "manual", triage });
   emitEvent(workspaceId, "lead.created", { lead_id: id, contact_name: input.contact?.name || null, service_requested: input.service_requested || null, state: "NEW", est_value: input.est_value ?? null, source: input.source || "manual" });
+  if (owner) notify(workspaceId, [owner], "lead.created", "New lead assigned to you", `${input.contact?.name || "New lead"} — ${input.service_requested || "service request"}`, id);
   if (owner) db.prepare("INSERT INTO tasks (id,workspace_id,lead_id,assignee_id,type,title,due_at,created_at) VALUES (?,?,?,?,?,?,?,?)")
     .run(uid("tsk"), workspaceId, id, owner, "follow_up", "First contact", new Date(Date.now() + 4 * 3600000).toISOString(), now());
   return { lead: leadView(db.prepare("SELECT * FROM leads WHERE id=?").get(id)), duplicate: false };
@@ -120,6 +123,7 @@ function transition(workspaceId: string, actor: string, lead: any, toState: stri
     const approver = lead.approver_id || (db.prepare("SELECT id FROM users WHERE workspace_id=? AND role IN ('OWNER','APPROVER') ORDER BY role LIMIT 1").get(workspaceId) as any)?.id;
     db.prepare("INSERT INTO approvals (id,workspace_id,lead_id,proposal_id,submitted_by,approver_id,tier,submitted_at) VALUES (?,?,?,?,?,?,?,?)")
       .run(uid("apr"), workspaceId, lead.id, prop?.id, actor, approver, (prop?.total || 0) > 25000 ? "ceo" : "manager", now());
+    notify(workspaceId, [approver], "approval.requested", "Approval waiting on you", `${leadView(lead).contact_name || "Lead"} — proposal $${prop?.total ?? ""} needs your decision`, lead.id);
   }
   if (toState === "QUALIFIED") extra.qualified_at = now();
   const sets = ["state=?", "updated_at=?", ...Object.keys(extra).map(k => `${k}=?`)];
@@ -127,7 +131,7 @@ function transition(workspaceId: string, actor: string, lead: any, toState: stri
   const updated = db.prepare("SELECT * FROM leads WHERE id=?").get(lead.id) as any;
   logEvent(workspaceId, lead.id, actor, "state_changed", lead.state, toState, extra);
   emitEvent(workspaceId, "lead.state_changed", { lead_id: lead.id, from_state: lead.state, to_state: toState });
-  if (FINAL_STATES.includes(toState)) { finalizeLead(workspaceId, actor, updated, toState); if (actor !== "api") emitEvent(workspaceId, "outcome.final", { lead_id: lead.id, outcome: OUTCOME_OF[toState], state: toState }); }
+  if (FINAL_STATES.includes(toState)) { finalizeLead(workspaceId, actor, updated, toState); notifyOwners(workspaceId, "outcome.final", `Lead finalized: ${toState}`, `${leadView(updated).contact_name || lead.id} is now ${toState}`, lead.id); if (actor !== "api") emitEvent(workspaceId, "outcome.final", { lead_id: lead.id, outcome: OUTCOME_OF[toState], state: toState }); }
   return { lead: leadView(updated) };
 }
 
@@ -161,9 +165,9 @@ app.post("/api/auth/login", (req, res) => {
   const sid = uid("ses") + randomBytes(16).toString("hex");
   db.prepare("INSERT INTO sessions (id,user_id,created_at,expires_at) VALUES (?,?,?,?)").run(sid, u.id, now(), new Date(Date.now() + 7 * 86400000).toISOString());
   res.setHeader("Set-Cookie", `lf_session=${sid}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax`);
-  res.json({ user: { id: u.id, name: u.name, email: u.email, role: u.role, workspace_id: u.workspace_id, is_platform_admin: !!u.is_platform_admin }, session: sid });
+  res.json({ user: { id: u.id, name: u.name, email: u.email, role: u.role, workspace_id: u.workspace_id, is_platform_admin: !!u.is_platform_admin , email_verified: u.email_verified ?? 0 }, session: sid });
 });
-app.get("/api/auth/me", requireAuth, (req: any, res) => { ensureMembership(req.user); const ws = db.prepare("SELECT name FROM workspaces WHERE id=?").get(req.user.workspace_id) as any; res.json({ user: { id: req.user.id, name: req.user.name, email: req.user.email, role: req.user.role, workspace_id: req.user.workspace_id, workspace_name: ws?.name, is_platform_admin: !!req.user.is_platform_admin }, workspaces: membershipsOf(req.user.id) }); });
+app.get("/api/auth/me", requireAuth, (req: any, res) => { ensureMembership(req.user); const ws = db.prepare("SELECT name FROM workspaces WHERE id=?").get(req.user.workspace_id) as any; res.json({ user: { id: req.user.id, name: req.user.name, email: req.user.email, role: req.user.role, workspace_id: req.user.workspace_id, workspace_name: ws?.name, email_verified: req.user.email_verified ?? 0, is_platform_admin: !!req.user.is_platform_admin }, workspaces: membershipsOf(req.user.id) }); });
 
 // ---------- routes: workspace data ----------
 app.get("/api/users", requireAuth, (req: any, res) => res.json(db.prepare("SELECT id,name,email,role,approval_limit FROM users WHERE workspace_id=?").all(req.user.workspace_id)));
@@ -267,6 +271,7 @@ app.post("/api/approvals/:id/decide", requireAuth, (req: any, res) => {
   if (decision !== "approved" && !reason_code) return res.status(422).json({ error: { code: "reason_required", message: "Reject/change requires a reason code (§6.5)" } });
   db.prepare("UPDATE approvals SET decision=?, reason_code=?, edits_diff=?, decided_at=? WHERE id=?").run(decision, reason_code || null, edits_diff ? JSON.stringify(edits_diff) : null, now(), a.id);
   emitEvent(req.user.workspace_id, "approval.decided", { lead_id: a.lead_id, approval_id: a.id, decision });
+  notify(req.user.workspace_id, [a.submitted_by], "approval.decided", `Your proposal was ${decision}`, `Lead ${a.lead_id} — decision: ${decision}${reason_code ? " (" + reason_code + ")" : ""}`, a.lead_id);
   const l = db.prepare("SELECT * FROM leads WHERE id=?").get(a.lead_id) as any;
   if (decision === "approved" && l.state === "READY_FOR_APPROVAL") transition(req.user.workspace_id, req.user.id, l, "APPROVED");
   if (decision !== "approved" && l.state === "READY_FOR_APPROVAL") transition(req.user.workspace_id, req.user.id, l, "QUALIFIED");
@@ -570,6 +575,8 @@ app.post("/api/auth/register", (req: any, res) => {
   db.prepare("INSERT INTO memberships (user_id,workspace_id,role,created_at) VALUES (?,?,?,?)").run(userId, wsId, "OWNER", now());
   const sid = uid("ses"); db.prepare("INSERT INTO sessions (id,user_id,created_at,expires_at) VALUES (?,?,?,?)").run(sid, userId, now(), new Date(Date.now() + 7 * 86400000).toISOString());
   res.setHeader("Set-Cookie", `lf_session=${sid}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax`);
+  const vraw = issueAuthToken(userId, "verify", 24);
+  queueAndDeliver(wsId, { channel: "email", to: email, subject: "Verify your Workpile email", body: `Welcome to Workpile, ${name}!\n\nConfirm your email: ${req.protocol}://${req.get("host")}/app?verify=${vraw}` }).catch(() => {});
   res.status(201).json({ user: { id: userId, name, email, role: "OWNER", workspace_id: wsId }, workspaces: membershipsOf(userId) });
 });
 app.get("/api/workspaces", requireAuth, (req: any, res) => { ensureMembership(req.user); res.json({ current: req.user.workspace_id, workspaces: membershipsOf(req.user.id) }); });
@@ -622,6 +629,88 @@ app.get("/api/ai/insights", requireAuth, (req: any, res) => res.json(insights(re
 app.post("/api/ai/cleanup/preview", requireAuth, (req: any, res) => res.json(cleanupPreview(req.user.workspace_id)));
 app.post("/api/ai/cleanup/apply", requireAuth, (req: any, res) => res.json(cleanupApply(req.user.workspace_id, req.user.id, req.body.actions || [])));
 app.post("/api/ai/reactivate", requireAuth, (req: any, res) => res.json(reactivateStale(req.user.workspace_id, req.user.id)));
+
+// ---------- slice 8: outbound comms, password reset, notifications ----------
+app.get("/api/comms/status", requireAuth, (_req: any, res) => res.json({ email: emailConfigured() ? "configured" : "test_mode", sms: smsConfigured() ? "configured" : "test_mode", note: "Test mode records messages in the outbox without sending — set RESEND_API_KEY / TWILIO_* on the server to go live." }));
+app.post("/api/leads/:id/message", requireAuth, async (req: any, res) => {
+  const l = db.prepare("SELECT * FROM leads WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!l) return res.status(404).json({ error: { code: "not_found" } });
+  const v = leadView(l); const channel = req.body.channel === "sms" ? "sms" : "email";
+  const to = channel === "sms" ? v.contact_phone : v.contact_email;
+  if (!to) return res.status(422).json({ error: { code: "no_destination", message: `Lead has no ${channel === "sms" ? "phone" : "email"} on file` } });
+  if (channel === "sms" && !l.consent_contact_ok) return res.status(422).json({ error: { code: "consent_required", message: "TCPA: this lead has not consented to text messages" } });
+  const r: any = await queueAndDeliver(req.user.workspace_id, { lead_id: l.id, channel, to, subject: req.body.subject, body: String(req.body.body || "") });
+  logEvent(req.user.workspace_id, l.id, req.user.id, "message_" + channel, null, null, { status: r.status, to });
+  res.status(201).json({ id: r.id, status: r.status, channel, to });
+});
+app.get("/api/leads/:id/messages", requireAuth, (req: any, res) => { res.json(db.prepare("SELECT * FROM messages_outbox WHERE lead_id=? AND workspace_id=? ORDER BY created_at DESC").all(req.params.id, req.user.workspace_id)); });
+app.post("/api/proposals/:id/send", requireAuth, async (req: any, res) => {
+  const p = db.prepare("SELECT * FROM proposals WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!p) return res.status(404).json({ error: { code: "not_found" } });
+  const l = db.prepare("SELECT * FROM leads WHERE id=?").get(p.lead_id) as any; const v = leadView(l);
+  const token = ensureSignToken(p.id);
+  const base = `${req.protocol}://${req.get("host")}`;
+  const link = `${base}/sign/${token}`;
+  const channel = req.body.channel === "sms" ? "sms" : "email";
+  const to = channel === "sms" ? v.contact_phone : v.contact_email;
+  if (!to) return res.status(422).json({ error: { code: "no_destination" } });
+  if (channel === "sms" && !l.consent_contact_ok) return res.status(422).json({ error: { code: "consent_required", message: "TCPA: this lead has not consented to text messages" } });
+  const ws = db.prepare("SELECT name FROM workspaces WHERE id=?").get(req.user.workspace_id) as any;
+  const body = channel === "sms"
+    ? `${ws.name}: your proposal ($${p.total}) is ready to review & sign: ${link}`
+    : `Hi ${v.contact_name || "there"},\n\nYour proposal from ${ws.name} is ready — total $${p.total}.\nReview and sign securely here: ${link}\n\nQuestions? Just reply to this email.`;
+  const r: any = await queueAndDeliver(req.user.workspace_id, { lead_id: l.id, channel, to, subject: `Your proposal from ${ws.name} — $${p.total}`, body });
+  db.prepare("UPDATE proposals SET status='sent' WHERE id=?").run(p.id);
+  if (l.state === "APPROVED") { const t: any = transition(req.user.workspace_id, req.user.id, l, "PROPOSAL_SENT"); if (t.error) { /* stay APPROVED */ } }
+  logEvent(req.user.workspace_id, l.id, req.user.id, "proposal_sent", null, null, { channel, status: r.status });
+  res.status(201).json({ status: r.status, channel, to, sign_link: link });
+});
+app.get("/api/notifications", requireAuth, (req: any, res) => {
+  const rows = db.prepare("SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 50").all(req.user.id);
+  const unread = (db.prepare("SELECT COUNT(*) c FROM notifications WHERE user_id=? AND read_at IS NULL").get(req.user.id) as any).c;
+  res.json({ notifications: rows, unread });
+});
+app.post("/api/notifications/:id/read", requireAuth, (req: any, res) => { db.prepare("UPDATE notifications SET read_at=? WHERE id=? AND user_id=?").run(now(), req.params.id, req.user.id); res.json({ ok: true }); });
+app.post("/api/notifications/read-all", requireAuth, (req: any, res) => { db.prepare("UPDATE notifications SET read_at=? WHERE user_id=? AND read_at IS NULL").run(now(), req.user.id); res.json({ ok: true }); });
+// --- password reset + email verification ---
+const tokenHash = (raw: string) => createHash("sha256").update(raw).digest("hex");
+function issueAuthToken(userId: string, kind: string, hours = 1) {
+  const raw = randomBytes(24).toString("hex");
+  db.prepare("INSERT INTO auth_tokens (id,user_id,kind,token_hash,expires_at,created_at) VALUES (?,?,?,?,?,?)").run(uid("tok"), userId, kind, tokenHash(raw), new Date(Date.now() + hours * 3600000).toISOString(), now());
+  return raw;
+}
+app.post("/api/auth/forgot", async (req: any, res) => {
+  const u = db.prepare("SELECT * FROM users WHERE email=? AND active=1").get(String(req.body.email || "").toLowerCase()) as any;
+  if (u) {
+    const raw = issueAuthToken(u.id, "reset", 1);
+    const link = `${req.protocol}://${req.get("host")}/app?reset=${raw}`;
+    await queueAndDeliver(u.workspace_id, { channel: "email", to: u.email, subject: "Reset your Workpile password", body: `Hi ${u.name},\n\nReset your password within the next hour: ${link}\n\nIf you didn't ask for this, ignore this email.` });
+    if (!emailConfigured()) return res.json({ ok: true, test_mode: true, reset_url: link, message: "Email is in test mode on this deployment, so the reset link is shown here instead of emailed." });
+  }
+  res.json({ ok: true });
+});
+app.post("/api/auth/reset", (req: any, res) => {
+  const t = db.prepare("SELECT * FROM auth_tokens WHERE token_hash=? AND kind='reset' AND used_at IS NULL").get(tokenHash(String(req.body.token || ""))) as any;
+  if (!t || t.expires_at < now()) return res.status(400).json({ error: { code: "invalid_or_expired_token" } });
+  if (String(req.body.password || "").length < 8) return res.status(422).json({ error: { code: "weak_password", message: "Use at least 8 characters" } });
+  db.prepare("UPDATE users SET password_hash=? WHERE id=?").run(hashPassword(String(req.body.password)), t.user_id);
+  db.prepare("UPDATE auth_tokens SET used_at=? WHERE id=?").run(now(), t.id);
+  db.prepare("DELETE FROM sessions WHERE user_id=?").run(t.user_id);
+  res.json({ ok: true });
+});
+app.post("/api/auth/verify", (req: any, res) => {
+  const t = db.prepare("SELECT * FROM auth_tokens WHERE token_hash=? AND kind='verify' AND used_at IS NULL").get(tokenHash(String(req.body.token || ""))) as any;
+  if (!t || t.expires_at < now()) return res.status(400).json({ error: { code: "invalid_or_expired_token" } });
+  db.prepare("UPDATE users SET email_verified=1 WHERE id=?").run(t.user_id);
+  db.prepare("UPDATE auth_tokens SET used_at=? WHERE id=?").run(now(), t.id);
+  res.json({ ok: true });
+});
+app.post("/api/auth/resend-verify", requireAuth, async (req: any, res) => {
+  const raw = issueAuthToken(req.user.id, "verify", 24);
+  const link = `${req.protocol}://${req.get("host")}/app?verify=${raw}`;
+  const r: any = await queueAndDeliver(req.user.workspace_id, { channel: "email", to: req.user.email, subject: "Verify your Workpile email", body: `Hi ${req.user.name},\n\nConfirm your email: ${link}` });
+  res.json({ ok: true, delivery: r.status, ...(!emailConfigured() ? { verify_url: link } : {}) });
+});
 
 // ---------- slice 7: two-way API, OpenAPI, integrations catalog ----------
 app.get("/v1/leads", requireApiKey(["leads:read"]), (req: any, res) => {
@@ -733,7 +822,7 @@ app.patch("/api/users/:id", requireAuth, (req: any, res) => { if (!["OWNER", "AD
 
 // Workspace settings
 app.get("/api/settings", requireAuth, (req: any, res) => { const ws = db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.user.workspace_id); const counts = db.prepare("SELECT (SELECT COUNT(*) FROM leads WHERE workspace_id=?) leads, (SELECT COUNT(*) FROM users WHERE workspace_id=?) users, (SELECT COUNT(*) FROM price_book_items WHERE workspace_id=?) price_items").get(req.user.workspace_id, req.user.workspace_id, req.user.workspace_id); res.json({ workspace: ws, counts }); });
-app.patch("/api/settings", requireAuth, (req: any, res) => { if (req.user.role !== "OWNER") return res.status(403).json({ error: { code: "owner_only" } }); const b = req.body; db.prepare("UPDATE workspaces SET name=COALESCE(?,name), vertical=COALESCE(?,vertical), timezone=COALESCE(?,timezone), deposit_pct=COALESCE(?,deposit_pct), autonomy_level=COALESCE(?,autonomy_level), source_api_url=COALESCE(?,source_api_url), source_api_key=COALESCE(?,source_api_key), sync_enabled=COALESCE(?,sync_enabled), slack_webhook_url=COALESCE(?,slack_webhook_url) WHERE id=?").run(b.name ?? null, b.vertical ?? null, b.timezone ?? null, b.deposit_pct ?? null, b.autonomy_level ?? null, b.source_api_url ?? null, b.source_api_key ?? null, b.sync_enabled === undefined ? null : (b.sync_enabled ? 1 : 0), b.slack_webhook_url ?? null, req.user.workspace_id); res.json(db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.user.workspace_id)); });
+app.patch("/api/settings", requireAuth, (req: any, res) => { if (req.user.role !== "OWNER") return res.status(403).json({ error: { code: "owner_only" } }); const b = req.body; db.prepare("UPDATE workspaces SET name=COALESCE(?,name), vertical=COALESCE(?,vertical), timezone=COALESCE(?,timezone), deposit_pct=COALESCE(?,deposit_pct), autonomy_level=COALESCE(?,autonomy_level), source_api_url=COALESCE(?,source_api_url), source_api_key=COALESCE(?,source_api_key), sync_enabled=COALESCE(?,sync_enabled), slack_webhook_url=COALESCE(?,slack_webhook_url), from_name=COALESCE(?,from_name), from_email=COALESCE(?,from_email) WHERE id=?").run(b.name ?? null, b.vertical ?? null, b.timezone ?? null, b.deposit_pct ?? null, b.autonomy_level ?? null, b.source_api_url ?? null, b.source_api_key ?? null, b.sync_enabled === undefined ? null : (b.sync_enabled ? 1 : 0), b.slack_webhook_url ?? null, b.from_name ?? null, b.from_email ?? null, req.user.workspace_id); res.json(db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.user.workspace_id)); });
 
 // API keys management
 app.get("/api/api-keys", requireAuth, (req: any, res) => res.json(db.prepare("SELECT id,label,scopes,last_used_at,revoked_at FROM api_keys WHERE workspace_id=?").all(req.user.workspace_id)));
