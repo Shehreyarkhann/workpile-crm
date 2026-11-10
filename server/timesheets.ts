@@ -10,7 +10,12 @@ export function weekStartOf(d: Date): string {
   return x.toISOString().slice(0, 10);
 }
 export function ensureWeek(ws: string, weekOf: string): number {
-  const managers = db.prepare("SELECT id FROM users WHERE workspace_id=? AND active=1 AND role IN ('PM','LEAD_OWNER')").all(ws) as any[];
+  // v19: sheets exist for everyone schedulable (PM / LEAD_OWNER / OPS_ADMIN) AND for anyone
+  // who actually has a crew-schedule row that week — assigning a job must surface the sheet.
+  const managers = db.prepare("SELECT id FROM users WHERE workspace_id=? AND active=1 AND role IN ('PM','LEAD_OWNER','OPS_ADMIN')").all(ws) as any[];
+  const wkEndTs = new Date(new Date(weekOf + "T12:00:00").getTime() + 6 * 86400000).toISOString().slice(0, 10);
+  for (const r of db.prepare("SELECT DISTINCT user_id FROM job_schedule WHERE workspace_id=? AND user_id IS NOT NULL AND work_date>=? AND work_date<=?").all(ws, weekOf, wkEndTs) as any[])
+    if (!managers.some(m => m.id === r.user_id)) managers.push({ id: r.user_id });
   let created = 0;
   for (const m of managers) {
     const exists = db.prepare("SELECT id FROM timesheets WHERE workspace_id=? AND manager_id=? AND week_of=?").get(ws, m.id, weekOf);
@@ -18,6 +23,8 @@ export function ensureWeek(ws: string, weekOf: string): number {
   }
   // v3 slice 29: a sheet for every active ROSTER worker too (they have no login; the office files for them)
   const workers = db.prepare("SELECT * FROM workers WHERE workspace_id=? AND active=1").all(ws) as any[];
+  for (const r of db.prepare("SELECT DISTINCT worker_id FROM job_schedule WHERE workspace_id=? AND worker_id IS NOT NULL AND work_date>=? AND work_date<=?").all(ws, weekOf, wkEndTs) as any[])
+    if (!workers.some(w => w.id === r.worker_id)) { const wr = db.prepare("SELECT * FROM workers WHERE id=?").get(r.worker_id) as any; if (wr) workers.push(wr); }
   for (const w of workers) {
     if (w.linked_user_id && managers.some(m => m.id === w.linked_user_id)) { // linked PM/owner already has a user sheet — link it instead
       db.prepare("UPDATE timesheets SET worker_id=? WHERE workspace_id=? AND manager_id=? AND week_of=? AND worker_id IS NULL").run(w.id, ws, w.linked_user_id, weekOf); continue; }

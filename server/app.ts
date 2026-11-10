@@ -645,7 +645,8 @@ app.get("/api/schedule", requireAuth, (req: any, res) => {
   const byUserDay: Record<string, Set<string>> = {};
   for (const r of rows) { const k = (r.worker_id || r.user_id) + "|" + r.work_date; (byUserDay[k] = byUserDay[k] || new Set()).add(r.lead_id); }
   for (const r of rows) r.conflict = (byUserDay[(r.worker_id || r.user_id) + "|" + r.work_date]?.size || 0) > 1;
-  res.json({ week_of: week, rows });
+  const schedJobs = db.prepare("SELECT j.id, j.lead_id, j.scheduled_start, j.scheduled_end, j.stage, l.service_requested, c.name contact_name FROM jobs j JOIN leads l ON l.id=j.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE j.workspace_id=? AND j.scheduled_start IS NOT NULL AND date(j.scheduled_start)>=? AND date(j.scheduled_start)<=? AND j.stage NOT IN ('CANCELLED','CLOSED') ORDER BY j.scheduled_start").all(ws, week, wkEnd) as any[];
+  res.json({ week_of: week, rows, jobs: schedJobs });
 });
 app.post("/api/schedule", requireAuth, (req: any, res) => {
   const ws = req.user.workspace_id; const b = req.body || {};
@@ -658,6 +659,7 @@ app.post("/api/schedule", requireAuth, (req: any, res) => {
   db.prepare("INSERT INTO job_schedule (id,workspace_id,lead_id,user_id,worker_id,work_date,note,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?)").run(id, ws, lead.id, w.linked_user_id || null, w.id, String(b.work_date || todayStr()), String(b.note || ""), req.user.id, now());
   if (w.linked_user_id) notify(ws, [w.linked_user_id], "scheduled", `🗓 You're scheduled — ${String(b.work_date || todayStr())}`, "You've been assigned to a job that day. Open Ops Console → Crew schedule for details.");
   const conflicts = db.prepare("SELECT s.id, s.lead_id, l.service_requested FROM job_schedule s JOIN leads l ON l.id=s.lead_id WHERE s.workspace_id=? AND s.work_date=? AND s.lead_id!=? AND (s.worker_id=? OR s.user_id=?)").all(ws, String(b.work_date || todayStr()), lead.id, w.id, w.linked_user_id || "__none__") as any[];
+  ensureWeek(ws, weekStartOf(new Date(String(b.work_date || todayStr()) + "T12:00:00")));
   const created = db.prepare("SELECT * FROM job_schedule WHERE id=?").get(id) as any;
   const mappedConflicts = conflicts.map((c: any) => ({ schedule_id: c.id, lead_id: c.lead_id, service_requested: c.service_requested, warning: "Same worker already booked that day" }));
   if (conflicts.length >= 2) mappedConflicts.push({ schedule_id: null, lead_id: lead.id, service_requested: lead.service_requested, warning: `Overload: this worker now has ${conflicts.length + 1} assignments that day` } as any);
@@ -746,7 +748,10 @@ app.get("/api/time/grid", requireAuth, (req: any, res) => { // weekly workers x 
   const wkEnd = new Date(new Date(week + "T12:00:00").getTime() + 6 * 86400000).toISOString().slice(0, 10);
   const entries = db.prepare("SELECT t.*, l.service_requested FROM time_entries t JOIN leads l ON l.id=t.lead_id WHERE t.workspace_id=? AND t.entry_date>=? AND t.entry_date<=? ORDER BY t.entry_date").all(ws, week, wkEnd) as any[];
   const workers = listWorkers(ws).filter((w: any) => w.active);
-  const jobs = db.prepare("SELECT DISTINCT t.lead_id, l.service_requested, c.name contact_name FROM time_entries t JOIN leads l ON l.id=t.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE t.workspace_id=? AND t.entry_date>=? AND t.entry_date<=?").all(ws, week, wkEnd);
+  const jobs = db.prepare("SELECT DISTINCT t.lead_id, l.service_requested, c.name contact_name FROM time_entries t JOIN leads l ON l.id=t.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE t.workspace_id=? AND t.entry_date>=? AND t.entry_date<=?").all(ws, week, wkEnd) as any[];
+  const seenJ = new Set(jobs.map((x: any) => x.lead_id));
+  for (const sj of db.prepare("SELECT DISTINCT s.lead_id, l.service_requested, c.name contact_name FROM job_schedule s JOIN leads l ON l.id=s.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE s.workspace_id=? AND s.work_date>=? AND s.work_date<=?").all(ws, week, wkEnd) as any[]) if (!seenJ.has(sj.lead_id)) { jobs.push(sj); seenJ.add(sj.lead_id); }
+  for (const sj of db.prepare("SELECT DISTINCT j.lead_id, l.service_requested, c.name contact_name FROM jobs j JOIN leads l ON l.id=j.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE j.workspace_id=? AND j.scheduled_start IS NOT NULL AND date(j.scheduled_start)>=? AND date(j.scheduled_start)<=? AND j.stage NOT IN ('CANCELLED','CLOSED')").all(ws, week, wkEnd) as any[]) if (!seenJ.has(sj.lead_id)) { jobs.push(sj); seenJ.add(sj.lead_id); }
   res.json({ week_of: week, workers, jobs, entries });
 });
 app.post("/api/time/grid", requireAuth, (req: any, res) => { // bulk save: [{lead_id, worker_name|worker_id, entry_date, hours, note}]
@@ -807,10 +812,34 @@ app.post("/api/jobs/:id/stage", requireAuth, (req: any, res) => {
   if (!j) return res.status(404).json({ error: { code: "not_found" } });
   const to = String(req.body.to || "");
   if (!JOB_STAGES.includes(to)) return res.status(422).json({ error: { code: "bad_stage" } });
+  // v19 scheduling workflow: entering SCHEDULED assigns a date+time (picker value, or the
+  // stored one, or tomorrow 09:00 by default), syncs the job's crew into the Ops crew
+  // schedule for that day, and makes sure that week's timesheets exist.
+  let schedInfo: any = null;
+  if (to === "SCHEDULED") {
+    let start = String(req.body.scheduled_start || j.scheduled_start || "");
+    let defaulted = false;
+    if (!start) { const d = new Date(Date.now() + 86400000); d.setHours(9, 0, 0, 0); start = d.toISOString(); defaulted = true; }
+    const startMs = new Date(start).getTime();
+    const end = String(req.body.scheduled_end || "") || (j.scheduled_end && j.scheduled_start === start ? j.scheduled_end : new Date((isNaN(startMs) ? Date.now() : startMs) + 4 * 3600000).toISOString());
+    db.prepare("UPDATE jobs SET scheduled_start=?, scheduled_end=? WHERE id=?").run(start, end, j.id);
+    const date = start.slice(0, 10);
+    let crewSynced = 0;
+    for (const c of db.prepare("SELECT * FROM job_crew WHERE workspace_id=? AND lead_id=?").all(req.user.workspace_id, j.lead_id) as any[]) {
+      const dupe = db.prepare("SELECT id FROM job_schedule WHERE lead_id=? AND work_date=? AND (worker_id=? OR user_id=?)").get(j.lead_id, date, c.worker_id || "__none__", c.user_id || "__none__");
+      if (!dupe) { db.prepare("INSERT INTO job_schedule (id,workspace_id,lead_id,user_id,worker_id,work_date,note,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?)").run(uid("sch"), req.user.workspace_id, j.lead_id, c.user_id || null, c.worker_id || null, date, "Job scheduled", req.user.id, now()); crewSynced++; }
+    }
+    ensureWeek(req.user.workspace_id, weekStartOf(new Date(date + "T12:00:00")));
+    schedInfo = { scheduled_start: start, scheduled_end: end, crew_scheduled: crewSynced, defaulted };
+  }
+  if (to === "AWAITING_SCHEDULING" && j.scheduled_start) { // unschedule cleanly
+    db.prepare("DELETE FROM job_schedule WHERE workspace_id=? AND lead_id=? AND work_date=?").run(req.user.workspace_id, j.lead_id, String(j.scheduled_start).slice(0, 10));
+    db.prepare("UPDATE jobs SET scheduled_start=NULL, scheduled_end=NULL WHERE id=?").run(j.id);
+  }
   db.prepare("UPDATE jobs SET stage=?, closed_at=?, updated_at=? WHERE id=?").run(to, to === "CLOSED" ? now() : j.closed_at, now(), j.id);
   if (to === "INVOICED" && j.invoice_status === "not_ready") db.prepare("UPDATE jobs SET invoice_status='invoiced' WHERE id=?").run(j.id);
   logEvent(req.user.workspace_id, j.lead_id, req.user.id, "job_stage", j.stage, to, { job_id: j.id });
-  res.json(jobView(db.prepare("SELECT * FROM jobs WHERE id=?").get(j.id)));
+  const view = jobView(db.prepare("SELECT * FROM jobs WHERE id=?").get(j.id)); if (schedInfo) (view as any).scheduling = schedInfo; res.json(view);
 });
 app.patch("/api/jobs/:id", requireAuth, (req: any, res) => {
   const j = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
@@ -1293,7 +1322,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v18", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
+app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v19", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {
   const target = db.prepare("SELECT * FROM users WHERE id=?").get(String(req.body?.user_id || "")) as any;

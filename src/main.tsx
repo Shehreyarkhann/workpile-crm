@@ -100,7 +100,7 @@ function HomeDash({ go, openLead, m, d }: any) {
   const auto = home.agent.automations || {};
   const autoNames: [string, string][] = [["auto_score", "Scoring"], ["auto_assign", "Assignment"], ["auto_dedupe", "De-dupe"], ["auto_reactivate", "Reactivation"]];
   const todayStr = new Date().toISOString().slice(0, 10);
-  const KINDC: Record<string, [string, string]> = { callback: ["#fef9c3", "📞"], visit: ["#fce7f3", "📍"], schedule: ["#dbeafe", "👷"], task: ["#dcfce7", "✅"], followup: ["#ede9fe", "🔁"], invoice: ["#ffedd5", "🧾"], doc: ["#fee2e2", "📄"], expiry: ["#fef3c7", "⏳"] };
+  const KINDC: Record<string, [string, string]> = { callback: ["#fef9c3", "📞"], visit: ["#fce7f3", "📍"], schedule: ["#dbeafe", "👷"], task: ["#dcfce7", "✅"], followup: ["#ede9fe", "🔁"], invoice: ["#ffedd5", "🧾"], doc: ["#fee2e2", "📄"], expiry: ["#fef3c7", "⏳"], job: ["#e0e7ff", "🛠"] };
   const week: any[] = [...Array(7)].map((_, i) => { const dt = new Date(Date.now() + i * 86400000); return { key: dt.toISOString().slice(0, 10), dow: dt.toLocaleDateString(undefined, { weekday: "narrow" }), num: dt.getDate(), has: home.upcoming.some((u: any) => u.date === dt.toISOString().slice(0, 10)) }; });
   const byDay = new Map<string, any[]>(); for (const u of home.upcoming) { if (!byDay.has(u.date)) byDay.set(u.date, []); byDay.get(u.date)!.push(u); }
   const STC: Record<string, string> = { NEW: "info", WORKING: "warn", QUALIFIED: "info", PROPOSAL: "warn", SENT: "info", FOLLOWUP: "warn", WON: "pass", LOST: "fail", NO_RESPONSE: "warn", CLOSED: "info", JUNK: "fail" };
@@ -656,12 +656,13 @@ function ScheduleCard() {
   const days = [0, 1, 2, 3, 4, 5, 6].map(i => { const d = new Date(week + "T12:00:00"); d.setDate(d.getDate() + i); return { iso: d.toISOString().slice(0, 10), lab: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][i] + " " + (d.getMonth() + 1) + "/" + d.getDate() }; });
   const crew = users.filter((u: any) => ["PM", "LEAD_OWNER", "OPS_ADMIN"].includes(u.role) || (data?.rows || []).some((r: any) => r.user_id === u.id));
   const cell = (uid2: string, iso: string) => (data?.rows || []).filter((r: any) => r.user_id === uid2 && r.work_date === iso);
-  const assign = async () => { if (!sel || !jobId) return; const r = await api("/api/schedule", { method: "POST", body: { user_id: sel.user_id, lead_id: jobId, work_date: sel.date, note } }).catch((e: any) => ({ error: e.message })); if ((r as any).error) setMsg("Couldn't assign: " + (r as any).error); else { setMsg("Scheduled ✓ — they've been notified"); setSel(null); setJobId(""); setNote(""); load(); } };
+  const assign = async () => { if (!sel || !jobId) return; const r = await api("/api/schedule", { method: "POST", body: { user_id: sel.user_id, lead_id: jobId, work_date: sel.date, note } }).catch((e: any) => ({ error: e.message })); if ((r as any).error) setMsg("Couldn't assign: " + (r as any).error); else { setMsg("Scheduled ✓ — they've been notified"); setSel(null); setJobId(""); setNote(""); load(); window.dispatchEvent(new Event("wp-ops")); } };
   return (<div className="card"><h3>Crew schedule — who's on which job, this week</h3>
     <div className="rowflex" style={{ marginBottom: 8 }}><button className="btn ghost small" onClick={() => shift(-1)}>← Prev week</button><b>Week of {week}</b><button className="btn ghost small" onClick={() => shift(1)}>Next week →</button><button className="btn ghost small" onClick={() => setWeek(mondayOf(new Date()))}>This week</button></div>
+    {(data?.jobs || []).length > 0 && <div style={{ marginBottom: 8 }}><b style={{ fontSize: 13 }}>🛠 Jobs starting this week</b><div className="rowflex" style={{ marginTop: 4 }}>{(data?.jobs || []).map((jb: any) => <span key={jb.id} className="schedChip" style={{ cursor: "pointer" }} onClick={() => (window as any).wpOpenJob?.(jb.id)}>🛠 {String(jb.scheduled_start).slice(5, 10)} · {String(jb.scheduled_start).slice(11, 16)} — {jb.service_requested} · {jb.contact_name}</span>)}</div></div>}
     {msg && <div className="ok">{msg}</div>}
     <div style={{ overflowX: "auto" }}><table><thead><tr><th>Worker</th>{days.map(d => <th key={d.iso}>{d.lab}</th>)}</tr></thead><tbody>
-      {crew.map((u: any) => <tr key={u.id}><td><b>{u.name}</b><br /><span className="muted">{u.role}</span></td>{days.map(d => <td key={d.iso} style={{ minWidth: 118, verticalAlign: "top" }}>{cell(u.id, d.iso).map((e: any) => <div key={e.id} className={"schedChip" + (e.conflict ? " warn" : "")}><span style={{ flex: 1 }}>{e.conflict ? "⚠ " : ""}{e.service_requested} — {e.contact_name}</span><button className="btn ghost small" style={{ padding: "0 4px" }} onClick={async () => { await api("/api/schedule/" + e.id, { method: "DELETE" }); load(); }}>✕</button></div>)}<button className="btn ghost small" onClick={() => setSel({ user_id: u.id, date: d.iso })}>+ Assign</button></td>)}</tr>)}
+      {crew.map((u: any) => <tr key={u.id}><td><b>{u.name}</b><br /><span className="muted">{u.role}</span></td>{days.map(d => <td key={d.iso} style={{ minWidth: 118, verticalAlign: "top" }}>{cell(u.id, d.iso).map((e: any) => <div key={e.id} className={"schedChip" + (e.conflict ? " warn" : "")}><span style={{ flex: 1 }}>{e.conflict ? "⚠ " : ""}{e.service_requested} — {e.contact_name}</span><button className="btn ghost small" style={{ padding: "0 4px" }} onClick={async () => { await api("/api/schedule/" + e.id, { method: "DELETE" }); load(); window.dispatchEvent(new Event("wp-ops")); }}>✕</button></div>)}<button className="btn ghost small" onClick={() => setSel({ user_id: u.id, date: d.iso })}>+ Assign</button></td>)}</tr>)}
       {crew.length === 0 && <tr><td colSpan={8} className="muted">No crew members yet.</td></tr>}
     </tbody></table></div>
     <p className="muted">⚠ marks a double-booking — same person, two jobs, one day. Assigning notifies the worker.</p>
@@ -678,6 +679,7 @@ function TimesheetsCard() {
   const [editId, setEditId] = useState(""); const [days, setDays] = useState<any>({}); const [notes, setNotes] = useState(""); const [msg, setMsg] = useState("");
   const load = () => { api("/api/timesheets?week=" + week).then(setData).catch(() => {}); };
   useEffect(load, [week]);
+  useEffect(() => { const h = () => load(); window.addEventListener("wp-ops", h); return () => window.removeEventListener("wp-ops", h); });
   const shift = (n: number) => { const d = new Date(week + "T12:00:00"); d.setDate(d.getDate() + n * 7); setWeek(mondayOf(d)); };
   const startEdit = (r: any) => { setEditId(r.id); setDays(r.days || {}); setNotes(r.notes || ""); };
   const save = async (r: any) => { await api("/api/timesheets", { method: "POST", body: { manager_id: r.manager_id, week_of: week, days, notes } }); setEditId(""); setMsg(`Timesheet saved for ${r.manager} ✓`); load(); };
@@ -1651,19 +1653,22 @@ function JobsBoard({ openJob }: any) {
 
 function JobDetail({ id, users, priceBook, close, refresh, openLead }: any) {
   const [d, setD] = useState<any>(null); const [tab, setTab] = useState("overview"); const [msg, setMsg] = useState("");
-  const [co, setCo] = useState<any>({ delta_scope: "", delta_total: "" }); const [sched, setSched] = useState<any>({ worker_name: "", work_date: new Date().toISOString().slice(0, 10), note: "" });
+  const [co, setCo] = useState<any>({ delta_scope: "", delta_total: "" }); const [sched, setSched] = useState<any>({ worker_name: "", work_date: new Date().toISOString().slice(0, 10), note: "" }); const [schedPick, setSchedPick] = useState<any>(null);
   const load = () => { api("/api/jobs/" + id).then(setD).catch(e => setMsg(e.message)); };
   useEffect(load, [id]);
   useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key === "Escape") close(); }; window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, []);
   if (!d) return <div className="modalWrap"><div className="modal">Loading job… {msg}</div></div>;
   const j = d.job;
-  const stageTo = async (st: string) => { await api(`/api/jobs/${id}/stage`, { method: "POST", body: { to: st } }); toast(`Job moved to ${st.replaceAll("_", " ")} ✓`); load(); refresh && refresh(); };
+  const stageTo = async (st: string) => { if (st === "SCHEDULED") { const tmr = new Date(Date.now() + 86400000); setSchedPick({ date: j.scheduled_start ? String(j.scheduled_start).slice(0, 10) : tmr.toISOString().slice(0, 10), time: j.scheduled_start ? String(j.scheduled_start).slice(11, 16) : "09:00" }); return; } await api(`/api/jobs/${id}/stage`, { method: "POST", body: { to: st } }); toast(`Job moved to ${st.replaceAll("_", " ")} ✓`); load(); refresh && refresh(); };
+  const doSchedule = async () => { if (!schedPick) return; const r = await api(`/api/jobs/${id}/stage`, { method: "POST", body: { to: "SCHEDULED", scheduled_start: `${schedPick.date}T${schedPick.time}:00` } }); setSchedPick(null); toast(`🗓 Scheduled for ${schedPick.date} at ${schedPick.time} — crew synced to the Ops schedule${r.scheduling?.crew_scheduled ? ` (${r.scheduling.crew_scheduled} crew)` : ""}, timesheets ready for that week`); load(); refresh && refresh(); };
   return (<div className="modalWrap"><div className="modal">
     <div className="rowflex" style={{ justifyContent: "space-between" }}><h3 style={{ margin: 0 }}>{j.service_requested} — {j.contact_name}</h3><button className="btn ghost small" onClick={close}>✕ Close</button></div>
     <p className="muted" style={{ margin: "6px 0" }}>{j.contact_phone || ""} {j.contact_email ? "· " + j.contact_email : ""} · {j.location || ""} · job value <b style={{ color: "#14532d" }}>{money(j.value)}</b> · labor {money(j.labor_cost)} ({j.labor_pct ?? 0}% of value)</p>
     {d.origin && <div className="crumbs"><span className="clickable" onClick={() => openLead && openLead(d.origin.lead_id)}>🎯 Lead: {d.origin.service_requested || "originating lead"}</span>{d.origin.proposal_id ? <span className="clickable" onClick={() => openLead && openLead(d.origin.lead_id)}>→ 📄 Proposal {money(d.origin.proposal_total)} · {d.origin.proposal_status}</span> : <span className="muted">→ no signed proposal (manual / legacy win)</span>}<span>→ 🔧 This job</span></div>}
     <div className="path">{JOB_STAGES.filter(st => st !== "ON_HOLD" && st !== "CANCELLED").map(st => <div key={st} className={`stage ${st === j.stage ? "cur" : ""}`} onClick={() => stageTo(st)}>{st.replaceAll("_", " ")}</div>)}</div>
     <p className="muted" style={{ fontSize: 12 }}>Click any stage — jobs move both ways. Current: <b>{j.stage.replaceAll("_", " ")}</b></p>
+    {j.scheduled_start && ["SCHEDULED", "IN_PROGRESS"].includes(j.stage) && <p style={{ fontSize: 13, margin: "2px 0 6px" }}>🗓 <b>Scheduled: {String(j.scheduled_start).slice(0, 10)} · {String(j.scheduled_start).slice(11, 16)}</b> <span className="muted">— on the Ops Console crew schedule that day, with timesheets for the week.</span></p>}
+    {schedPick && <div className="card" style={{ background: "#f0fdf4", margin: "6px 0 10px" }}><b>🗓 Schedule this job</b><div className="rowflex" style={{ marginTop: 8 }}><input type="date" value={schedPick.date} onChange={e => setSchedPick({ ...schedPick, date: e.target.value })} /><input type="time" value={schedPick.time} onChange={e => setSchedPick({ ...schedPick, time: e.target.value })} /><button className="btn small" onClick={doSchedule}>Schedule it →</button><button className="btn ghost small" onClick={() => setSchedPick(null)}>Cancel</button></div><p className="muted" style={{ fontSize: 12, margin: "6px 0 0" }}>The job's crew lands on the Ops crew schedule for that day and the week's timesheets are created — one move, whole workflow.</p></div>}
     {msg && <div className="ok">{msg}</div>}
     <div className="tabs"><button className={tab === "overview" ? "on" : ""} onClick={() => setTab("overview")}>Overview & Paperwork</button><button className={tab === "crew" ? "on" : ""} onClick={() => setTab("crew")}>Crew & Time</button><button className={tab === "schedule" ? "on" : ""} onClick={() => setTab("schedule")}>Schedule ({d.schedule.length})</button><button className={tab === "feed" ? "on" : ""} onClick={() => setTab("feed")}>Feed & Notes</button></div>
     {tab === "overview" && <div>
@@ -1759,6 +1764,7 @@ function TimeGridCard() {
   const [g, setG] = useState<any>(null); const [week, setWeek] = useState(""); const [edits, setEdits] = useState<Record<string, string>>({}); const [msg, setMsg] = useState("");
   const load = (w?: string) => { api("/api/time/grid" + (w ? "?week=" + w : "")).then(r => { setG(r); setWeek(r.week_of); }).catch(() => {}); };
   useEffect(() => { load(); }, []);
+  useEffect(() => { const h = () => load(); window.addEventListener("wp-ops", h); return () => window.removeEventListener("wp-ops", h); });
   if (!g) return null;
   const days = [...Array(7)].map((_, i) => new Date(new Date(g.week_of + "T12:00:00").getTime() + i * 86400000).toISOString().slice(0, 10));
   const cellVal = (workerId: string, leadId: string, date: string) => { const key = `${workerId}|${leadId}|${date}`; if (edits[key] !== undefined) return edits[key]; const es = g.entries.filter((e: any) => e.worker_id === workerId && e.lead_id === leadId && e.entry_date === date); return es.length ? String(es.reduce((a: number, e: any) => a + e.hours, 0)) : ""; };
@@ -1949,7 +1955,7 @@ function CalendarView({ openLead, embedded }: any) {
   const y = cur.getFullYear(), m = cur.getMonth(); const first = new Date(y, m, 1).getDay(); const days = new Date(y, m + 1, 0).getDate();
   const cells: any[] = [...Array(first).fill(null), ...[...Array(days)].map((_, i) => i + 1)];
   const dstr = (d: number) => `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-  const KINDS: Record<string, [string, string]> = { task: ["✅", "Task"], task_done: ["☑️", "Task done"], callback: ["📞", "Callback"], schedule: ["👷", "Crew on site"], followup: ["🔁", "Follow-up"], visit: ["📍", "Site visit"] };
+  const KINDS: Record<string, [string, string]> = { task: ["✅", "Task"], task_done: ["☑️", "Task done"], callback: ["📞", "Callback"], schedule: ["👷", "Crew on site"], followup: ["🔁", "Follow-up"], visit: ["📍", "Site visit"], job: ["🛠", "Job starts"] };
   const visible = evs.filter(e => (showDone || e.kind !== "task_done") && (kindF === "all" || e.kind === kindF || (kindF === "task" && e.kind === "task_done")));
   const byDay = (d: number) => visible.filter(e => e.date === dstr(d));
   const dayList = visible.filter(e => e.date === sel).sort((a, b) => (KINDS[a.kind]?.[1] || "").localeCompare(KINDS[b.kind]?.[1] || ""));
