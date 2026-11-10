@@ -792,8 +792,9 @@ app.post("/portal/:token/upload", express.urlencoded({ extended: false }), (req:
 });
 
 // ---------- slice 4: own billing (§18/§26 C4) ----------
+app.get("/api/plans", (_req: any, res) => { res.json({ plans: Object.entries(PLANS).map(([key, p]) => ({ key, ...p, save_pct: p.list_price > 0 ? Math.round((1 - p.annual_price / p.list_price) * 100) : 0 })) }); });
 app.get("/api/billing", requireAuth, needPerm("can_billing"), (req: any, res) => res.json({ ...billingStatus(req.user.workspace_id), plans: PLANS }));
-app.post("/api/billing/checkout", requireAuth, needPerm("can_billing"), async (req: any, res) => { const base = `${req.protocol}://${req.get("host")}`; res.json(await createCheckout(req.user.workspace_id, req.body.plan, base)); });
+app.post("/api/billing/checkout", requireAuth, needPerm("can_billing"), async (req: any, res) => { const base = `${req.protocol}://${req.get("host")}`; res.json(await createCheckout(req.user.workspace_id, req.body.plan, base, req.body.period === "monthly" ? "monthly" : "annual")); });
 app.post("/api/billing/change-plan", requireAuth, needPerm("can_billing"), (req: any, res) => {
   if (req.user.role !== "OWNER") return res.status(403).json({ error: { code: "owner_only" } });
   if (!PLANS[req.body.plan]) return res.status(422).json({ error: { code: "unknown_plan" } });

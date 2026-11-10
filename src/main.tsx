@@ -702,6 +702,39 @@ function IntegrationConfig({ id, s, setS, keys, hooks, oauth, loadAll, onJump, m
   </div></div>;
 }
 
+const PLANS_FALLBACK: any[] = [
+  { key: "solo", name: "Solo", seats: 1, list_price: 29.99, annual_price: 19.99, leads_per_month: 500, save_pct: 33, blurb: "For the owner who IS the office — clear the pile, send proposals, get approvals from your phone." },
+  { key: "team", name: "Team", seats: 2, list_price: 69.99, annual_price: 49.99, leads_per_month: 2000, save_pct: 29, blurb: "Owner + coordinator: one sells, one runs the pile. The classic two-seat shop." },
+  { key: "crew", name: "Crew", seats: 3, list_price: 109.99, annual_price: 79.99, leads_per_month: 5000, save_pct: 27, blurb: "Owner + coordinator + a field lead: scheduling, crew time, and labor costing included." },
+  { key: "enterprise", name: "Enterprise", seats: 0, list_price: 0, annual_price: 0, leads_per_month: 1000000, save_pct: 0, custom: true, blurb: "4+ seats, multiple locations, custom integrations and onboarding — priced to your operation." },
+];
+function PlanCards({ onAction, currentKey }: any) {
+  const [period, setPeriod] = useState<"monthly" | "annual">("annual");
+  const [plans, setPlans] = useState<any[]>(PLANS_FALLBACK);
+  useEffect(() => { api("/api/plans").then(r => { if (r.plans?.length) setPlans(r.plans); }).catch(() => {}); }, []);
+  const maxSave = Math.max(...plans.filter(p => !p.custom).map(p => p.save_pct || 0));
+  return (<div>
+    <div className="rowflex" style={{ justifyContent: "center", margin: "4px 0 2px" }}>
+      <div className="billtoggle">
+        <button className={period === "monthly" ? "on" : ""} onClick={() => setPeriod("monthly")}>Monthly</button>
+        <button className={period === "annual" ? "on" : ""} onClick={() => setPeriod("annual")}>Yearly<span className="saveTag">Save up to {maxSave}%</span></button>
+      </div>
+    </div>
+    {period === "annual" && <div className="salebar"><span className="tag">SALE</span><span>Yearly billing is on sale — up to {maxSave}% off the regular monthly price, locked in when you subscribe.</span></div>}
+    <div className="featGrid" style={{ marginTop: 14 }}>{plans.map((p: any) => <div className="feat" key={p.key} style={currentKey === p.key ? { borderColor: "#166534", borderWidth: 2 } : {}}>
+      {period === "annual" && !p.custom && <span className="savebadge">SAVE {p.save_pct}%</span>}
+      <span className="muted" style={{ textTransform: "uppercase", fontWeight: 700, fontSize: 12 }}>{p.name}{p.seats ? ` · ${p.seats} seat${p.seats > 1 ? "s" : ""}` : ""}</span>
+      {p.custom ? <h4 style={{ fontSize: 24 }}>Custom</h4> : period === "annual"
+        ? <h4 style={{ fontSize: 24 }}><s className="muted" style={{ fontSize: 16 }}>{px(p.list_price)}</s> {px(p.annual_price)}/mo</h4>
+        : <h4 style={{ fontSize: 24 }}>{px(p.list_price)}/mo</h4>}
+      <p>{p.custom ? p.blurb : period === "annual"
+        ? <>Billed annually ({px(p.annual_price * 12)}/yr) · {num(p.leads_per_month)} leads/mo · {p.blurb}</>
+        : <>Billed monthly · {num(p.leads_per_month)} leads/mo · {p.blurb} <span className="muted">Or {px(p.annual_price)}/mo on yearly — save {p.save_pct}%.</span></>}</p>
+      <button className="btn" style={{ marginTop: 12 }} disabled={currentKey === p.key} onClick={() => onAction && onAction(p.key, period)}>{currentKey === p.key ? "Current plan" : p.custom ? "Talk to us" : currentKey ? `Switch to ${p.name}` : "Start free"}</button>
+    </div>)}</div>
+  </div>);
+}
+
 const px = (n: number) => "$" + Number(n).toFixed(2);
 function Billing() {
   const [b, setB] = useState<any>(null);
@@ -716,12 +749,7 @@ function Billing() {
       <div className="kpi"><div className="lab">AI actions</div><div className="val">{num(b.usage.ai_actions_this_month)}</div><div className="hint">of {num(b.usage.ai_limit)}</div></div>
     </div>
     {b.usage.leads_pct >= 80 && <div className="err">You're at {b.usage.leads_pct}% of your monthly lead cap — ingestion pauses at 100%, approvals never do.</div>}
-    <div className="card"><h3>Plans — per seat, billed annually at the sale price</h3>
-      <div className="grid3">{Object.entries(b.plans).map(([k, p]: any) => <div className="feat" key={k} style={b.plan.key === k ? { borderColor: "#166534", borderWidth: 2 } : {}}><span className="muted" style={{ textTransform: "uppercase", fontWeight: 700, fontSize: 12 }}>{p.name} · {p.seats ? `${p.seats} seat${p.seats > 1 ? "s" : ""}` : "Custom seats"}</span>
-        {p.custom ? <h4 style={{ fontSize: 24 }}>Custom</h4> : <h4 style={{ fontSize: 24 }}><s className="muted" style={{ fontSize: 16 }}>{px(p.list_price)}</s> {px(p.annual_price)}/mo</h4>}
-        <p>{p.custom ? p.blurb : <>Billed annually ({px(p.annual_price * 12)}/yr) · {p.blurb}</>}</p>
-        <button className="btn" style={{ marginTop: 10 }} disabled={b.plan.key === k} onClick={async () => { const r = await api("/api/billing/checkout", { method: "POST", body: { plan: k } }); if (r.url) location.href = r.url; else alert(r.message || "Recorded — checkout opens when Stripe is configured."); }}>{b.plan.key === k ? "Current plan" : p.custom ? "Talk to us" : `Switch to ${p.name}`}</button></div>)}</div>
-      <p className="muted">Sale pricing is the annual plan — that's the price Stripe charges when billing is configured. Month-to-month is the struck-through list price.</p></div>
+    <div className="card"><h3>Plans — per seat; yearly is on sale</h3><PlanCards currentKey={b.plan.key} onAction={async (k: string, period: string) => { const r = await api("/api/billing/checkout", { method: "POST", body: { plan: k, period } }); if (r.url) location.href = r.url; else alert(r.message || "Recorded — checkout opens when Stripe is configured."); }} /></div>
   </div>);
 }
 
@@ -866,8 +894,7 @@ function Landing({ onAuth }: any) {
       <div className="tableWrap"><table className="cmp"><thead><tr><th></th><th>Workpile</th><th>Salesforce</th></tr></thead><tbody>
         {[["Backlog clearing & AI triage built in", 1, 0], ["Completeness Gate before approvals", 1, 0], ["Proposals generated from your price book", 1, 0], ["Final outcomes delivered into your other systems", 1, 0], ["Pipeline, Path, reports & dashboards", 1, 1], ["Live in an afternoon, no admin required", 1, 0], ["Per-seat pricing from $19.99/mo (annual)", 1, 0]].map(([t, a, b]: any) => <tr key={t}><td>{t}</td><td className={a ? "yes" : "no"}>{a ? "✓ Included" : "—"}</td><td className={b ? "yes" : "no"}>{b ? "✓" : "Add-on / custom build"}</td></tr>)}
       </tbody></table></div></div>
-    <div className="section" id="pricing"><h2>Pricing — 30 days free, no card</h2><div className="featGrid">
-      {[["Solo", "$19.99/mo", "1 seat · was $29.99 · billed annually ($239.88/yr) · 500 leads/mo · the owner-run office: backlog clear, approvals, proposals, handoffs"], ["Team", "$49.99/mo", "2 seats · was $69.99 · billed annually ($599.88/yr) · 2,000 leads/mo · owner + coordinator, the classic two-seat shop"], ["Crew", "$79.99/mo", "3 seats · was $109.99 · billed annually ($959.88/yr) · 5,000 leads/mo · + crew scheduling, job time & labor costing"], ["Enterprise", "Custom", "4+ seats · multiple locations · custom integrations & onboarding — priced to your operation"]].map(([n, p, d]) => <div className="feat" key={n}><span className="muted" style={{ textTransform: "uppercase", fontWeight: 700, fontSize: 12 }}>{n}</span><h4 style={{ fontSize: 24 }}>{p}</h4><p>{d}</p><button className="btn" style={{ marginTop: 12 }} onClick={() => setMode("register")}>{n === "Enterprise" ? "Talk to us" : "Start free"}</button></div>)}</div></div>
+    <div className="section" id="pricing"><h2>Pricing — 30 days free, no card</h2><PlanCards onAction={() => setMode("register")} /></div>
     <div className="section"><h2>Questions</h2>
       {[["Do I have to replace my current system?", "No — Workpile is the front door, not the house. Won jobs become projects in YOUR platform via API or webhooks; every final outcome is delivered and acknowledged there."], ["How do leads get in?", "Four ways: sync from your lead system's API by date range (daily auto-sync available), CSV upload, website form embed with TCPA consent, and inbox/API ingestion."], ["Is the AI allowed to send things on its own?", "Never. Agents draft, score, and organize; every customer-facing send and every price-bearing decision needs a human approval. That's a product invariant, not a setting."], ["What happens to duplicates?", "Ingestion dedupes by phone/email automatically. AI Cleanup finds the rest — same name + service — and archives them as duplicates of the original, with the merge recorded."]].map(([q, a]) => <div className="faq" key={q}><b>{q}</b><p>{a}</p></div>)}</div>
     <footer className="landFoot"><Logo /><span>© 2026 Workpile · workpile.io · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/dpa">DPA</a></span><span>Built for the businesses that answer the phone.</span></footer>

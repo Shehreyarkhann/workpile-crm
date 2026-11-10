@@ -185,3 +185,12 @@ aside.rail .sideHead { flex-direction: column; gap: 6px; }
 .schedChip button { color:inherit; flex:none; }
 .pd-row { display:flex; justify-content:space-between; gap:24px; padding:5px 0; border-bottom:1px solid #eef2f7; font-size:14px; }
 .pd-row span { color:#475569; }
+
+.billtoggle { display:inline-flex; background:#e8eef5; border-radius:99px; padding:4px; gap:4px; }
+.billtoggle button { border:none; background:transparent; padding:8px 20px; border-radius:99px; font-weight:700; font-size:14px; cursor:pointer; color:#475569; }
+.billtoggle button.on { background:#fff; color:#0f172a; box-shadow:0 1px 4px rgba(15,23,42,.15); }
+.billtoggle .saveTag { background:#16a34a; color:#fff; font-size:11px; padding:2px 8px; border-radius:99px; margin-left:7px; vertical-align:1px; }
+.salebar { background:linear-gradient(90deg,#14532d,#166534); color:#ecfdf5; border-radius:12px; padding:11px 18px; font-weight:700; display:flex; gap:10px; align-items:center; justify-content:center; margin:14px 0 4px; font-size:15px; }
+.salebar .tag { background:#f59e0b; color:#451a03; padding:2px 10px; border-radius:99px; font-size:12px; font-weight:800; letter-spacing:.4px; }
+.savebadge { position:absolute; top:12px; right:12px; background:#fef3c7; color:#92400e; border:1px solid #f59e0b; font-size:11.5px; font-weight:800; padding:3px 9px; border-radius:99px; }
+.feat { position:relative; }
