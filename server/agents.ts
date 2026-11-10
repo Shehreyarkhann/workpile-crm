@@ -75,6 +75,7 @@ export function packetCheck(lead: any, proposal: any | null): { complete: boolea
   if (!lead.location) missing.push("service location");
   if (!lead.notes) missing.push("scope notes");
   if (!lead.pm_id) missing.push("project manager");
+  if (!lead.site_visit_done) missing.push("site visit completed");
   if (!proposal) missing.push("proposal");
   else {
     const items = JSON.parse(proposal.line_items || "[]");

@@ -8,6 +8,27 @@ export const api = async (path: string, opts: any = {}) => {
   if (!r.ok) throw new Error(j.error?.code || j.error?.message || `HTTP ${r.status}`);
   return j;
 };
+
+// Offline field queue (§12.3): writes made with no signal are stored on-device and replayed in order.
+export const offlineQueue = (): any[] => { try { return JSON.parse(localStorage.getItem("wp_offline_posts") || "[]"); } catch { return []; } };
+export const offlinePost = async (url: string, body: any, label: string) => {
+  try { return await api(url, { method: "POST", body }); }
+  catch (e: any) {
+    if (!navigator.onLine || /failed to fetch|networkerror|load failed/i.test(String(e?.message || e))) {
+      const q = offlineQueue(); q.push({ url, body, label, at: new Date().toISOString() });
+      localStorage.setItem("wp_offline_posts", JSON.stringify(q));
+      return { __offline: true };
+    }
+    throw e;
+  }
+};
+export const syncOffline = async () => {
+  const q = offlineQueue(); if (!q.length) return;
+  const left: any[] = [];
+  for (const item of q) { try { await api(item.url, { method: "POST", body: item.body }); } catch { left.push(item); } }
+  localStorage.setItem("wp_offline_posts", JSON.stringify(left));
+  if (left.length < q.length) location.reload();
+};
 export const money = (n: any) => "$" + Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 0 });
 export const num = (n: any) => Number(n || 0).toLocaleString();
 export const dt = (s: any) => s ? new Date(s).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "—";
@@ -99,6 +120,7 @@ function HomeDash({ go, openLead, m, d }: any) {
         </div>
 
         <FinancesStrip f={home.finances} />
+    <PeriodsStrip />
 
                 <div className="agentCard animIn" style={{ animationDelay: "120ms" }}>
           <div className="rowflex" style={{ justifyContent: "space-between" }}><b style={{ fontSize: 16 }}>🤖 Workpile Agent</b><span style={{ fontSize: 12.5, display: "flex", gap: 7, alignItems: "center" }}><span className="liveDot" /> {home.agent.active_count > 0 ? `LIVE — ${home.agent.active_count} of 4 automations on` : "PAUSED — all automations off"}</span></div>
@@ -330,7 +352,7 @@ function CrewTime({ lead, users, reloadLead }: any) {
   if (!lab) return <p className="muted">Loading crew & time…</p>;
   const sector = lead.sector || "private";
   const setLeadField = async (patch: any, ok: string) => { await api("/api/leads/" + lead.id, { method: "PATCH", body: patch }); setMsg(ok); reloadLead && reloadLead(); };
-  const logTime = async () => { if (!form.worker_name.trim() || !(Number(form.hours) > 0)) return setMsg("Type a worker name and hours first — a name is all a worker needs, no account required."); const r = await api(`/api/leads/${lead.id}/time`, { method: "POST", body: { worker_name: form.worker_name.trim(), entry_date: form.entry_date, hours: Number(form.hours), note: form.note } }); setMsg(r.rated ? `Logged ${r.entry.hours}h for ${r.worker.name} at ${money(r.entry.rate)}/hr (${r.entry.class_name}, ${sector} rate) ✓` : `Logged for ${r.worker.name} — but they have NO rate class, so it costed $0. Set their class in Settings → Workers.`); setForm({ ...form, hours: "", note: "" }); load(); };
+  const logTime = async () => { if (!form.worker_name.trim() || !(Number(form.hours) > 0)) return setMsg("Type a worker name and hours first — a name is all a worker needs, no account required."); const r = await offlinePost(`/api/leads/${lead.id}/time`, { worker_name: form.worker_name.trim(), entry_date: form.entry_date, hours: Number(form.hours), note: form.note }, "time entry"); if ((r as any).__offline) { setMsg("📴 No signal — time saved on this device and queued to sync when you are back."); setForm({ ...form, hours: "", note: "" }); return; } setMsg(r.rated ? `Logged ${r.entry.hours}h for ${r.worker.name} at ${money(r.entry.rate)}/hr (${r.entry.class_name}, ${sector} rate) ✓` : `Logged for ${r.worker.name} — but they have NO rate class, so it costed $0. Set their class in Settings → Workers.`); setForm({ ...form, hours: "", note: "" }); load(); };
   const crewIds = new Set(lab.crew.map((c: any) => c.worker_id || c.user_id));
   const margin = lead.est_value > 0 ? Math.round((lab.cost / lead.est_value) * 100) : null;
   return (<div>
@@ -441,7 +463,7 @@ function LeadDetail({ id, users, priceBook, close, refresh }: any) {
       <div className="card"><h3>Schedule a callback</h3><CallbackForm leadId={id} done={load} /></div>
       <div className="card"><h3>Tasks ({d.tasks.filter((t: any) => t.status === "open").length} open)</h3>
         {d.tasks.map((t: any) => <div className="check" key={t.id}><span className={`st ${t.status === "done" ? "pass" : ""}`}>{t.status === "done" ? "✓" : "○"}</span><span style={{ flex: 1 }}>{t.title} <span className="muted">due {dOnly(t.due_at)}</span></span>{t.status === "open" && <button className="btn ghost small" onClick={async () => { await api(`/api/tasks/${t.id}/complete`, { method: "POST", body: {} }); load(); }}>Done</button>}</div>)}
-        <div className="feed" style={{ marginTop: 12 }}><h3>Timeline</h3>{d.events.map((e: any) => <div className="ev" key={e.id}>{e.type.replaceAll("_", " ")}{e.to_state ? ` → ${e.to_state}` : ""} <span>· {dt(e.created_at)}</span></div>)}</div></div>
+        <div className="feed" style={{ marginTop: 12 }}><h3>Timeline</h3>{d.events.map((e: any) => <div className="ev" key={e.id}><span className="chip" style={{ marginRight: 6 }}>{e.actor === "ai-automation" ? "🤖 agent" : e.actor === "system" ? "⚙️ system" : "👤 human"}</span>{e.type.replaceAll("_", " ")}{e.to_state ? ` → ${e.to_state}` : ""} <span>· {dt(e.created_at)}</span></div>)}</div></div>
     </div>}
     {tab === "messages" && <MessagesPanel lead={d.lead} />}
     {tab === "crew" && <CrewTime lead={l} users={users} reloadLead={load} />}
@@ -463,7 +485,7 @@ function LeadDetail({ id, users, priceBook, close, refresh }: any) {
         {useOpts && <div>{optEditor(optB, setOptB, "Option B — Recommended")}{optEditor(optC, setOptC, "Option C — Complete")}<p className="muted" style={{ fontSize: 12 }}>Option A “Essential” = the lines above. The customer picks one option when signing; the job is priced from their pick.</p></div>}
         <div className="rowflex" style={{ marginTop: 8 }}><button className="btn ghost small" onClick={() => setItems([...items, { qty: 1 }])}>+ Line item</button><label className="muted" style={{ fontSize: 12.5 }}>Valid <input type="number" style={{ width: 60 }} value={validDays} onChange={e => setValidDays(Number(e.target.value) || 0)} /> days</label><label className="muted" style={{ fontSize: 12.5 }}><input type="checkbox" style={{ width: "auto" }} checked={useOpts} onChange={e => setUseOpts(e.target.checked)} /> Offer options (Good / Better / Best)</label>{docTpls.length > 0 && <label className="muted" style={{ fontSize: 12.5 }}>Template <select style={{ width: 190 }} value={docTpl} onChange={e => setDocTpl(e.target.value)}>{docTpls.map(t => <option key={t.id} value={t.id}>{t.name}{t.is_default ? " ⭐" : ""}</option>)}</select></label>}<button className="btn small" onClick={buildProposal}>Draft proposal</button></div></div>
       <div className="card"><h3>Documents & visits</h3>
-        {d.documents.map((doc: any) => <div className="check" key={doc.id}><span className={`st ${doc.status === "received" ? "pass" : "fail"}`}>{doc.status === "received" ? "✓" : "✗"}</span><span style={{ flex: 1 }}>{doc.name}</span>{doc.status !== "received" && <button className="btn ghost small" onClick={async () => { await api(`/api/documents/${doc.id}`, { method: "PATCH", body: { status: "received" } }); load(); }}>Mark received</button>}</div>)}
+        {d.documents.map((doc: any) => <div className="check" key={doc.id}><span className={`st ${doc.status === "received" ? "pass" : "fail"}`}>{doc.status === "received" ? "✓" : "✗"}</span><span style={{ flex: 1 }}>{doc.name}{doc.expires_at && <span className="chip" style={{ marginLeft: 8, background: (new Date(doc.expires_at).getTime() - Date.now()) < 14 * 86400000 ? "#fde8e8" : "#eef2f7", color: (new Date(doc.expires_at).getTime() - Date.now()) < 0 ? "#b3261e" : "#5b6b62" }}>{(new Date(doc.expires_at).getTime() - Date.now()) < 0 ? "expired " : "expires "}{dOnly(doc.expires_at)}</span>}</span><label className="tiny muted">expires <input type="date" style={{ width: 128, padding: 2 }} defaultValue={doc.expires_at ? String(doc.expires_at).slice(0, 10) : ""} onChange={async e => { await api(`/api/documents/${doc.id}`, { method: "PATCH", body: { expires_at: e.target.value || null } }); load(); }} /></label>{doc.status !== "received" && <button className="btn ghost small" onClick={async () => { await api(`/api/documents/${doc.id}`, { method: "PATCH", body: { status: "received" } }); load(); }}>Mark received</button>}</div>)}
         {d.site_visits.map((v: any) => <p key={v.id} className="muted" style={{ margin: "4px 0" }}>📍 Visit {dt(v.scheduled_at)} — {v.status}</p>)}
         {d.approvals?.length > 0 && <div style={{ marginTop: 10 }}><h3>Approval history</h3>{d.approvals.map((a: any) => <p key={a.id} className="muted" style={{ margin: "4px 0" }}>{a.tier} · {a.decision || "pending"}{a.reason_code ? " · " + a.reason_code : ""} · {dt(a.submitted_at)}</p>)}</div>}
       </div>
@@ -583,7 +605,7 @@ function Ops() {
   useEffect(load, [date]);
   useEffect(() => { api("/api/schedule/jobs").then(setJobs).catch(() => {}); }, []);
   const shift = (n: number) => { const d = new Date(date + "T12:00:00"); d.setDate(d.getDate() + n); setDate(d.toLocaleDateString("en-CA")); };
-  const submit = async (r: any) => { await api(`/api/field-reports/${r.id}/submit`, { method: "POST", body: { notes, lead_id: jobId || undefined } }); setSubId(""); setNotes(""); setJobId(""); setMsg(`Report filed for ${r.manager} ✓`); load(); };
+  const submit = async (r: any) => { const res: any = await offlinePost(`/api/field-reports/${r.id}/submit`, { notes, lead_id: jobId || undefined }, "field report"); setSubId(""); setNotes(""); setJobId(""); if (res?.__offline) { setMsg("📴 No signal — report saved on this device and queued to sync."); return; } setMsg(`Report filed for ${r.manager} ✓`); load(); };
   const chase = async (r: any) => { await api(`/api/field-reports/${r.id}/chase`, { method: "POST", body: {} }); setMsg(`Chase sent to ${r.manager} ✓`); load(); };
   const chaseAll = async () => { if (!data) return; for (const r of data.rows.filter((x: any) => x.status === "missing")) await api(`/api/field-reports/${r.id}/chase`, { method: "POST", body: {} }); setMsg("All missing reports chased ✓"); load(); };
   return (<div className="card"><h3>Field reports — daily, expected, chased</h3>
@@ -808,6 +830,7 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any)
       <div><label className="f">Lead source API key (if required)</label><input value={s.workspace.source_api_key || ""} placeholder="Bearer key for your source system" onChange={e => setS({ ...s, workspace: { ...s.workspace, source_api_key: e.target.value } })} /></div>
     </div><button className="btn" style={{ marginTop: 14 }} onClick={async () => { await api("/api/settings", { method: "PATCH", body: s.workspace }); setMsg("Workspace settings saved ✓"); }}>Save workspace</button></div>}
     {tab === "workspace" && canSettings && s && <FollowupSettings key={s.workspace.id} ws={s.workspace} />}
+    {tab === "workspace" && <div className="card"><h3 style={{ marginTop: 0 }}>Help & shortcuts</h3><p className="muted" style={{ margin: "4px 0" }}>⌘K — jump anywhere · J/K — move in the Work Queue · Enter — open · The free Backlog Audit lives at <a href="/audit" target="_blank" rel="noreferrer">/audit</a> (share it with prospects). Support: reply to any Workpile email or write to the workspace owner. Every number in this app traces to a record — click through instead of screenshotting.</p></div>}
     {tab === "workspace" && canSettings && s && <BookingSettings key={"bk" + s.workspace.id} ws={s.workspace} />}
     {tab === "pricebook" && canSettings && <div className="card"><table><thead><tr><th>Item</th><th>Unit</th><th>Standard</th><th>Floor</th><th></th></tr></thead><tbody>
       {pb.map((p: any, i: number) => <tr key={p.id}><td>{p.name}</td><td>{p.unit}</td><td><input type="number" min="0" step="0.5" style={{ width: 110 }} value={p.standard_price} onChange={e => { const n = [...pb]; n[i] = { ...p, standard_price: e.target.value }; setPb(n); }} /></td><td><input type="number" min="0" step="0.5" style={{ width: 110 }} value={p.floor_price} onChange={e => { const n = [...pb]; n[i] = { ...p, floor_price: e.target.value }; setPb(n); }} /></td><td><button className="btn ghost small" onClick={async () => { await api(`/api/price-book/${p.id}`, { method: "PATCH", body: { standard_price: Number(p.standard_price) || 0, floor_price: Number(p.floor_price) || 0 } }); setMsg("Price saved ✓"); loadAll(); }}>Save</button> <button className="btn ghost small" onClick={async () => { await api(`/api/price-book/${p.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></td></tr>)}
@@ -1064,6 +1087,26 @@ function ActivationCard() {
   if (!a) return null;
   const labels: any = { has_leads: "Has leads", has_proposals: "Has proposals", has_decided_approval: "Approval decided", has_jobs: "Has jobs", has_won: "Has won work", has_team: "Team of 2+" };
   return (<div className="card"><h3 style={{ marginTop: 0 }}>Activation funnel — % of workspaces reaching each milestone</h3><div className="rowflex" style={{ gap: 18, flexWrap: "wrap" }}>{Object.entries(a.milestone_pct).map(([k, v]: any) => <span key={k}><b style={{ fontSize: 20 }}>{v}%</b><br /><span className="muted">{labels[k] || k}</span></span>)}</div></div>);
+}
+
+function SuppressionsCard() {
+  const [list, setList] = useState<any[]>([]); const [kind, setKind] = useState("email"); const [value, setValue] = useState(""); const [reason, setReason] = useState(""); const [msg, setMsg] = useState("");
+  const load = () => { api("/api/suppressions").then(setList).catch(() => {}); };
+  useEffect(load, []);
+  const add = async () => { try { await api("/api/suppressions", { method: "POST", body: { kind, value, reason } }); setValue(""); setReason(""); setMsg("Added — sends to this address stop everywhere, cadences included."); load(); } catch (e: any) { setMsg(e.message); } };
+  return (<div className="card"><h3>🚫 Suppression list</h3><p className="muted" style={{ marginTop: 0 }}>Unsubscribes and do-not-contacts. Every send — manual, cadence, first touch — checks this list at the door; suppressed sends are recorded as <b>suppressed</b>, never as sent, and an active cadence stops with reason <i>suppressed</i>.</p>
+    {list.map(x => <div key={x.id} className="rowflex" style={{ padding: "5px 0", borderBottom: "1px solid #eef2f7" }}><span className="chip">{x.kind}</span><b>{x.value}</b><span className="muted">{x.reason || x.source} · {dt(x.created_at)}</span><span style={{ flex: 1 }} /><button className="btn ghost small" onClick={async () => { await api(`/api/suppressions/${x.id}`, { method: "DELETE" }); load(); }}>Remove</button></div>)}
+    {list.length === 0 && <p className="muted">Nobody is suppressed yet.</p>}
+    <div className="rowflex"><select value={kind} onChange={e => setKind(e.target.value)} style={{ width: 100 }}><option value="email">Email</option><option value="phone">Phone</option></select><input placeholder={kind === "email" ? "person@company.com" : "(631) 555-0100"} value={value} onChange={e => setValue(e.target.value)} style={{ flex: 1 }} /><input placeholder="Reason (unsubscribed, wrong number…)" value={reason} onChange={e => setReason(e.target.value)} style={{ flex: 1 }} /><button className="btn small" disabled={!value.trim()} onClick={add}>Suppress</button></div>
+    {msg && <div className="ok" style={{ marginTop: 8 }}>{msg}</div>}</div>);
+}
+
+function PeriodsStrip() {
+  const [p, setP] = useState<any>(null);
+  useEffect(() => { api("/api/metrics/periods").then(setP).catch(() => {}); }, []);
+  if (!p) return null;
+  const cell = (label: string, k: string, fmt: (n: number) => string) => { const a = p.this_week[k] || 0, b = p.last_week[k] || 0; const d = a - b; return (<span key={k}><b style={{ fontSize: 17 }}>{fmt(a)}</b> <span className="muted">{label}</span> <span style={{ color: d > 0 ? "#157347" : d < 0 ? "#b3261e" : "#5b6b62" }}>{d > 0 ? `▲ ${fmt(d)}` : d < 0 ? `▼ ${fmt(-d)}` : "—"} vs last wk</span></span>); };
+  return (<div className="card" style={{ marginTop: 12 }}><b>📅 This week vs last week</b><div className="rowflex" style={{ gap: 22, flexWrap: "wrap", marginTop: 8 }}>{cell("new leads", "leads_created", n => String(n))}{cell("proposals sent", "proposals_sent", n => String(n))}{cell("won", "won", n => String(n))}{cell("jobs created", "jobs_created", n => String(n))}{cell("signed value", "signed_value", n => money(n))}</div></div>);
 }
 
 function AutonomyCard() {
@@ -1332,6 +1375,7 @@ function AIAssistant({ go }: any) {
     <AutonomyCard />
     <AgentMetricsCard />
     <QuietHoursCard />
+    <SuppressionsCard />
     <div className="card"><h3>AI Cleanup — duplicates, spam, scoring, assignment</h3>
       {!prev && !result && <button className="btn" onClick={scan}>Run cleanup scan</button>}
       {prev && <div><p><b>{prev.duplicate_count}</b> duplicates · <b>{prev.spam_count}</b> spam/invalid · <b>{prev.unassigned_count}</b> unassigned · <b>{prev.unscored_count}</b> unscored — of {num(prev.total_leads)} leads</p>
@@ -1862,6 +1906,16 @@ function FilesApp({ openLead, openJob, embedded }: any) {
     </tbody></table></div></div>);
 }
 
+function MergesHistory({ load }: any) {
+  const [merges, setMerges] = useState<any[]>([]); const [msg, setMsg] = useState("");
+  const loadM = () => { api("/api/duplicates/merges").then(setMerges).catch(() => {}); };
+  useEffect(loadM, []);
+  if (!merges.length) return null;
+  return (<div className="card"><h3 style={{ marginTop: 0 }}>Recent merges — reversible</h3>
+    {merges.map(m => <div key={m.id} className="rowflex" style={{ padding: "5px 0", borderBottom: "1px solid #eef2f7" }}><span>Merged into <b>{m.survivor_name || "survivor"}</b> · {dt(m.created_at)}</span>{m.reversed_at ? <span className="chip">reversed {dt(m.reversed_at)}</span> : <button className="btn ghost small" onClick={async () => { if (!confirm("Reverse this merge? The duplicate lead comes back in its pre-merge state; anything moved after the merge stays with the survivor.")) return; const r = await api(`/api/duplicates/merges/${m.id}/reverse`, { method: "POST", body: {} }); setMsg(r.note); loadM(); load(); }}>Reverse merge</button>}</div>)}
+    {msg && <div className="ok" style={{ marginTop: 8 }}>{msg}</div>}</div>);
+}
+
 function DuplicatesView({ embedded }: any) {
   const [groups, setGroups] = useState<any[]>([]); const [msg, setMsg] = useState("");
   const load = () => { api("/api/duplicates").then(setGroups).catch(() => {}); };
@@ -1869,9 +1923,10 @@ function DuplicatesView({ embedded }: any) {
   return (<div>{!embedded && <><h2 className="pt">Duplicates</h2><p className="sub">Same phone or email on more than one lead. Merge keeps the oldest record as the survivor and moves everything — tasks, proposals, documents, time, history — onto it. The duplicate closes as DUPLICATE and disappears from lists (Salesforce-style).</p></>}
     {msg && <div className="ok">{msg}</div>}
     {groups.map(g => <div className="card" key={g.key} style={{ marginBottom: 10 }}><b>{g.count} leads</b> <span className="chip" style={{ background: g.match_type === "exact" ? "#e7f6ec" : "#fdf3e0", color: g.match_type === "exact" ? "#157347" : "#9a6a00", fontWeight: 700 }}>{g.match_type === "exact" ? "Exact identity" : "Candidate"} · {Math.round((g.confidence ?? 0.99) * 100)}% match</span> <span className="tiny muted">{(g.signals || ["shared key"]).join(", ")}</span>
-      {g.leads.map((l: any, i: number) => <div key={l.id} className="rowflex" style={{ padding: "6px 0", borderBottom: "1px solid #eef2f7" }}><span style={{ flex: 1 }}><b>{l.contact_name}</b> — {l.service_requested} · {money(l.est_value)} · <Badge s={l.state} /> · since {dOnly(l.created_at)}{i === 0 ? " · ⭐ survivor (oldest)" : ""}</span>
+      {g.leads.map((l: any, i: number) => <div key={l.id} className="rowflex" style={{ padding: "6px 0", borderBottom: "1px solid #eef2f7" }}><span style={{ flex: 1 }}><b>{l.contact_name}</b> — {l.service_requested} · {money(l.est_value)} · <Badge s={l.state} /> · since {dOnly(l.created_at)}{i === 0 ? " · ⭐ survivor (oldest)" : ""}<br /><span className="tiny muted">📞 {l.contact_phone || "—"} · ✉️ {l.contact_email || "—"}{l.location ? ` · 📍 ${l.location}` : ""}</span></span>
         {i > 0 && <button className="btn small" onClick={async () => { if (!confirm(`Merge this lead into "${g.leads[0].contact_name} — ${g.leads[0].service_requested}"? Everything moves; this copy closes as a duplicate.`)) return; await api(`/api/leads/${l.id}/merge`, { method: "POST", body: { into_id: g.leads[0].id } }); setMsg("Merged ✓ — history consolidated on the survivor"); load(); }}>Merge into survivor</button>}</div>)}
     </div>)}
+    <MergesHistory load={load} />
     {groups.length === 0 && <div className="card" style={{ textAlign: "center", padding: 26 }}>No duplicate groups. The database is clean. 🎉</div>}
   </div>);
 }
@@ -1975,6 +2030,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
   const [workspaces, setWorkspaces] = useState<any[]>([]); const [newWs, setNewWs] = useState("");
   useEffect(() => { if (user) api("/api/workspaces").then(r => setWorkspaces(r.workspaces || [])).catch(() => {}); }, [user?.id]);
   useEffect(() => { api("/api/auth/me").then(r => { setUser(r.user); setWorkspaces(r.workspaces || []); }).catch(() => {}); }, []);
+  useEffect(() => { syncOffline(); const on = () => syncOffline(); window.addEventListener("online", on); return () => window.removeEventListener("online", on); }, []);
   useEffect(() => { if (user) api("/api/notifications").then(r => { setNotifs(r.notifications); setUnread(r.unread); }).catch(() => {}); }, [user, tick]);
   useEffect(() => { if (user) { api("/api/users").then(setUsers).catch(() => {}); api("/api/price-book").then(setPriceBook).catch(() => {}); api("/api/approvals").then(r => setPending(r.length)).catch(() => {}); } }, [user, tick]);
   if (!user) return <Landing onAuth={(u: any) => { setUser(u); }} />;

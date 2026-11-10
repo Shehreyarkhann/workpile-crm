@@ -63,6 +63,8 @@ export function initSchema() {
   CREATE TABLE IF NOT EXISTS payments (id TEXT PRIMARY KEY, workspace_id TEXT, proposal_id TEXT, kind TEXT DEFAULT 'deposit', amount REAL, currency TEXT DEFAULT 'USD', mode TEXT DEFAULT 'test', stripe_session_id TEXT, status TEXT DEFAULT 'pending', link TEXT, created_at TEXT, paid_at TEXT);
   CREATE TABLE IF NOT EXISTS background_jobs (id TEXT PRIMARY KEY, kind TEXT, payload TEXT, status TEXT DEFAULT 'queued', attempts INTEGER DEFAULT 0, run_after TEXT, last_error TEXT, created_at TEXT, updated_at TEXT);
   CREATE TABLE IF NOT EXISTS outbox_events (id TEXT PRIMARY KEY, workspace_id TEXT, type TEXT, entity_id TEXT, payload TEXT, created_at TEXT, processed_at TEXT);
+  CREATE TABLE IF NOT EXISTS suppressions (id TEXT PRIMARY KEY, workspace_id TEXT, kind TEXT, value TEXT, reason TEXT, source TEXT, created_by TEXT, created_at TEXT, UNIQUE(workspace_id, kind, value));
+  CREATE TABLE IF NOT EXISTS merge_snapshots (id TEXT PRIMARY KEY, workspace_id TEXT, survivor_id TEXT, dupe_id TEXT, snapshot TEXT, created_by TEXT, created_at TEXT, reversed_at TEXT);
   CREATE TABLE IF NOT EXISTS audit_requests (id TEXT PRIMARY KEY, email TEXT, rows_count INTEGER, recoverable_value REAL, recoverable_count INTEGER, created_at TEXT);
   CREATE TABLE IF NOT EXISTS attachments (id TEXT PRIMARY KEY, workspace_id TEXT, entity_type TEXT, entity_id TEXT, name TEXT, mime TEXT, size INTEGER, storage_key TEXT, uploaded_by TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS price_overrides (id TEXT PRIMARY KEY, workspace_id TEXT, proposal_id TEXT, lead_id TEXT, item_id TEXT, item_name TEXT, prev_price REAL, new_price REAL, reason TEXT, user_id TEXT, created_at TEXT);
@@ -91,6 +93,7 @@ export function initSchema() {
     "ALTER TABLE notifications ADD COLUMN entity_id TEXT",
     "ALTER TABLE workspaces ADD COLUMN logo_data TEXT",
     "ALTER TABLE approvals ADD COLUMN content_hash TEXT",
+    "ALTER TABLE documents ADD COLUMN expires_at TEXT",
     "ALTER TABLE workspaces ADD COLUMN agent_level INTEGER",
     "UPDATE workspaces SET agent_level=4 WHERE agent_level IS NULL AND followup_enabled=1 AND (auto_score=1 OR auto_assign=1 OR auto_dedupe=1 OR auto_reactivate=1)",
     "ALTER TABLE sessions ADD COLUMN impersonated_by TEXT",

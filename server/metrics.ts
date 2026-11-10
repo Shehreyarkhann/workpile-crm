@@ -6,6 +6,8 @@ export function metrics(workspaceId: string) {
   const qa = (sql: string, ...p: any[]) => db.prepare(sql).all(...p) as any[];
   const leads = qa("SELECT * FROM leads WHERE workspace_id=?", workspaceId);
   const byState: Record<string, number> = {};
+  const CANON: any = { WORKING: "Contacting", SENT: "Negotiation", FOLLOWUP: "Negotiation" };
+  const byStateCanonical: any = {}; for (const [k, v] of Object.entries(byState)) { const ck = CANON[k] || k; byStateCanonical[ck] = (byStateCanonical[ck] || 0) + (v as number); }
   for (const l of leads) byState[l.state] = (byState[l.state] || 0) + 1;
   const decided = q("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL", workspaceId).c;
   const approvedClean = q("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision='approved' AND (edits_diff IS NULL OR edits_diff='{}')", workspaceId).c;
@@ -23,7 +25,7 @@ export function metrics(workspaceId: string) {
   const frtMedianMin = frt.length ? frt.map(l => (new Date(l.first_response_at).getTime() - new Date(l.created_at).getTime()) / 60000).sort((a, b) => a - b)[Math.floor(frt.length / 2)] : null;
   const frCompliance = q("SELECT COUNT(*) t, SUM(CASE WHEN status='submitted' THEN 1 ELSE 0 END) s FROM field_reports WHERE workspace_id=?", workspaceId);
   return {
-    total_leads: leads.length, by_state: byState,
+    total_leads: leads.length, by_state: byState, by_state_canonical: byStateCanonical,
     first_pass_approval_rate: decided ? Math.round(1000 * approvedClean / decided) / 10 : null,
     approvals_decided: decided, approval_cycle_median_hrs: cycleHrs !== null ? Math.round(cycleHrs * 10) / 10 : null,
     win_rate: won + lost ? Math.round(1000 * won / (won + lost)) / 10 : null, won, lost,

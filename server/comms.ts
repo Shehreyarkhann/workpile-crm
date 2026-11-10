@@ -8,8 +8,21 @@ import { enqueueJob } from "./jobs.ts";
 export const emailConfigured = () => !!process.env.RESEND_API_KEY;
 export const smsConfigured = () => !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM);
 
+export function suppressionFor(workspaceId: string, channel: string, to: string): any {
+  const kind = channel === "sms" ? "phone" : "email";
+  const value = kind === "email" ? String(to || "").toLowerCase().trim() : String(to || "").replace(/\D/g, "");
+  if (!value) return null;
+  return db.prepare("SELECT * FROM suppressions WHERE workspace_id=? AND kind=? AND value=?").get(workspaceId, kind, value) || null;
+}
+
 export function queueMessage(workspaceId: string, m: { lead_id?: string; channel: "email" | "sms"; to: string; subject?: string; body: string }) {
   const id = uid("msg");
+  const sup = suppressionFor(workspaceId, m.channel, m.to);
+  if (sup) {
+    db.prepare("INSERT INTO messages_outbox (id,workspace_id,lead_id,channel,to_addr,subject,body,status,error,created_at) VALUES (?,?,?,?,?,?,?, 'suppressed', ?, ?)")
+      .run(id, workspaceId, m.lead_id || null, m.channel, m.to, m.subject || null, m.body, `suppressed: ${sup.reason || sup.source || "on suppression list"}`, now());
+    return id;
+  }
   db.prepare("INSERT INTO messages_outbox (id,workspace_id,lead_id,channel,to_addr,subject,body,created_at) VALUES (?,?,?,?,?,?,?,?)")
     .run(id, workspaceId, m.lead_id || null, m.channel, m.to, m.subject || null, m.body, now());
   return id;
@@ -17,6 +30,8 @@ export function queueMessage(workspaceId: string, m: { lead_id?: string; channel
 
 type FetchFn = (url: string, init?: any) => Promise<{ status: number; json: () => Promise<any> }>;
 export async function deliverMessage(id: string, fetchFn: FetchFn = fetch as any): Promise<any> {
+  const existing = db.prepare("SELECT * FROM messages_outbox WHERE id=?").get(id) as any;
+  if (existing && existing.status && existing.status !== "queued") return existing;
   const m = db.prepare("SELECT * FROM messages_outbox WHERE id=?").get(id) as any;
   if (!m || m.status === "sent") return m;
   const ws = db.prepare("SELECT * FROM workspaces WHERE id=?").get(m.workspace_id) as any;

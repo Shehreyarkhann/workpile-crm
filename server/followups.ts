@@ -77,7 +77,12 @@ export async function processFollowups(baseUrl = ""): Promise<{ sent: number; st
     } else {
       const token = ensureSignToken(prop.id);
       const body = render(step.template, { name: (c?.name || "there").split(" ")[0], business: ws.name, total: "$" + prop.total, link: `${baseUrl}/sign/${token}` });
-      await queueAndDeliver(e.workspace_id, { lead_id: lead.id, channel: step.channel, to, subject: step.channel === "email" ? `Following up on your proposal from ${ws.name}` : undefined, body });
+      const delivered = await queueAndDeliver(e.workspace_id, { lead_id: lead.id, channel: step.channel, to, subject: step.channel === "email" ? `Following up on your proposal from ${ws.name}` : undefined, body });
+      if (delivered && delivered.status === "suppressed") {
+        stopFollowups(lead.id, "suppressed");
+        stopped++;
+        continue;
+      }
       sent++;
     }
     const next = steps[e.step_idx + 1];
