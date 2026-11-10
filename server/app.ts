@@ -82,6 +82,7 @@ function createLead(workspaceId: string, actor: string, input: any) {
   if (owner) notify(workspaceId, [owner], "lead.created", "New lead assigned to you", `${input.contact?.name || "New lead"} — ${input.service_requested || "service request"}`, id);
   if (owner) db.prepare("INSERT INTO tasks (id,workspace_id,lead_id,assignee_id,type,title,due_at,created_at) VALUES (?,?,?,?,?,?,?,?)")
     .run(uid("tsk"), workspaceId, id, owner, "follow_up", "First contact", new Date(Date.now() + 4 * 3600000).toISOString(), now());
+  emitOutbox(workspaceId, "lead.created", id, { source: input.source || "manual", service: triage.service_guess });
   // v3 slice 34: speed-to-lead — instant first touch inside a minute when automations are on (pre-approved template only)
   try { const wsx: any = db.prepare("SELECT * FROM workspaces WHERE id=?").get(workspaceId);
     if (wsx?.followup_enabled && (input.contact?.email || input.contact?.phone)) {
@@ -139,6 +140,9 @@ export function pendingApprovalFor(workspaceId: string, proposalId: string) {
   return db.prepare("SELECT * FROM approvals WHERE workspace_id=? AND proposal_id=? AND decision IS NULL ORDER BY submitted_at DESC").get(workspaceId, proposalId);
 }
 import { createHash as __createHash } from "node:crypto";
+import { emitOutbox } from "./outbox.ts";
+import { jobStats } from "./jobs.ts";
+import { outboxPending } from "./outbox.ts";
 export function proposalContentHash(p: any): string {
   return __createHash("sha256").update(JSON.stringify({ li: p.line_items || "", total: p.total || 0, options: p.options || "", deposit: p.deposit_amount || p.deposit_pct || "" })).digest("hex").slice(0, 32);
 }
@@ -212,6 +216,7 @@ function ensureJobForLeadInner(workspaceId: string, actor: string, lead: any) {
   const id = uid("job");
   db.prepare("INSERT INTO jobs (id,workspace_id,lead_id,proposal_id,stage,value,sector,created_from,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
     .run(id, workspaceId, lead.id, prop?.id || null, "AWAITING_SCHEDULING", value || 0, lead.sector || "private", prop?.signed_at ? "sign" : "manual", now(), now());
+  emitOutbox(workspaceId, "job.created", id, { lead_id: lead.id, value: value || 0 });
   // the job inherits the lead's paperwork checklist (documents carry both ids)
   db.prepare("UPDATE documents SET job_id=? WHERE lead_id=? AND (job_id IS NULL OR job_id='')").run(id, lead.id);
   logEvent(workspaceId, lead.id, actor, "job_created", null, null, { job_id: id, value });
@@ -226,6 +231,8 @@ function requireAuth(req: any, res: any, next: any) {
     || (req.headers.authorization || "").replace("Bearer ", "");
   const sess = sid && db.prepare("SELECT * FROM sessions WHERE id=? AND expires_at>?").get(sid, now()) as any;
   if (!sess) return res.status(401).json({ error: { code: "unauthorized", message: "Sign in required" } });
+  if (sess.impersonated_by && sess.impersonation_expires_at && sess.impersonation_expires_at <= now()) return res.status(401).json({ error: { code: "impersonation_expired", message: "Impersonation window ended — sign in again" } });
+  req.session = sess;
   req.user = db.prepare("SELECT * FROM users WHERE id=?").get(sess.user_id);
   if (!req.user) return res.status(401).json({ error: { code: "unauthorized" } });
   next();
@@ -273,7 +280,7 @@ app.post("/api/auth/login", (req, res) => {
   res.setHeader("Set-Cookie", `lf_session=${sid}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax`);
   res.json({ user: { id: u.id, name: u.name, email: u.email, role: u.role, workspace_id: u.workspace_id, is_platform_admin: !!u.is_platform_admin , email_verified: u.email_verified ?? 0, permissions: permsOf(u) }, session: sid });
 });
-app.get("/api/auth/me", requireAuth, (req: any, res) => { ensureMembership(req.user); const ws = db.prepare("SELECT name FROM workspaces WHERE id=?").get(req.user.workspace_id) as any; res.json({ user: { id: req.user.id, name: req.user.name, email: req.user.email, role: req.user.role, workspace_id: req.user.workspace_id, workspace_name: ws?.name, email_verified: req.user.email_verified ?? 0, is_platform_admin: !!req.user.is_platform_admin, permissions: permsOf(req.user) }, workspaces: membershipsOf(req.user.id) }); });
+app.get("/api/auth/me", requireAuth, (req: any, res) => { ensureMembership(req.user); const ws = db.prepare("SELECT name FROM workspaces WHERE id=?").get(req.user.workspace_id) as any; const __imp = (req as any).session?.impersonated_by ? { by_name: (db.prepare("SELECT name FROM users WHERE id=?").get((req as any).session.impersonated_by) as any)?.name || "platform admin", expires_at: (req as any).session.impersonation_expires_at } : null; res.json({ user: { id: req.user.id, name: req.user.name, email: req.user.email, role: req.user.role, workspace_id: req.user.workspace_id, workspace_name: ws?.name, email_verified: req.user.email_verified ?? 0, is_platform_admin: !!req.user.is_platform_admin, impersonation: __imp, permissions: permsOf(req.user) }, workspaces: membershipsOf(req.user.id) }); });
 
 // ---------- routes: workspace data ----------
 app.get("/api/users", requireAuth, (req: any, res) => res.json((db.prepare("SELECT * FROM users WHERE workspace_id=?").all(req.user.workspace_id) as any[]).map(u => ({ id: u.id, name: u.name, email: u.email, role: u.role, approval_limit: u.approval_limit, labor_class_id: u.labor_class_id || null, permissions: permsOf(u), has_overrides: !!u.permissions }))));
@@ -443,7 +450,7 @@ app.post("/api/approvals/:id/decide", requireAuth, (req: any, res) => {
   if (!["approved", "changes", "rejected"].includes(decision)) return res.status(422).json({ error: { code: "bad_decision" } });
   if (decision !== "approved" && !reason_code) return res.status(422).json({ error: { code: "reason_required", message: "Reject/change requires a reason code (§6.5)" } });
   const __prop = decision === "approved" ? db.prepare("SELECT * FROM proposals WHERE id=?").get(a.proposal_id) as any : null;
-  db.prepare("UPDATE approvals SET decision=?, reason_code=?, edits_diff=?, decided_at=?, content_hash=? WHERE id=?").run(decision, reason_code || null, edits_diff ? JSON.stringify(edits_diff) : null, now(), __prop ? proposalContentHash(__prop) : null, a.id);
+  db.prepare("UPDATE approvals SET decision=?, reason_code=?, edits_diff=?, decided_at=?, content_hash=? WHERE id=?").run(decision, reason_code || null, edits_diff ? JSON.stringify(edits_diff) : null, now(), __prop ? proposalContentHash(__prop) : null, a.id); emitOutbox(req.user.workspace_id, "approval.decided", a.id, { decision, proposal_id: a.proposal_id });
   emitEvent(req.user.workspace_id, "approval.decided", { lead_id: a.lead_id, approval_id: a.id, decision });
   notify(req.user.workspace_id, [a.submitted_by], "approval.decided", `Your proposal was ${decision}`, `Lead ${a.lead_id} — decision: ${decision}${reason_code ? " (" + reason_code + ")" : ""}`, a.lead_id);
   const l = db.prepare("SELECT * FROM leads WHERE id=?").get(a.lead_id) as any;
@@ -1178,6 +1185,30 @@ app.post("/api/flags", requireAuth, (req: any, res) => {
   res.status(ok ? 200 : 422).json({ ok });
 });
 function requirePlatformAdmin(req: any, res: any, next: any) { if (!req.user?.is_platform_admin) return res.status(403).json({ error: { code: "platform_admin_only" } }); next(); }
+app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v10", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
+app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
+app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {
+  const target = db.prepare("SELECT * FROM users WHERE id=?").get(String(req.body?.user_id || "")) as any;
+  if (!target) return res.status(404).json({ error: { code: "not_found" } });
+  const sid = uid("ses"); const exp = new Date(Date.now() + 3600000).toISOString();
+  db.prepare("INSERT INTO sessions (id,user_id,created_at,expires_at,impersonated_by,impersonation_expires_at) VALUES (?,?,?,?,?,?)").run(sid, target.id, now(), exp, req.user.id, exp);
+  audit(target.workspace_id, req.user.id, "impersonation.start", "user", target.id, { admin_email: req.user.email, target_email: target.email, expires_at: exp });
+  emitOutbox(target.workspace_id, "admin.impersonation_started", target.id, { admin: req.user.id });
+  res.setHeader("Set-Cookie", `lf_session=${sid}; HttpOnly; Path=/; Max-Age=3600; SameSite=Lax`);
+  res.json({ ok: true, impersonating: { user_id: target.id, name: target.name, email: target.email, workspace_id: target.workspace_id, expires_at: exp } });
+});
+app.post("/api/auth/impersonation/exit", requireAuth, (req: any, res) => {
+  const sess = (req as any).session;
+  if (!sess?.impersonated_by) return res.status(400).json({ error: { code: "not_impersonating" } });
+  const admin = db.prepare("SELECT * FROM users WHERE id=?").get(sess.impersonated_by) as any;
+  if (!admin) return res.status(400).json({ error: { code: "admin_gone" } });
+  audit(req.user.workspace_id, admin.id, "impersonation.stop", "user", req.user.id, { admin_email: admin.email });
+  db.prepare("DELETE FROM sessions WHERE id=?").run(sess.id);
+  const sid = uid("ses"); const exp = new Date(Date.now() + 7 * 86400000).toISOString();
+  db.prepare("INSERT INTO sessions (id,user_id,created_at,expires_at) VALUES (?,?,?,?)").run(sid, admin.id, now(), exp);
+  res.setHeader("Set-Cookie", `lf_session=${sid}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax`);
+  res.json({ ok: true, restored: { user_id: admin.id, name: admin.name } });
+});
 app.get("/api/admin/workspaces", requireAuth, requirePlatformAdmin, (_req: any, res) => res.json(workspaceHealth()));
 app.get("/api/admin/synthetics", requireAuth, requirePlatformAdmin, async (req: any, res) => { const base = `${req.protocol}://${req.get("host")}`; res.json(await runSynthetics(base)); });
 app.get("/api/admin/dlq", requireAuth, requirePlatformAdmin, (_req: any, res) => res.json(db.prepare("SELECT * FROM outcome_deliveries WHERE last_status='dead_letter' ORDER BY created_at DESC").all()));
@@ -1389,6 +1420,7 @@ app.post("/api/proposals/:id/send", requireAuth, async (req: any, res) => {
     : `Hi ${v.contact_name || "there"},\n\nYour proposal from ${ws.name} is ready — total $${p.total}.\nReview and sign securely here: ${link}\n\nQuestions? Just reply to this email.`;
   const r: any = await queueAndDeliver(req.user.workspace_id, { lead_id: l.id, channel, to, subject: `Your proposal from ${ws.name} — $${p.total}`, body });
   db.prepare("UPDATE proposals SET status='sent', sent_at=? WHERE id=?").run(now(), p.id);
+  emitOutbox(req.user.workspace_id, "proposal.sent", p.id, { lead_id: l.id, total: p.total, channel });
   if (["NEW", "WORKING", "QUALIFIED", "PROPOSAL"].includes(l.state)) setStage(req.user.workspace_id, req.user.id, l, "SENT");
   enrollFollowup(req.user.workspace_id, l.id, p.id);
   logEvent(req.user.workspace_id, l.id, req.user.id, "proposal_sent", null, null, { channel, status: r.status });

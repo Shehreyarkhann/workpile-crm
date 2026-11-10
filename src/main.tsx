@@ -446,6 +446,7 @@ function LeadDetail({ id, users, priceBook, close, refresh }: any) {
     {tab === "messages" && <MessagesPanel lead={d.lead} />}
     {tab === "crew" && <CrewTime lead={l} users={users} reloadLead={load} />}
     {tab === "proposals" && <div>
+      <AttachmentsPanel entityType="lead" entityId={id} />
       <div className="card"><h3>Proposals</h3>
         {d.proposals.map((p: any) => <div key={p.id} style={{ borderBottom: "1px solid #eef2f7", padding: "8px 0" }}><b>v{p.version} · {money(p.total)}</b> · {p.status}{p.signed_at ? " · ✅ signed" : ""} · payment {p.payment_status || "—"}{p.view_count ? ` · 👁 viewed ${p.view_count}× (first ${dt(p.first_viewed_at)})` : " · not viewed yet"}{p.expires_at ? (new Date(p.expires_at) < new Date() && !p.signed_at ? ` · ⏰ expired ${dOnly(p.expires_at)}` : ` · valid until ${dOnly(p.expires_at)}`) : ""}{p.options ? (() => { try { const o = JSON.parse(p.options); return ` · options: ${o.map((x: any) => `${x.name} ${money(x.total)}`).join(" / ")}${p.selected_option ? " → picked: " + p.selected_option : ""}`; } catch { return ""; } })() : ""}<br />
           <span className="rowflex" style={{ marginTop: 5 }}><button className="btn ghost small" onClick={async () => { const r = await api(`/api/proposals/${p.id}/sign-link`, { method: "POST", body: {} }); navigator.clipboard && navigator.clipboard.writeText(location.origin + "/sign/" + r.token); setMsg("Sign link copied: /sign/" + r.token); }}>Copy sign link</button>
@@ -1012,6 +1013,17 @@ function Reports() {
 class EB extends React.Component<any, any> { state = { err: "" }; static getDerivedStateFromError(e: any) { return { err: String(e && e.message || e) }; } componentDidCatch(e: any, info: any) { console.error("EB-CATCH:", e.message, (info.componentStack || "").slice(0, 900)); } render() { return this.state.err ? <div className="err">Render error: {this.state.err}</div> : this.props.children; } }
 
 function Logo({ light }: any) { return <span className="logo" style={light ? { color: "#fff" } : {}}><span className="mark">↗</span><span className="ltxt">Workpile</span></span>; }
+
+function AttachmentsPanel({ entityType, entityId }: any) {
+  const [files, setFiles] = useState<any[]>([]); const [msg, setMsg] = useState("");
+  const load = () => { api(`/api/attachments?entity_type=${entityType}&entity_id=${entityId}`).then(setFiles).catch(() => {}); };
+  useEffect(load, [entityId]);
+  const upload = (f: File) => { const r = new FileReader(); r.onload = async () => { try { const b64 = String(r.result || "").split(",")[1] || ""; await api("/api/attachments", { method: "POST", body: { entity_type: entityType, entity_id: entityId, name: f.name, mime: f.type || "application/octet-stream", data_base64: b64 } }); setMsg("Uploaded ✓"); load(); } catch (e: any) { setMsg(e.message); } }; r.readAsDataURL(f); };
+  return (<div className="card" style={{ marginTop: 12 }}><h3 style={{ marginTop: 0 }}>📎 Attachments</h3>
+    {files.map(f => <div key={f.id} className="rowflex" style={{ padding: "4px 0" }}><a href={`/api/attachments/${f.id}/download`}>{f.name}</a><span className="muted">{Math.max(1, Math.round(f.size / 1024))} KB · {dt(f.created_at)}</span><span style={{ flex: 1 }} /><button className="btn ghost small" onClick={async () => { await api(`/api/attachments/${f.id}`, { method: "DELETE" }); load(); }}>Delete</button></div>)}
+    {files.length === 0 && <p className="muted" style={{ margin: "4px 0" }}>No files yet — permits, manifests, photos from the field live here (object storage, not email threads).</p>}
+    <div className="rowflex"><label className="btn ghost small" style={{ cursor: "pointer" }}>+ Upload file<input type="file" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) upload(f); e.target.value = ""; }} /></label>{msg && <span className="ok">{msg}</span>}</div></div>);
+}
 
 function ProposalsView({ openLead }: any) {
   const [rows, setRows] = useState<any[]>([]); const [tab, setTab] = useState("list");
@@ -1923,7 +1935,9 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
   const inApp = (v: string) => appMode === "all" || (APPS[appMode] || []).includes(v) || ["settings", "billing", "admin"].includes(v);
   const NavB = ({ v, children, cnt, short, onGo }: any) => !inApp(v) ? null : <button className={nav.view === v ? "on" : ""} title={children} onClick={() => { if (onGo) onGo(); else go({ view: v }); setMOpen(false); }}><span className="nshort">{short}</span><span className="nlab">{children}</span>{cnt ? <span className="cnt">{cnt}</span> : null}</button>;
   const toggleSb = () => { const next = sb === "rail" ? "open" : "rail"; setSb(next); localStorage.setItem("wp_sb", next); };
-  return (<div className="layout">
+  return (<div>
+    {user.impersonation && <div style={{ background: "#991b1b", color: "#fff", padding: "8px 16px", display: "flex", gap: 12, alignItems: "center", fontSize: 13.5 }}><span>🕵 <b>Impersonation</b> — viewing as {user.name} ({user.workspace_name}). Started by {user.impersonation.by_name}; ends {dt(user.impersonation.expires_at)}. Everything done in this window is audited.</span><span style={{ flex: 1 }} /><button className="btn small" style={{ background: "#fff", color: "#991b1b", fontWeight: 700 }} onClick={async () => { await api("/api/auth/impersonation/exit", { method: "POST", body: {} }); location.reload(); }}>Exit impersonation</button></div>}
+    <div className="layout">
     {mOpen && <div className="scrim" onClick={() => setMOpen(false)} />}
     <aside className={`side ${sb === "rail" ? "rail" : ""} ${mOpen ? "mOpen" : ""}`}><div className="sideHead"><Logo /><button className="collapseBtn" title={sb === "rail" ? "Expand sidebar" : "Collapse sidebar"} onClick={toggleSb}>{sb === "rail" ? "»" : "«"}</button></div><div className="who">{user.name} · {user.role}</div>
       <select className="wsSwitch" value={user.workspace_id} onChange={async e => { if (e.target.value === "__new") { const name = prompt("New business / workspace name"); if (name) { await api("/api/workspaces", { method: "POST", body: { name } }); location.reload(); } return; } await api("/api/workspaces/switch", { method: "POST", body: { workspace_id: e.target.value } }); location.reload(); }}>
@@ -1983,8 +1997,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       {palOpen && <CommandPalette close={() => setPalOpen(false)} go={go} openLead={openLead} newLead={() => setCreating(true)} />}
       {helpOpen && <div className="modalWrap" onClick={() => setHelpOpen(false)}><div className="card" style={{ maxWidth: 430, margin: "10vh auto" }} onClick={e => e.stopPropagation()}><h3 style={{ marginTop: 0 }}>Keyboard shortcuts</h3><table><tbody>{[["⌘K or /", "Command palette — search + jump"], ["N", "New lead"], ["G then M / D / P / L / A / R / S / B", "Go to My Day / Dashboard / Pulse / Leads / Approvals / Reports / Settings / Billing"], ["?", "This help"], ["Esc", "Close dialogs"]].map(([k, v]) => <tr key={k}><td style={{ whiteSpace: "nowrap" }}><span className="kbd">{k}</span></td><td>{v}</td></tr>)}</tbody></table></div></div>}
       {leadId && <LeadDetail id={leadId} users={users} priceBook={priceBook} close={() => setLeadId(null)} refresh={() => setTick(t => t + 1)} />}
-    </main>
-  </div>);
+    </main></div></div>);
 }
 function BookingPage({ slug }: any) {
   const [info, setInfo] = useState<any>(null); const [err, setErr] = useState(""); const [done, setDone] = useState(false);

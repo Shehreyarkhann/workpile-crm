@@ -4,6 +4,7 @@
 // calendar, global search, favorites, report builder + dashboard pins.
 // Everything here works on the real tables — no dummy data paths.
 import { db, uid, now, audit, withTx } from "./db.ts";
+import { storagePut, storageGet, storageDelete } from "./storage.ts";
 import { financialSummary } from "./metrics.ts";
 import { notify } from "./comms.ts";
 
@@ -196,6 +197,10 @@ export function registerCrm(app: any, requireAuth: any, needPerm: any = null) {
 
   // ----- Duplicates + merge -----
   app.get("/api/proposals", requireAuth, (req: any, res: any) => { const rows = db.prepare(`SELECT p.*, l.service_requested, l.state lead_state, c.name contact_name FROM proposals p LEFT JOIN leads l ON l.id=p.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE p.workspace_id=? ORDER BY p.created_at DESC LIMIT 300`).all(ws(req)); res.json(rows); });
+  app.post("/api/attachments", requireAuth, (req: any, res: any) => { const b = req.body || {}; const et = String(b.entity_type || "lead"); const eid = String(b.entity_id || ""); const table = et === "job" ? "jobs" : et === "customer" ? "customers" : "leads"; const ent = db.prepare(`SELECT id FROM ${table} WHERE id=? AND workspace_id=?`).get(eid, ws(req)) as any; if (!ent) return res.status(404).json({ error: { code: "entity_not_found" } }); const data = String(b.data_base64 || ""); if (!data || data.length > 7_000_000) return res.status(422).json({ error: { code: "file_too_large", message: "Attachment missing or over ~5MB" } }); const buf = Buffer.from(data, "base64"); const id = uid("att"); const name = String(b.name || "file").slice(0, 120); const key = storagePut(`${ws(req)}/${et}/${eid}/${id}-${name}`, buf); db.prepare("INSERT INTO attachments (id,workspace_id,entity_type,entity_id,name,mime,size,storage_key,uploaded_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run(id, ws(req), et, eid, name, String(b.mime || "application/octet-stream").slice(0, 80), buf.length, key, req.user.id, now()); res.status(201).json(db.prepare("SELECT id,entity_type,entity_id,name,mime,size,created_at FROM attachments WHERE id=?").get(id)); });
+  app.get("/api/attachments", requireAuth, (req: any, res: any) => { res.json(db.prepare("SELECT id,entity_type,entity_id,name,mime,size,created_at FROM attachments WHERE workspace_id=? AND entity_type=? AND entity_id=? ORDER BY created_at DESC").all(ws(req), String(req.query.entity_type || "lead"), String(req.query.entity_id || ""))); });
+  app.get("/api/attachments/:id/download", requireAuth, (req: any, res: any) => { const a = db.prepare("SELECT * FROM attachments WHERE id=? AND workspace_id=?").get(req.params.id, ws(req)) as any; if (!a) return res.status(404).json({ error: { code: "not_found" } }); const buf = storageGet(a.storage_key); if (!buf) return res.status(404).json({ error: { code: "file_gone" } }); res.setHeader("Content-Type", a.mime || "application/octet-stream"); res.setHeader("Content-Disposition", `attachment; filename="${String(a.name).replace(/"/g, "")}"`); res.send(buf); });
+  app.delete("/api/attachments/:id", requireAuth, (req: any, res: any) => { const a = db.prepare("SELECT * FROM attachments WHERE id=? AND workspace_id=?").get(req.params.id, ws(req)) as any; if (!a) return res.status(404).json({ error: { code: "not_found" } }); storageDelete(a.storage_key); db.prepare("DELETE FROM attachments WHERE id=?").run(a.id); res.json({ ok: true }); });
   app.get("/api/duplicates", requireAuth, (req: any, res: any) => {
     const W = ws(req);
     const leadRow = (l: any) => ({ id: l.id, service_requested: l.service_requested, state: l.state, est_value: l.est_value, created_at: l.created_at, contact_name: l.contact_name, contact_phone: l.contact_phone, contact_email: l.contact_email, location: l.location });

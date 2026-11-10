@@ -7,6 +7,9 @@ import { db, now } from "./db.ts";
 import { outcomePayload } from "./app.ts";
 import { processEventDeliveries } from "./integrations.ts";
 import { processFollowups } from "./followups.ts";
+import { processJobs } from "./jobs.ts";
+import { relayOutbox } from "./outbox.ts";
+const JOB_HANDLERS: Record<string, (p: any) => Promise<void>> = { "push.notify": async (p: any) => { const m = await import("./push.ts"); await m.sendPush(p.userIds || [], p.title || "", p.body || ""); } };
 import { processAutomations } from "./ai.ts";
 import { chaseMissing } from "./timesheets.ts";
 import { chaseMissingReports } from "./fieldreports.ts";
@@ -57,6 +60,6 @@ export function replayDelivery(deliveryId: string): boolean {
 let timer: any = null;
 export function startWorker(intervalMs = 15000) {
   if (timer) return;
-  timer = setInterval(() => { processDeliveries().catch(() => {}); processEventDeliveries().catch(() => {}); processFollowups(process.env.BASE_URL || "").catch(() => {}); try { processAutomations(); } catch {} try { chaseMissing(); } catch {} try { chaseMissingReports(); } catch {} }, intervalMs);
+  timer = setInterval(() => { processDeliveries().catch(() => {}); processEventDeliveries().catch(() => {}); processFollowups(process.env.BASE_URL || "").catch(() => {}); try { processAutomations(); } catch {} try { chaseMissing(); } catch {} try { chaseMissingReports(); } catch {} processJobs(JOB_HANDLERS).catch(() => {}); try { relayOutbox(); } catch {} }, intervalMs);
   timer.unref?.();
 }

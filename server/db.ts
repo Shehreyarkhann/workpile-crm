@@ -61,6 +61,9 @@ export function initSchema() {
   CREATE TABLE IF NOT EXISTS inbox_items (id TEXT PRIMARY KEY, workspace_id TEXT, category TEXT, from_name TEXT, from_email TEXT, subject TEXT, body TEXT, lead_id TEXT, owner_id TEXT, next_action_due_at TEXT, received_at TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS signatures (id TEXT PRIMARY KEY, proposal_id TEXT, workspace_id TEXT, token TEXT UNIQUE, signer_name TEXT, signer_email TEXT, typed_signature TEXT, consent INTEGER DEFAULT 0, ip TEXT, user_agent TEXT, doc_hash TEXT, signed_at TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS payments (id TEXT PRIMARY KEY, workspace_id TEXT, proposal_id TEXT, kind TEXT DEFAULT 'deposit', amount REAL, currency TEXT DEFAULT 'USD', mode TEXT DEFAULT 'test', stripe_session_id TEXT, status TEXT DEFAULT 'pending', link TEXT, created_at TEXT, paid_at TEXT);
+  CREATE TABLE IF NOT EXISTS background_jobs (id TEXT PRIMARY KEY, kind TEXT, payload TEXT, status TEXT DEFAULT 'queued', attempts INTEGER DEFAULT 0, run_after TEXT, last_error TEXT, created_at TEXT, updated_at TEXT);
+  CREATE TABLE IF NOT EXISTS outbox_events (id TEXT PRIMARY KEY, workspace_id TEXT, type TEXT, entity_id TEXT, payload TEXT, created_at TEXT, processed_at TEXT);
+  CREATE TABLE IF NOT EXISTS attachments (id TEXT PRIMARY KEY, workspace_id TEXT, entity_type TEXT, entity_id TEXT, name TEXT, mime TEXT, size INTEGER, storage_key TEXT, uploaded_by TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS price_overrides (id TEXT PRIMARY KEY, workspace_id TEXT, proposal_id TEXT, lead_id TEXT, item_id TEXT, item_name TEXT, prev_price REAL, new_price REAL, reason TEXT, user_id TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS feature_flags (workspace_id TEXT, flag TEXT, enabled INTEGER DEFAULT 0, updated_at TEXT, PRIMARY KEY (workspace_id, flag));
   CREATE TABLE IF NOT EXISTS subscriptions (id TEXT PRIMARY KEY, workspace_id TEXT, plan TEXT, status TEXT DEFAULT 'trialing', stripe_customer_id TEXT, stripe_subscription_id TEXT, current_period_end TEXT, created_at TEXT, updated_at TEXT);
@@ -87,6 +90,8 @@ export function initSchema() {
     "ALTER TABLE notifications ADD COLUMN entity_id TEXT",
     "ALTER TABLE workspaces ADD COLUMN logo_data TEXT",
     "ALTER TABLE approvals ADD COLUMN content_hash TEXT",
+    "ALTER TABLE sessions ADD COLUMN impersonated_by TEXT",
+    "ALTER TABLE sessions ADD COLUMN impersonation_expires_at TEXT",
     "ALTER TABLE timesheets ADD COLUMN reviewed_by TEXT",
     "ALTER TABLE timesheets ADD COLUMN reviewed_at TEXT",
     "ALTER TABLE timesheets ADD COLUMN approved_by TEXT",
