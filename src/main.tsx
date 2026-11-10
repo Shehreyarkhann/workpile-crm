@@ -337,7 +337,40 @@ function Handoffs() {
 }
 
 function Ops() {
-  const [d, setD] = useState<any>(null); const [inbox, setInbox] = useState<any[]>([]);
+  function InboxQueue({ inbox, reload }: any) {
+  const [cat, setCat] = useState("all"); const [openId, setOpenId] = useState(""); const [sug, setSug] = useState<any>(null); const [draft, setDraft] = useState(""); const [msg, setMsg] = useState("");
+  const cats = ["all", "client_active_job", "proposal", "field", "vendor", "finance", "admin"];
+  const counts: Record<string, number> = {}; for (const i of inbox) if ((i.status || "open") === "open") counts[i.category] = (counts[i.category] || 0) + 1;
+  const openCount = inbox.filter((i: any) => (i.status || "open") === "open").length;
+  const shown = inbox.filter((i: any) => cat === "all" || i.category === cat);
+  const expand = async (i: any) => { if (openId === i.id) { setOpenId(""); return; } setOpenId(i.id); setSug(null); const r = await api("/api/inbox/" + i.id + "/suggestion").catch(() => null); setSug(r); if (r) setDraft(r.draft_body); };
+  const act = async (fn: () => Promise<any>, okMsg: string) => { const r = await fn().catch((e: any) => ({ error: e.message })); setMsg(r?.error ? "Failed: " + r.error : okMsg); reload(); };
+  return (<div className="card"><h3>Inbox queue — everything that isn't a lead, worked like a queue</h3>
+    <p className="muted">Triaged on arrival, each with an owner, a due date, and an AI-suggested next action with a ready-to-send reply. {openCount} open.</p>
+    {msg && <div className="ok">{msg}</div>}
+    <div className="rowflex" style={{ marginBottom: 10 }}>{cats.map(c => <button key={c} className={"btn small " + (cat === c ? "" : "ghost")} onClick={() => setCat(c)}>{c === "all" ? `All (${openCount} open)` : `${c.replaceAll("_", " ")}${counts[c] ? ` (${counts[c]})` : ""}`}</button>)}</div>
+    {shown.map((i: any) => { const doneIt = (i.status || "open") === "done"; return <div key={i.id} style={{ borderBottom: "1px solid #eef2f7", padding: "9px 0", opacity: doneIt ? 0.55 : 1 }}>
+      <div className="rowflex" style={{ cursor: "pointer" }} onClick={() => expand(i)}><span className="badge b-TRIAGED">{i.category.replaceAll("_", " ")}</span><b>{i.from_name || i.from_email}</b><span style={{ flex: 1 }}>{i.subject}</span>
+        {i.overdue && !doneIt && <span className="st fail">overdue</span>}{doneIt ? <span className="st pass">done</span> : <span className="muted">due {dOnly(i.next_action_due_at)} · {i.owner_name || "unassigned"}</span>}</div>
+      {openId === i.id && <div style={{ margin: "10px 0 4px", padding: 12, background: "#f8fafc", borderRadius: 10 }}>
+        <p style={{ whiteSpace: "pre-wrap", margin: "0 0 10px" }} className="muted">{String(i.body || "").slice(0, 900)}</p>
+        {sug ? <div><p style={{ margin: "0 0 4px" }}><b>🤖 Suggested: {sug.action}</b></p><p className="muted" style={{ margin: "0 0 8px" }}>{sug.why}</p>
+          <label className="f">Reply — edit freely, sends from your workspace</label>
+          <textarea rows={7} value={draft} onChange={e => setDraft(e.target.value)} />
+          <div className="rowflex" style={{ marginTop: 8 }}>
+            <button className="btn small" onClick={() => act(async () => { const r = await api("/api/inbox/" + i.id + "/reply", { method: "POST", body: { body: draft } }); return r; }, "Reply queued/sent ✓ — item closed")}>✉ Send reply & close</button>
+            {!doneIt ? <button className="btn ghost small" onClick={() => act(() => api("/api/inbox/" + i.id, { method: "PATCH", body: { status: "done" } }), "Marked done ✓")}>✓ Mark done</button> : <button className="btn ghost small" onClick={() => act(() => api("/api/inbox/" + i.id, { method: "PATCH", body: { status: "open" } }), "Reopened ✓")}>Reopen</button>}
+            <button className="btn ghost small" onClick={() => act(() => api("/api/inbox/" + i.id, { method: "PATCH", body: { snooze_days: 1 } }), "Snoozed to tomorrow ✓")}>💤 Snooze 1d</button>
+            <button className="btn ghost small" onClick={() => act(() => api("/api/inbox/" + i.id + "/convert-task", { method: "POST", body: {} }), "Task created for the owner ✓")}>Make task</button>
+            <button className="btn ghost small" onClick={() => act(() => api("/api/inbox/" + i.id + "/convert-lead", { method: "POST", body: {} }), "Converted to a lead ✓")}>Convert to lead</button>
+          </div></div> : <p className="muted">Loading suggestion…</p>}
+      </div>}
+    </div>; })}
+    {shown.length === 0 && <p className="muted">Nothing here — this category is clear.</p>}
+  </div>);
+}
+
+const [d, setD] = useState<any>(null); const [inbox, setInbox] = useState<any[]>([]);
   const load = () => { api("/api/ops").then(setD).catch(() => {}); api("/api/inbox").then(setInbox).catch(() => {}); };
   useEffect(load, []);
   if (!d) return <p className="muted">Loading ops…</p>;
@@ -351,7 +384,7 @@ function Ops() {
       <div className="card"><h3>Site visits</h3>{d.site_visits.map((v: any) => <p key={v.id} style={{ margin: "6px 0" }}>📍 {v.service_requested} — {dt(v.scheduled_at)} · {v.status}</p>)}{d.site_visits.length === 0 && <p className="muted">None scheduled.</p>}</div>
       <div className="card"><h3>Documents tracker</h3>{d.documents.map((doc: any) => <div className="check" key={doc.id}><span className={`st ${doc.status === "received" ? "pass" : "fail"}`}>{doc.status === "received" ? "✓" : "✗"}</span><span>{doc.name} — {doc.status}{doc.required ? " (required)" : ""}</span></div>)}</div>
     </div>
-    <div className="card"><h3>Inbox triage — everything, not just leads</h3><table><thead><tr><th>Category</th><th>From</th><th>Subject</th><th>Received</th></tr></thead><tbody>{inbox.map((i: any) => <tr key={i.id}><td><span className="badge b-TRIAGED">{i.category}</span></td><td>{i.from_name}</td><td>{i.subject}</td><td>{dt(i.received_at)}</td></tr>)}{inbox.length === 0 && <tr><td colSpan={4} className="muted">Inbox empty — connect Gmail/Outlook in Settings or ingest via API.</td></tr>}</tbody></table></div>
+    <InboxQueue inbox={inbox} reload={load} />
   </div>);
 }
 
@@ -779,6 +812,7 @@ function MyDay({ user, openLead, go }: any) {
   return (<div><h2 className="pt">{greet}, {first}.</h2><p className="sub">{new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })} — your personal queue. The business dashboard is one click over; this page is just yours.</p>
     <div className="kpis" style={{ marginBottom: 14 }}>
       <div className="kpi"><div className="lab">⏰ Overdue tasks</div><div className="val" style={{ color: d.overdue_tasks.length ? "#b91c1c" : undefined }}>{num(d.overdue_tasks.length)}</div><div className="hint">Assigned to you, past due</div></div>
+      <div className="kpi" onClick={() => go({ view: "ops" })} style={{ cursor: "pointer" }}><div className="lab">📥 Inbox waiting</div><div className="val" style={{ color: d.inbox_count ? "#b45309" : undefined }}>{num(d.inbox_count || 0)}</div><div className="hint">Client mail & more — not leads</div></div>
       <div className="kpi"><div className="lab">📋 Due today</div><div className="val">{num(d.today_tasks.length + d.my_leads_due.length)}</div><div className="hint">Tasks + lead next steps</div></div>
       <div className="kpi" onClick={() => go({ view: "approvals" })}><div className="lab">⚖️ Approvals waiting</div><div className="val">{num(d.approvals_count)}</div><div className="hint">Packets needing a decision</div></div>
       <div className="kpi"><div className="lab">🏆 Wins this week</div><div className="val">{num(d.wins_week.count)} · {money(d.wins_week.value)}</div><div className="hint">Closed across the business</div></div>

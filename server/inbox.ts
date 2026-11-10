@@ -81,3 +81,19 @@ export function parseEmailCsv(text: string): InboundEmail[] {
     return { from_name: (mi.name >= 0 ? r[mi.name] : "") || (fm && fm[2] ? fm[1].replace(/"/g, "").trim() : ""), from_email: fm ? (fm[2] || fm[1]) : rawFrom, subject: mi.subject >= 0 ? r[mi.subject] : "", body: (mi.body >= 0 ? r[mi.body] : "").slice(0, 4000), received_at: isNaN(d) ? undefined : new Date(d).toISOString() };
   });
 }
+
+// ---------- slice 19: per-category playbooks — suggested action + reply draft ----------
+export function suggestInboxAction(item: any, business: string): { action: string; why: string; draft_subject: string; draft_body: string } {
+  const first = String(item.from_name || "there").split(" ")[0];
+  const subj = String(item.subject || "");
+  const re = subj.toLowerCase().startsWith("re:") ? subj : `Re: ${subj}`;
+  const sign = `\n\n— ${business}`;
+  switch (item.category) {
+    case "client_active_job": return { action: "Reply to the client today", why: "Active-job clients are your reputation. A same-day, specific answer beats a perfect late one.", draft_subject: re, draft_body: `Hi ${first},\n\nThanks for writing in — we've got this flagged on your job and the team has been updated. You'll hear from us with a specific update by end of day tomorrow at the latest.\n\nIf it's urgent in the meantime, just reply here or call us and reference your job.` + sign };
+    case "proposal": return { action: "Confirm receipt & move it forward", why: "A signed/accepted proposal should become scheduled work within one business day — silence here cools deals.", draft_subject: re, draft_body: `Hi ${first},\n\nReceived — thank you! We've logged your signed proposal and our team is preparing the next steps. We'll confirm scheduling details shortly.\n\nAnything you'd like adjusted before we lock it in, just reply here.` + sign };
+    case "field": return { action: "File the report & chase what's missing", why: "Field reports close the loop on jobs; missing photos or hours are cheapest to chase the same week.", draft_subject: re, draft_body: `Hi ${first},\n\nReport received and filed — thank you. If any photos, hours, or sign-offs are still missing for this job, please send them today so nothing holds up closeout.` + sign };
+    case "vendor": return { action: "Confirm & file with the job paperwork", why: "Vendor confirmations belong with the job file; confirming receipt now prevents delivery-day surprises.", draft_subject: re, draft_body: `Hi ${first},\n\nConfirmed — we've received this and filed it with the job paperwork. If the delivery date or quantities change, please flag it on this thread.` + sign };
+    case "finance": return { action: "Acknowledge & route to bookkeeping", why: "Invoices and payroll items age into late fees and unhappy crews; acknowledging receipt buys goodwill while it routes.", draft_subject: re, draft_body: `Hi ${first},\n\nReceived — this has been routed to our bookkeeping today. If anything else is needed from our side, reply here and we'll turn it around quickly.` + sign };
+    default: return { action: "Acknowledge & assign", why: "Admin mail (permits, insurance, renewals) carries deadlines — acknowledge it, give it an owner and a date.", draft_subject: re, draft_body: `Hi ${first},\n\nThanks for sending this over — it's logged and assigned internally with a due date. We'll come back on this thread if we need anything from you.` + sign };
+  }
+}

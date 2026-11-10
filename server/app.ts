@@ -4,7 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { db, uid, now, hashPassword, verifyPassword, apiKeyHash, logEvent, audit } from "./db.ts";
 import { triageLead, packetCheck, demandGap, demandPool, injectionScan } from "./agents.ts";
 import { metrics, morningBrief } from "./metrics.ts";
-import { parseEmail, parseMbox, parseEmailCsv } from "./inbox.ts";
+import { parseEmail, parseMbox, parseEmailCsv, suggestInboxAction } from "./inbox.ts";
 import { proposalDocx } from "./docx.ts";
 import { getTemplate, proposalDocument, sanitizeHtml } from "./proptemplate.ts";
 import { ensureSignToken, getByToken, sign } from "./sign.ts";
@@ -416,7 +416,7 @@ app.get("/api/proposals/:id/docx", requireAuth, async (req: any, res) => {
 
 // ---------- slice 2: inbox ingestion + triage (§25 P0-2) ----------
 function ingestBatch(ws: string, actorId: string, emails: any[]): { results: any[]; by_category: Record<string, number>; leads_created: number; duplicates: number } {
-  const results: any[] = []; const by_category: Record<string, number> = {}; let leads_created = 0, duplicates = 0;
+  const results: any[] = []; const by_category: Record<string, number> = {}; let leads_created = 0, duplicates = 0; const important: any[] = [];
   const ops = db.prepare("SELECT id FROM users WHERE workspace_id=? AND role='OPS_ADMIN' AND active=1").get(ws) as any;
   for (const e of emails) {
     const parsed = parseEmail(e);
@@ -430,8 +430,11 @@ function ingestBatch(ws: string, actorId: string, emails: any[]): { results: any
       db.prepare("INSERT INTO inbox_items (id,workspace_id,category,from_name,from_email,subject,body,owner_id,next_action_due_at,received_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
         .run(id, ws, parsed.category, e.from_name || "", e.from_email || "", e.subject || "", e.body || "", ops?.id || actorId, new Date(Date.now() + 86400000).toISOString(), e.received_at || now(), now());
       results.push({ category: parsed.category, inbox_item_id: id });
+      if (["client_active_job", "proposal"].includes(parsed.category)) important.push({ category: parsed.category, subject: e.subject || "(no subject)", from: e.from_name || e.from_email || "unknown" });
     }
   }
+  if (important.length === 1) notifyOwners(ws, "inbox_important", `${important[0].category === "proposal" ? "📄 Proposal mail" : "🏠 Client job mail"}: ${important[0].subject}`, `From ${important[0].from} — triaged as ${important[0].category.replaceAll("_", " ")} and waiting in the Inbox queue.`);
+  else if (important.length > 1) notifyOwners(ws, "inbox_important", `📥 ${important.length} important emails triaged`, `${important.filter(i => i.category === "client_active_job").length} client-job and ${important.filter(i => i.category === "proposal").length} proposal emails are waiting in the Inbox queue.`);
   return { results, by_category, leads_created, duplicates };
 }
 app.post("/api/inbox/ingest", requireAuth, (req: any, res) => {
@@ -452,7 +455,54 @@ app.post("/api/imports/email", requireAuth, (req: any, res) => {
   db.prepare("INSERT INTO imports (id,workspace_id,filename,mapping,totals,status,created_at) VALUES (?,?,?,?,?,?,?)").run(id, req.user.workspace_id, req.body.filename || "email-backlog", JSON.stringify({ kind: "email", format }), JSON.stringify({ created: r.leads_created, dupes: r.duplicates, received: emails.length, by_category: r.by_category }), "committed", now());
   res.json({ import_id: id, received: emails.length, leads_created: r.leads_created, duplicates: r.duplicates, by_category: r.by_category });
 });
-app.get("/api/inbox", requireAuth, (req: any, res) => res.json(db.prepare("SELECT * FROM inbox_items WHERE workspace_id=? ORDER BY created_at DESC").all(req.user.workspace_id)));
+app.get("/api/inbox", requireAuth, (req: any, res) => {
+  const rows = db.prepare("SELECT i.*, u.name owner_name FROM inbox_items i LEFT JOIN users u ON u.id=i.owner_id WHERE i.workspace_id=?").all(req.user.workspace_id) as any[];
+  for (const r of rows) { r.age_days = Math.max(0, Math.floor((Date.now() - new Date(r.received_at || r.created_at).getTime()) / 86400000)); r.overdue = (r.status || "open") === "open" && r.next_action_due_at && new Date(r.next_action_due_at).getTime() < Date.now(); r.suggestion_action = suggestInboxAction(r, "").action; }
+  rows.sort((a, b) => ((a.status || "open") === (b.status || "open") ? 0 : (a.status || "open") === "open" ? -1 : 1) || Number(b.overdue) - Number(a.overdue) || String(b.received_at).localeCompare(String(a.received_at)));
+  res.json(rows);
+});
+// slice 19: inbox actions — work the non-lead mail like a queue, not a museum
+app.get("/api/inbox/:id/suggestion", requireAuth, (req: any, res) => {
+  const it = db.prepare("SELECT * FROM inbox_items WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!it) return res.status(404).json({ error: { code: "not_found" } });
+  const w = db.prepare("SELECT name FROM workspaces WHERE id=?").get(req.user.workspace_id) as any;
+  res.json(suggestInboxAction(it, w?.name || ""));
+});
+app.patch("/api/inbox/:id", requireAuth, (req: any, res) => {
+  const it = db.prepare("SELECT * FROM inbox_items WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!it) return res.status(404).json({ error: { code: "not_found" } });
+  const b = req.body || {};
+  if (b.status === "done") db.prepare("UPDATE inbox_items SET status='done', completed_at=? WHERE id=?").run(now(), it.id);
+  else if (b.status === "open") db.prepare("UPDATE inbox_items SET status='open', completed_at=NULL WHERE id=?").run(it.id);
+  if (b.owner_id !== undefined) db.prepare("UPDATE inbox_items SET owner_id=? WHERE id=?").run(b.owner_id || null, it.id);
+  if (b.snooze_days) db.prepare("UPDATE inbox_items SET next_action_due_at=? WHERE id=?").run(new Date(Date.now() + Number(b.snooze_days) * 86400000).toISOString(), it.id);
+  res.json(db.prepare("SELECT * FROM inbox_items WHERE id=?").get(it.id));
+});
+app.post("/api/inbox/:id/reply", requireAuth, async (req: any, res) => {
+  const it = db.prepare("SELECT * FROM inbox_items WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!it) return res.status(404).json({ error: { code: "not_found" } });
+  if (!it.from_email) return res.status(422).json({ error: { code: "no_sender_email" } });
+  const w = db.prepare("SELECT name FROM workspaces WHERE id=?").get(req.user.workspace_id) as any;
+  const sug = suggestInboxAction(it, w?.name || "");
+  const msg: any = await queueAndDeliver(req.user.workspace_id, { lead_id: it.lead_id || undefined, channel: "email", to: it.from_email, subject: String(req.body.subject || sug.draft_subject), body: String(req.body.body || sug.draft_body) });
+  db.prepare("UPDATE inbox_items SET status='done', completed_at=? WHERE id=?").run(now(), it.id);
+  res.json({ sent: true, status: msg.status });
+});
+app.post("/api/inbox/:id/convert-lead", requireAuth, (req: any, res) => {
+  const it = db.prepare("SELECT * FROM inbox_items WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!it) return res.status(404).json({ error: { code: "not_found" } });
+  const r = createLead(req.user.workspace_id, req.user.id, { contact: { name: it.from_name || "", phone: "", email: it.from_email || "" }, service_requested: "", message: `${it.subject || ""}\n${it.body || ""}`, source: "email-inbox-converted" });
+  db.prepare("UPDATE inbox_items SET status='done', completed_at=?, lead_id=? WHERE id=?").run(now(), r.lead.id, it.id);
+  res.json({ lead_id: r.lead.id, duplicate: r.duplicate });
+});
+app.post("/api/inbox/:id/convert-task", requireAuth, (req: any, res) => {
+  const it = db.prepare("SELECT * FROM inbox_items WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!it) return res.status(404).json({ error: { code: "not_found" } });
+  const tid = uid("tsk");
+  db.prepare("INSERT INTO tasks (id,workspace_id,lead_id,assignee_id,type,title,due_at,status,created_at) VALUES (?,?,?,?,?,?,?,?,?)").run(tid, req.user.workspace_id, it.lead_id || null, it.owner_id || req.user.id, "inbox", `Inbox (${it.category.replaceAll("_", " ")}): ${String(it.subject || "email").slice(0, 90)}`, it.next_action_due_at || new Date(Date.now() + 86400000).toISOString(), "open", now());
+  db.prepare("UPDATE inbox_items SET status='done', completed_at=? WHERE id=?").run(now(), it.id);
+  res.json({ task_id: tid });
+});
 
 // ---------- slice 3: e-sign + customer signing page ----------
 app.post("/api/proposals/:id/sign-link", requireAuth, (req: any, res) => {
@@ -1101,7 +1151,9 @@ app.get("/api/myday", requireAuth, (req: any, res) => {
   const approvals_waiting = canApprove ? db.prepare(`SELECT a.id, a.lead_id, a.submitted_at, a.tier, c.name contact_name, l.service_requested, l.est_value FROM approvals a JOIN leads l ON l.id=a.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE a.workspace_id=? AND a.decision IS NULL ORDER BY a.submitted_at LIMIT 6`).all(ws) : [];
   const followups_due = db.prepare(`SELECT f.*, c.name contact_name, l.service_requested FROM followup_enrollments f JOIN leads l ON l.id=f.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE f.workspace_id=? AND f.status='active' AND f.next_due_at<? ORDER BY f.next_due_at LIMIT 6`).all(ws, tomorrow);
   const wins = db.prepare(`SELECT COUNT(*) c, COALESCE(SUM(est_value),0) v FROM leads WHERE workspace_id=? AND state='WON' AND updated_at>=?`).get(ws, new Date(Date.now() - 7 * 86400000).toISOString()) as any;
-  res.json({ overdue_tasks, today_tasks, my_leads_due, approvals_waiting, approvals_count: approvals_waiting.length, followups_due, wins_week: { count: wins.c, value: wins.v } });
+  const inbox_open = db.prepare(`SELECT * FROM inbox_items WHERE workspace_id=? AND COALESCE(status,'open')='open' AND (owner_id=? OR owner_id IS NULL) ORDER BY next_action_due_at LIMIT 6`).all(ws, me);
+  const inbox_count = (db.prepare(`SELECT COUNT(*) c FROM inbox_items WHERE workspace_id=? AND COALESCE(status,'open')='open'`).get(ws) as any).c;
+  res.json({ overdue_tasks, today_tasks, my_leads_due, approvals_waiting, approvals_count: approvals_waiting.length, followups_due, wins_week: { count: wins.c, value: wins.v }, inbox_open, inbox_count });
 });
 // ---------- slice 9: activity pulse + follow-ups ----------
 app.get("/api/activity", requireAuth, (req: any, res) => {

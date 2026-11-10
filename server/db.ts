@@ -105,6 +105,8 @@ export function initSchema() {
     "ALTER TABLE workspaces ADD COLUMN pt_intro TEXT",
     "ALTER TABLE workspaces ADD COLUMN pt_terms TEXT",
     "ALTER TABLE workspaces ADD COLUMN pt_footer TEXT",
+    "ALTER TABLE inbox_items ADD COLUMN status TEXT DEFAULT 'open'",
+    "ALTER TABLE inbox_items ADD COLUMN completed_at TEXT",
     "ALTER TABLE workspaces ADD COLUMN booking_slug TEXT",
     "ALTER TABLE workspaces ADD COLUMN booking_enabled INTEGER DEFAULT 0",
     "ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0",
