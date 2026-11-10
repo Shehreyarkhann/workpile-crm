@@ -702,13 +702,14 @@ function IntegrationConfig({ id, s, setS, keys, hooks, oauth, loadAll, onJump, m
   </div></div>;
 }
 
+const px = (n: number) => "$" + Number(n).toFixed(2);
 function Billing() {
   const [b, setB] = useState<any>(null);
   useEffect(() => { api("/api/billing").then(setB).catch(() => {}); }, []);
   if (!b) return <p className="muted">Loading billing…</p>;
   return (<div><h2 className="pt">Billing</h2><p className="sub">Your Workpile subscription — plan, trial, and live usage against your caps.</p>
     <div className="kpis">
-      <div className="kpi"><div className="lab">Plan</div><div className="val">{b.plan.name}</div><div className="hint">{b.plan.custom ? "Custom pricing" : <><s className="muted">{money(b.plan.list_price)}</s> <b>{money(b.plan.annual_price)}/mo</b> billed annually</>}</div></div>
+      <div className="kpi"><div className="lab">Plan</div><div className="val">{b.plan.name}</div><div className="hint">{b.plan.custom ? "Custom pricing" : <><s className="muted">{px(b.plan.list_price)}</s> <b>{px(b.plan.annual_price)}/mo</b> billed annually</>}</div></div>
       <div className="kpi"><div className="lab">Seats</div><div className="val">{b.usage.seats_used}{b.usage.seats_limit ? ` / ${b.usage.seats_limit}` : ""}</div><div className="hint">{b.usage.seats_limit ? "people with logins on this plan" : "unlimited"}</div></div>
       <div className="kpi"><div className="lab">Status</div><div className="val" style={{ fontSize: 20 }}>{b.subscription.status}</div><div className="hint">{b.trial_days_left !== null ? `${b.trial_days_left} trial days left` : "—"}</div></div>
       <div className="kpi"><div className="lab">Leads this month</div><div className="val">{num(b.usage.leads_this_month)}</div><div className="hint">of {num(b.usage.leads_limit)} ({b.usage.leads_pct}%)</div></div>
@@ -717,8 +718,8 @@ function Billing() {
     {b.usage.leads_pct >= 80 && <div className="err">You're at {b.usage.leads_pct}% of your monthly lead cap — ingestion pauses at 100%, approvals never do.</div>}
     <div className="card"><h3>Plans — per seat, billed annually at the sale price</h3>
       <div className="grid3">{Object.entries(b.plans).map(([k, p]: any) => <div className="feat" key={k} style={b.plan.key === k ? { borderColor: "#166534", borderWidth: 2 } : {}}><span className="muted" style={{ textTransform: "uppercase", fontWeight: 700, fontSize: 12 }}>{p.name} · {p.seats ? `${p.seats} seat${p.seats > 1 ? "s" : ""}` : "Custom seats"}</span>
-        {p.custom ? <h4 style={{ fontSize: 24 }}>Custom</h4> : <h4 style={{ fontSize: 24 }}><s className="muted" style={{ fontSize: 16 }}>{money(p.list_price)}</s> {money(p.annual_price)}/mo</h4>}
-        <p>{p.custom ? p.blurb : <>Billed annually ({money(p.annual_price * 12)}/yr) · {p.blurb}</>}</p>
+        {p.custom ? <h4 style={{ fontSize: 24 }}>Custom</h4> : <h4 style={{ fontSize: 24 }}><s className="muted" style={{ fontSize: 16 }}>{px(p.list_price)}</s> {px(p.annual_price)}/mo</h4>}
+        <p>{p.custom ? p.blurb : <>Billed annually ({px(p.annual_price * 12)}/yr) · {p.blurb}</>}</p>
         <button className="btn" style={{ marginTop: 10 }} disabled={b.plan.key === k} onClick={async () => { const r = await api("/api/billing/checkout", { method: "POST", body: { plan: k } }); if (r.url) location.href = r.url; else alert(r.message || "Recorded — checkout opens when Stripe is configured."); }}>{b.plan.key === k ? "Current plan" : p.custom ? "Talk to us" : `Switch to ${p.name}`}</button></div>)}</div>
       <p className="muted">Sale pricing is the annual plan — that's the price Stripe charges when billing is configured. Month-to-month is the struck-through list price.</p></div>
   </div>);
