@@ -576,6 +576,30 @@ function SyncModal({ close, done }: any) {
 
 const relTime = (s: any) => { if (!s) return ""; const m = Math.max(1, Math.round((Date.now() - new Date(s).getTime()) / 60000)); if (m < 60) return m + "m ago"; const h = Math.round(m / 60); if (h < 24) return h + "h ago"; return Math.round(h / 24) + "d ago"; };
 const EV_ICON: Record<string, string> = { created: "🆕", state_changed: "➡️", proposal_created: "📄", proposal_sent: "📨", message_email: "✉️", message_sms: "💬", task: "✅", note: "📝", approval_requested: "🙋", approval_decided: "⚖️", signed: "✍️" };
+function MyDay({ user, openLead, go }: any) {
+  const [d, setD] = useState<any>(null); const [tickL, setTickL] = useState(0);
+  useEffect(() => { api("/api/myday").then(setD).catch(() => {}); }, [tickL]);
+  const hour = new Date().getHours(); const greet = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+  const first = (user?.name || "").split(" ")[0];
+  if (!d) return <p className="muted">Loading your day…</p>;
+  const done = async (tid: string) => { await api(`/api/tasks/${tid}/complete`, { method: "POST", body: {} }); setTickL(t => t + 1); };
+  const TaskRow = ({ t, late }: any) => <div className="pulseRow" style={{ cursor: "default" }}><span className="pulseIco">{late ? "⏰" : "✅"}</span><div style={{ flex: 1 }} onClick={() => openLead(t.lead_id)}><b>{t.title}</b> <span className="muted">· {t.contact_name || ""} — {t.service_requested || ""}</span><br /><span className={late ? "" : "muted"} style={late ? { color: "#b91c1c", fontWeight: 600 } : {}}>{late ? "Overdue — " : "Due "}{dOnly(t.due_at)}</span></div><button className="btn ghost small" onClick={() => done(t.id)}>✓ Done</button></div>;
+  const nothing = d.overdue_tasks.length + d.today_tasks.length + d.my_leads_due.length + d.approvals_waiting.length === 0;
+  return (<div><h2 className="pt">{greet}, {first}.</h2><p className="sub">{new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })} — your personal queue. The business dashboard is one click over; this page is just yours.</p>
+    <div className="kpis" style={{ marginBottom: 14 }}>
+      <div className="kpi"><div className="lab">⏰ Overdue tasks</div><div className="val" style={{ color: d.overdue_tasks.length ? "#b91c1c" : undefined }}>{num(d.overdue_tasks.length)}</div><div className="hint">Assigned to you, past due</div></div>
+      <div className="kpi"><div className="lab">📋 Due today</div><div className="val">{num(d.today_tasks.length + d.my_leads_due.length)}</div><div className="hint">Tasks + lead next steps</div></div>
+      <div className="kpi" onClick={() => go({ view: "approvals" })}><div className="lab">⚖️ Approvals waiting</div><div className="val">{num(d.approvals_count)}</div><div className="hint">Packets needing a decision</div></div>
+      <div className="kpi"><div className="lab">🏆 Wins this week</div><div className="val">{num(d.wins_week.count)} · {money(d.wins_week.value)}</div><div className="hint">Closed across the business</div></div>
+    </div>
+    {nothing && <div className="card" style={{ textAlign: "center", padding: 30 }}><div style={{ fontSize: 32 }}>🌤️</div><b>Your queue is clear.</b><p className="muted">No overdue tasks, nothing due today, no approvals waiting on you. Check Pulse for what the team is moving.</p></div>}
+    {(d.overdue_tasks.length > 0 || d.today_tasks.length > 0) && <div className="card" style={{ padding: "6px 14px", marginBottom: 12 }}><h3 style={{ margin: "10px 0 4px" }}>Your tasks</h3>{d.overdue_tasks.map((t: any) => <TaskRow key={t.id} t={t} late />)}{d.today_tasks.map((t: any) => <TaskRow key={t.id} t={t} />)}</div>}
+    {d.my_leads_due.length > 0 && <div className="card" style={{ padding: "6px 14px", marginBottom: 12 }}><h3 style={{ margin: "10px 0 4px" }}>Your leads need a next step</h3>{d.my_leads_due.map((l: any) => <div key={l.id} className="pulseRow" onClick={() => openLead(l.id)}><span className="pulseIco">🎯</span><div style={{ flex: 1 }}><b>{l.contact_name}</b> <span className="muted">· {l.service_requested}</span><br /><span>{l.next_action || "Follow up"} — due {dOnly(l.next_action_due_at)}</span></div><Badge s={l.state} /></div>)}</div>}
+    {d.approvals_waiting.length > 0 && <div className="card" style={{ padding: "6px 14px", marginBottom: 12 }}><h3 style={{ margin: "10px 0 4px" }}>Waiting on your approval</h3>{d.approvals_waiting.map((a: any) => <div key={a.id} className="pulseRow" onClick={() => go({ view: "approvals" })}><span className="pulseIco">⚖️</span><div style={{ flex: 1 }}><b>{a.contact_name}</b> <span className="muted">· {a.service_requested}</span><br /><span>{money(a.est_value)} · {a.tier} tier · submitted {dt(a.submitted_at)}</span></div><span className="muted">Decide →</span></div>)}</div>}
+    {d.followups_due.length > 0 && <div className="card" style={{ padding: "6px 14px" }}><h3 style={{ margin: "10px 0 4px" }}>🔁 Follow-ups firing by tomorrow</h3>{d.followups_due.map((f: any) => <div key={f.id} className="pulseRow" onClick={() => openLead(f.lead_id)}><span className="pulseIco">📨</span><div style={{ flex: 1 }}><b>{f.contact_name}</b> <span className="muted">· {f.service_requested}</span><br /><span>Step {(f.step_idx || 0) + 1} nudge — {dt(f.next_due_at)}</span></div></div>)}</div>}
+  </div>);
+}
+
 function Pulse({ openLead }: any) {
   const [evs, setEvs] = useState<any[]>([]);
   useEffect(() => { api("/api/activity").then(r => setEvs(r.events)).catch(() => {}); }, []);
@@ -588,6 +612,7 @@ function Pulse({ openLead }: any) {
 function CommandPalette({ close, go, openLead, newLead }: any) {
   const [q, setQ] = useState(""); const [leads, setLeads] = useState<any[]>([]); const [recents, setRecents] = useState<any[]>([]); const [idx, setIdx] = useState(0);
   const ACTIONS = [
+    { label: "My Day", hint: "G then M", run: () => go({ view: "myday" }) },
     { label: "Dashboard", hint: "G then D", run: () => go({ view: "dashboard" }) },
     { label: "Pulse — activity stream", hint: "G then P", run: () => go({ view: "pulse" }) },
     { label: "Leads", hint: "G then L", run: () => go({ view: "leads" }) },
@@ -640,7 +665,7 @@ function FollowupSettings({ ws }: any) {
 
 function App() {
   const [user, setUser] = useState<any>(null); const [login, setLogin] = useState({ email: "", password: "" }); const [err, setErr] = useState("");
-  const [nav, setNav] = useState<Nav>({ view: "dashboard" }); const [users, setUsers] = useState<any[]>([]); const [priceBook, setPriceBook] = useState<any[]>([]);
+  const [nav, setNav] = useState<Nav>({ view: "myday" }); const [users, setUsers] = useState<any[]>([]); const [priceBook, setPriceBook] = useState<any[]>([]);
 const [sb, setSb] = useState(() => localStorage.getItem("wp_sb") || "open"); const [mOpen, setMOpen] = useState(false);
   const [notifs, setNotifs] = useState<any[]>([]); const [unread, setUnread] = useState(0); const [bellOpen, setBellOpen] = useState(false); const [verifyMsg, setVerifyMsg] = useState("");
 const [pending, setPending] = useState(0); const [creating, setCreating] = useState(false); const [leadId, setLeadId] = useState<string | null>(null); const [tick, setTick] = useState(0);
@@ -655,7 +680,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       if (e.key === "/") { e.preventDefault(); setPalOpen(true); return; }
       if (e.key.toLowerCase() === "n") { setCreating(true); return; }
       if (e.key.toLowerCase() === "g") { gAt = Date.now(); return; }
-      if (gAt && Date.now() - gAt < 900) { const m: Record<string, string> = { d: "dashboard", p: "pulse", l: "leads", a: "approvals", r: "reports", s: "settings", b: "billing" }; const v = m[e.key.toLowerCase()]; if (v) { setNav({ view: v }); gAt = 0; } }
+      if (gAt && Date.now() - gAt < 900) { const m: Record<string, string> = { m: "myday", d: "dashboard", p: "pulse", l: "leads", a: "approvals", r: "reports", s: "settings", b: "billing" }; const v = m[e.key.toLowerCase()]; if (v) { setNav({ view: v }); gAt = 0; } }
     };
     window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, [user, palOpen]);
   const [workspaces, setWorkspaces] = useState<any[]>([]); const [newWs, setNewWs] = useState("");
@@ -673,7 +698,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       <select className="wsSwitch" value={user.workspace_id} onChange={async e => { if (e.target.value === "__new") { const name = prompt("New business / workspace name"); if (name) { await api("/api/workspaces", { method: "POST", body: { name } }); location.reload(); } return; } await api("/api/workspaces/switch", { method: "POST", body: { workspace_id: e.target.value } }); location.reload(); }}>
         {workspaces.map((w: any) => <option key={w.workspace_id} value={w.workspace_id}>{w.name} ({w.role})</option>)}
         <option value="__new">+ New workspace…</option></select>
-      <NavB v="dashboard" short="DA">Dashboard</NavB><NavB v="pulse" short="PU">Pulse</NavB><NavB v="leads" short="LE">Leads</NavB><NavB v="reports" short="RE">Reports</NavB><NavB v="approvals" short="AP" cnt={pending || undefined}>Approvals</NavB><NavB v="ai" short="AI">AI Assistant</NavB><NavB v="imports" short="IM">Import CSV</NavB><NavB v="demand" short="DG">Demand Gap</NavB><NavB v="handoffs" short="HA">Handoffs</NavB><NavB v="ops" short="OP">Ops Console</NavB><NavB v="settings" short="SE">Settings</NavB><NavB v="billing" short="BI">Billing</NavB>
+      <NavB v="myday" short="MY">My Day</NavB><NavB v="dashboard" short="DA">Dashboard</NavB><NavB v="pulse" short="PU">Pulse</NavB><NavB v="leads" short="LE">Leads</NavB><NavB v="reports" short="RE">Reports</NavB><NavB v="approvals" short="AP" cnt={pending || undefined}>Approvals</NavB><NavB v="ai" short="AI">AI Assistant</NavB><NavB v="imports" short="IM">Import CSV</NavB><NavB v="demand" short="DG">Demand Gap</NavB><NavB v="handoffs" short="HA">Handoffs</NavB><NavB v="ops" short="OP">Ops Console</NavB><NavB v="settings" short="SE">Settings</NavB><NavB v="billing" short="BI">Billing</NavB>
       {user.is_platform_admin ? <NavB v="admin" short="AD">Platform Admin</NavB> : null}
       <div className="sideFoot"><button title="Sign out" onClick={async () => { await fetch("/api/auth/logout", { method: "POST" }).catch(() => {}); setUser(null); }}><span className="nshort">⏻</span><span className="nlab">Sign out</span></button></div>
     </aside>
@@ -686,6 +711,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
         <button className="btn" onClick={() => setCreating(true)}>+ New Lead</button></div>
       {user && user.email_verified === 0 && <div className="verifyBar">✉️ Verify your email to secure your account and enable password recovery. <button className="btn ghost small" onClick={async () => { const r = await api("/api/auth/resend-verify", { method: "POST", body: {} }).catch((e: any) => ({ error: e.message })); setVerifyMsg(r.verify_url ? "Test mode \u2014 verify here: " + r.verify_url : r.error ? r.error : "Verification email sent \u2014 check your inbox."); }}>Resend verification</button>{verifyMsg && <span style={{ marginLeft: 8 }}>{verifyMsg}</span>}</div>}
       <EB>
+      {nav.view === "myday" && <MyDay user={user} openLead={openLead} go={go} />}
       {nav.view === "dashboard" && <Dashboard go={go} openLead={openLead} />}
       {nav.view === "pulse" && <Pulse openLead={openLead} />}
       {nav.view === "leads" && <Leads key={JSON.stringify(nav.leads || {}) + tick} initial={nav.leads} openLead={openLead} users={users} me={user} />}
@@ -702,7 +728,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       </EB>
       {creating && <CreateLead users={users} done={(id: any) => { setCreating(false); setTick(t => t + 1); if (id) openLead(id); }} />}
       {palOpen && <CommandPalette close={() => setPalOpen(false)} go={go} openLead={openLead} newLead={() => setCreating(true)} />}
-      {helpOpen && <div className="modalWrap" onClick={() => setHelpOpen(false)}><div className="card" style={{ maxWidth: 430, margin: "10vh auto" }} onClick={e => e.stopPropagation()}><h3 style={{ marginTop: 0 }}>Keyboard shortcuts</h3><table><tbody>{[["⌘K or /", "Command palette — search + jump"], ["N", "New lead"], ["G then D / P / L / A / R / S / B", "Go to Dashboard / Pulse / Leads / Approvals / Reports / Settings / Billing"], ["?", "This help"], ["Esc", "Close dialogs"]].map(([k, v]) => <tr key={k}><td style={{ whiteSpace: "nowrap" }}><span className="kbd">{k}</span></td><td>{v}</td></tr>)}</tbody></table></div></div>}
+      {helpOpen && <div className="modalWrap" onClick={() => setHelpOpen(false)}><div className="card" style={{ maxWidth: 430, margin: "10vh auto" }} onClick={e => e.stopPropagation()}><h3 style={{ marginTop: 0 }}>Keyboard shortcuts</h3><table><tbody>{[["⌘K or /", "Command palette — search + jump"], ["N", "New lead"], ["G then M / D / P / L / A / R / S / B", "Go to My Day / Dashboard / Pulse / Leads / Approvals / Reports / Settings / Billing"], ["?", "This help"], ["Esc", "Close dialogs"]].map(([k, v]) => <tr key={k}><td style={{ whiteSpace: "nowrap" }}><span className="kbd">{k}</span></td><td>{v}</td></tr>)}</tbody></table></div></div>}
       {leadId && <LeadDetail id={leadId} users={users} priceBook={priceBook} close={() => setLeadId(null)} refresh={() => setTick(t => t + 1)} />}
     </main>
   </div>);

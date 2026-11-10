@@ -869,6 +869,20 @@ app.get("/api/reports/export", requireAuth, (req: any, res) => {
   res.type("text/csv").setHeader("Content-Disposition", `attachment; filename="workpile-${kind}.csv"`).send(csv);
 });
 
+// ---------- slice 10: My Day (personal command center) ----------
+app.get("/api/myday", requireAuth, (req: any, res) => {
+  const ws = req.user.workspace_id, me = req.user.id;
+  const start = new Date(); start.setHours(0, 0, 0, 0);
+  const tomorrow = new Date(start.getTime() + 86400000).toISOString();
+  const overdue_tasks = db.prepare(`SELECT t.*, c.name contact_name, l.service_requested FROM tasks t JOIN leads l ON l.id=t.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE t.workspace_id=? AND t.assignee_id=? AND t.status='open' AND t.due_at<? ORDER BY t.due_at LIMIT 12`).all(ws, me, start.toISOString());
+  const today_tasks = db.prepare(`SELECT t.*, c.name contact_name, l.service_requested FROM tasks t JOIN leads l ON l.id=t.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE t.workspace_id=? AND t.assignee_id=? AND t.status='open' AND t.due_at>=? AND t.due_at<? ORDER BY t.due_at LIMIT 12`).all(ws, me, start.toISOString(), tomorrow);
+  const my_leads_due = db.prepare(`SELECT l.*, c.name contact_name FROM leads l LEFT JOIN contacts c ON c.id=l.contact_id WHERE l.workspace_id=? AND l.owner_id=? AND l.state NOT IN ('WON','LOST','NO_RESPONSE','UNSERVICEABLE','JUNK','DUPLICATE') AND l.next_action_due_at IS NOT NULL AND l.next_action_due_at<? ORDER BY l.next_action_due_at LIMIT 12`).all(ws, me, tomorrow);
+  const canApprove = ["OWNER", "APPROVER", "ADMIN"].includes(req.user.role);
+  const approvals_waiting = canApprove ? db.prepare(`SELECT a.id, a.lead_id, a.submitted_at, a.tier, c.name contact_name, l.service_requested, l.est_value FROM approvals a JOIN leads l ON l.id=a.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE a.workspace_id=? AND a.decision IS NULL ORDER BY a.submitted_at LIMIT 6`).all(ws) : [];
+  const followups_due = db.prepare(`SELECT f.*, c.name contact_name, l.service_requested FROM followup_enrollments f JOIN leads l ON l.id=f.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE f.workspace_id=? AND f.status='active' AND f.next_due_at<? ORDER BY f.next_due_at LIMIT 6`).all(ws, tomorrow);
+  const wins = db.prepare(`SELECT COUNT(*) c, COALESCE(SUM(est_value),0) v FROM leads WHERE workspace_id=? AND state='WON' AND updated_at>=?`).get(ws, new Date(Date.now() - 7 * 86400000).toISOString()) as any;
+  res.json({ overdue_tasks, today_tasks, my_leads_due, approvals_waiting, approvals_count: approvals_waiting.length, followups_due, wins_week: { count: wins.c, value: wins.v } });
+});
 // ---------- slice 9: activity pulse + follow-ups ----------
 app.get("/api/activity", requireAuth, (req: any, res) => {
   const rows = db.prepare(`SELECT e.*, e.type AS event_type, c.name contact_name, l.service_requested, u.name actor_name FROM lead_events e JOIN leads l ON l.id=e.lead_id LEFT JOIN contacts c ON c.id=l.contact_id LEFT JOIN users u ON u.id=e.actor WHERE e.workspace_id=? ORDER BY e.created_at DESC LIMIT 60`).all(req.user.workspace_id);

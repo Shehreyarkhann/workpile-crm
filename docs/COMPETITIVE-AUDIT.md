@@ -49,3 +49,30 @@ Workpile build as of Slice 8 (338b436).
 
 ## Honest roadmaps (not this slice)
 Calendar sync + booking page (OAuth apps first), two-way SMS threading (Twilio inbound webhook — small once a number exists), QuickBooks native, assignment rules UI, dark mode, native apps.
+
+
+## The road to #1 (added after Slice 9, 2026-11-09)
+"#1" for Workpile does not mean out-Salesforcing Salesforce. It means owning one
+sentence in the buyer's head: *"the system that clears and controls the pile."*
+
+**Tier 1 — finish the daily-driver moat (code, near-term)**
+- ✅ My Day personal command center (Slice 10) — the app now opens on YOUR queue.
+- Bulk actions on the leads table (assign / advance / archive many at once).
+- Two-way texting: Twilio inbound webhook threads replies onto the lead.
+- Saved-view sharing + lead hover cards; dark mode (token pass).
+- Push notifications to the approver's phone (PWA push) — approvals under 10 seconds from a lock screen.
+
+**Tier 2 — integration gravity (why platforms win)**
+- QuickBooks Online native sync (won job → invoice draft), Google/Outlook calendar sync for site visits, public booking page.
+- Zapier/Make public app listing (we already have the API + webhooks they wrap).
+- Native importers: one-click migration from Jobber / Housecall Pro / ServiceTitan / Salesforce CSV shapes.
+
+**Tier 3 — AI that competitors can't bolt on**
+- AI receptionist intake: missed call → AI callback/text in 60 seconds → qualified lead in the pile (approval-gated).
+- Win/loss intelligence: the Demand Gap + lost-reason data becomes pricing/coaching insight per rep and per service.
+- Forecast: stage-weighted pipeline + "at-risk" flags on proposals going cold (the follow-up engine already watches them).
+
+**Tier 4 — proof, the actual moat**
+- One design partner's numbers (backlog cleared in N days, FPAR, recovered $) published as the category benchmark.
+- The free Backlog Audit as the permanent top-of-funnel; Annual "State of the Pile" report from anonymized data.
+- SOC 2 Type I path + status page + one-click full data export (trust is a feature in this market).
