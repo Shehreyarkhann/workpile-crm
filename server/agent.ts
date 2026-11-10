@@ -6,7 +6,7 @@
 // send_message is approval-class at EVERY level. Steps execute once (status-guarded),
 // verify their write, and record evidence on the execution.
 import { db, uid, now } from "./db.ts";
-import { TOOLS, TOOL_LIST } from "./tools.ts";
+import { TOOLS, TOOL_LIST, draftBodyFor } from "./tools.ts";
 import { getProvider, providerStatus } from "./llm.ts";
 import { agentLevel } from "./ai.ts";
 import { qualifiedLeadsMissingProposals } from "./proposals-core.ts";
@@ -20,7 +20,7 @@ export function needsApproval(control: string, level: number): boolean {
   if (control === "execute") return level < 3;
   return false;
 }
-const labelFor = (tool: string, args: any) => { const t = TOOLS[tool]; return t ? `${tool.replaceAll("_", " ")}${args?.lead_id ? " · " + String(args.lead_id).slice(-6) : ""}` : tool; };
+const labelFor = (tool: string, args: any) => { if (args?.__label) return String(args.__label); const t = TOOLS[tool]; return t ? `${tool.replaceAll("_", " ")}${args?.lead_id ? " · " + String(args.lead_id).slice(-6) : ""}` : tool; };
 function mkStep(tool: string, args: any, level: number): Step { const t = TOOLS[tool]; const na = needsApproval(t.control, level); return { id: uid("stp"), tool, args: args || {}, control: t.control, label: labelFor(tool, args), status: na ? "pending" : "approved", needs_approval: na }; }
 
 function businessContext(ws: string): any {
@@ -61,6 +61,34 @@ function rulesPlan(ws: string, instruction: string, level: number): Step[] {
 
 const SYSTEM = `You are Workpile Agent, the execution layer of a CRM for field-service businesses. Produce a PLAN ONLY: a JSON array of steps, each {"tool": "<name>", "args": {...}}. Use only the provided tools. Never invent lead ids — use search_leads first when you need ids, and plan read steps before write steps. Customer-facing sends (send_message) always need human approval; prefer draft_message. Prices come only from prepare_proposal (price-book governed). Respond with ONLY the JSON array.`;
 
+// Mass untouched triage (v18): the one-click business workflow. Per untouched lead the agent
+// qualifies (read), assigns (execute), drafts (draft) and prepares the first-touch SEND as an
+// approval-class step — internal work runs immediately; every customer-facing send waits for
+// one human approval pass. Capped so one run stays reviewable.
+export function triageSteps(ws: string, level: number, cap = 25): { steps: Step[]; count: number } {
+  const leads = db.prepare(`SELECT l.*, c.name contact_name, c.email contact_email, c.phone contact_phone FROM leads l LEFT JOIN contacts c ON c.id=l.contact_id WHERE l.workspace_id=? AND l.state='NEW' AND l.first_response_at IS NULL AND l.state<>'JUNK' ORDER BY COALESCE(l.ai_score,0) DESC, l.est_value DESC LIMIT ?`).all(ws, cap) as any[];
+  const steps: Step[] = [];
+  for (const l of leads) {
+    const who = l.contact_name || l.service_requested;
+    steps.push(mkStep("qualify_lead", { lead_id: l.id, __label: `Qualify — ${who}` }, level));
+    steps.push(mkStep("assign_lead", { lead_id: l.id, __label: `Assign — ${who}` }, level));
+    steps.push(mkStep("draft_message", { lead_id: l.id, intent: "introduce ourselves and offer next steps", __label: `Draft first touch — ${who}` }, level));
+    if (l.contact_email || l.contact_phone) steps.push(mkStep("send_message", { lead_id: l.id, body: draftBodyFor(ws, l, "introduce ourselves and offer next steps"), channel: l.contact_email ? "email" : "sms", __label: `Send first touch — ${who} (${l.contact_email ? "email" : "SMS"})` }, level));
+  }
+  return { steps, count: leads.length };
+}
+
+export async function createTriageExecution(ws: string, userId: string): Promise<any> {
+  const w = db.prepare("SELECT * FROM workspaces WHERE id=?").get(ws) as any;
+  const level = agentLevel(w);
+  const { steps, count } = triageSteps(ws, level);
+  const id = uid("exe");
+  db.prepare("INSERT INTO agent_executions (id,workspace_id,user_id,parent_id,instruction,status,planner,plan,context,created_at,updated_at) VALUES (?,?,?,NULL,?,'executing','rules-v1 (mass triage)',?,?,?,?)")
+    .run(id, ws, userId, `Handle all untouched leads (${count})`, JSON.stringify(steps), JSON.stringify({ ...businessContext(ws), triage_count: count }), now(), now());
+  if (!count) { db.prepare("UPDATE agent_executions SET status='completed', summary='No untouched leads — the pile is clear.', updated_at=? WHERE id=?").run(now(), id); return getExecution(ws, id); }
+  return runExecution(ws, id);
+}
+
 export async function createExecution(ws: string, userId: string, instruction: string, parentId?: string): Promise<any> {
   const w = db.prepare("SELECT * FROM workspaces WHERE id=?").get(ws) as any;
   const level = agentLevel(w);
@@ -78,7 +106,8 @@ export async function createExecution(ws: string, userId: string, instruction: s
       for (const s of Array.isArray(raw) ? raw.slice(0, 20) : []) if (s && TOOLS[s.tool]) steps.push(mkStep(s.tool, s.args || {}, level));
       if (!steps.length) steps = rulesPlan(ws, instruction, level); // model returned nothing usable — deterministic fallback, still labeled by planner
     } catch { steps = rulesPlan(ws, instruction, level); planner = "rules-v1 (provider error — fell back)"; }
-  } else steps = rulesPlan(ws, instruction, level);
+  } else if (/untouched|first touch|handle (all )?(the )?new leads|triage/.test(" " + instruction.toLowerCase() + " ")) { steps = triageSteps(ws, level).steps; planner = "rules-v1 (mass triage)"; }
+  else steps = rulesPlan(ws, instruction, level);
   const awaiting = steps.some(s => s.needs_approval && s.status === "pending");
   db.prepare("UPDATE agent_executions SET planner=?, plan=?, tokens_in=?, tokens_out=?, status=?, updated_at=? WHERE id=?").run(planner, JSON.stringify(steps), tokens.in, tokens.out, awaiting ? "awaiting_approval" : "executing", now(), id);
   const ex = getExecution(ws, id);

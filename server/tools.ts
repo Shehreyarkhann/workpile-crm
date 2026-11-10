@@ -14,6 +14,12 @@ export interface ToolDef { name: string; description: string; control: Control; 
 const leadOf = (ws: string, id: string) => db.prepare("SELECT l.*, c.name contact_name, c.email contact_email, c.phone contact_phone FROM leads l LEFT JOIN contacts c ON c.id=l.contact_id WHERE l.id=? AND l.workspace_id=?").get(id, ws) as any;
 const money = (n: number) => "$" + Math.round(n || 0).toLocaleString();
 
+export function draftBodyFor(ws: string, l: any, intent = "check in"): string {
+  const w = db.prepare("SELECT name FROM workspaces WHERE id=?").get(ws) as any;
+  const first = (l.contact_name || "there").split(" ")[0];
+  return `Hi ${first}, this is ${w?.name || "our team"} following up on your ${l.service_requested} request. We wanted to ${intent} and see how you'd like to proceed — happy to answer questions or schedule a visit whenever suits you.`;
+}
+
 export const TOOLS: Record<string, ToolDef> = {
   search_leads: { name: "search_leads", description: "Search leads by state, staleness, or minimum value. Returns the top matches with ids.", control: "read",
     parameters: { type: "object", properties: { state: { type: "string" }, stale_days: { type: "number" }, min_value: { type: "number" }, limit: { type: "number" } } },
@@ -54,10 +60,7 @@ export const TOOLS: Record<string, ToolDef> = {
   draft_message: { name: "draft_message", description: "Draft a personalized follow-up for a lead (stored as a draft step result — NOT sent).", control: "draft",
     parameters: { type: "object", properties: { lead_id: { type: "string" }, intent: { type: "string" } }, required: ["lead_id"] },
     run(ws, _a, args) { const l = leadOf(ws, args.lead_id); if (!l) throw new Error("lead not found in this workspace");
-      const w = db.prepare("SELECT name FROM workspaces WHERE id=?").get(ws) as any;
-      const first = (l.contact_name || "there").split(" ")[0];
-      const intent = String(args.intent || "check in");
-      const body = `Hi ${first}, this is ${w?.name || "our team"} following up on your ${l.service_requested} request. We wanted to ${intent} and see how you'd like to proceed — happy to answer questions or schedule a visit whenever suits you.`;
+      const body = draftBodyFor(ws, l, String(args.intent || "check in"));
       return { summary: `Draft for ${l.contact_name || l.service_requested}: "${body.slice(0, 140)}…"`, refs: { lead_id: l.id, draft: body, channel: l.contact_email ? "email" : "sms" } }; } },
   send_message: { name: "send_message", description: "Send a message to a customer. ALWAYS requires human approval; consent and suppression are enforced by the send boundary.", control: "approval",
     parameters: { type: "object", properties: { lead_id: { type: "string" }, body: { type: "string" }, channel: { type: "string" } }, required: ["lead_id", "body"] },

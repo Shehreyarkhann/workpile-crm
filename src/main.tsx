@@ -91,6 +91,7 @@ function OnboardingCard({ go }: any) {
 function HomeDash({ go, openLead, m, d }: any) {
   const [home, setHome] = useState<any>(null); const [ins, setIns] = useState<any[]>([]);
   const [runOpen, setRunOpen] = useState(false); const [toasts, setToasts] = useState<any[]>([]); const [actRange, setActRange] = useState(30);
+  const [calDay, setCalDay] = useState(new Date().toISOString().slice(0, 10)); const [calDone, setCalDone] = useState<Set<string>>(new Set());
   useEffect(() => { api("/api/home").then(setHome).catch(() => {}); api("/api/ai/insights").then(setIns).catch(() => {}); }, []);
   const toast = (text: string) => { const id = Date.now() + Math.random(); setToasts(t => [...t, { id, text }]); setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 5200); };
   const pipe = useCountUp(Math.round(m.pipeline_open_value || 0)); const wonM = useCountUp(Math.round(d.won_value || 0));
@@ -99,7 +100,7 @@ function HomeDash({ go, openLead, m, d }: any) {
   const auto = home.agent.automations || {};
   const autoNames: [string, string][] = [["auto_score", "Scoring"], ["auto_assign", "Assignment"], ["auto_dedupe", "De-dupe"], ["auto_reactivate", "Reactivation"]];
   const todayStr = new Date().toISOString().slice(0, 10);
-  const KINDC: Record<string, [string, string]> = { callback: ["#fef9c3", "📞"], visit: ["#fce7f3", "📍"], schedule: ["#dbeafe", "👷"], task: ["#dcfce7", "✅"], followup: ["#ede9fe", "🔁"] };
+  const KINDC: Record<string, [string, string]> = { callback: ["#fef9c3", "📞"], visit: ["#fce7f3", "📍"], schedule: ["#dbeafe", "👷"], task: ["#dcfce7", "✅"], followup: ["#ede9fe", "🔁"], invoice: ["#ffedd5", "🧾"], doc: ["#fee2e2", "📄"], expiry: ["#fef3c7", "⏳"] };
   const week: any[] = [...Array(7)].map((_, i) => { const dt = new Date(Date.now() + i * 86400000); return { key: dt.toISOString().slice(0, 10), dow: dt.toLocaleDateString(undefined, { weekday: "narrow" }), num: dt.getDate(), has: home.upcoming.some((u: any) => u.date === dt.toISOString().slice(0, 10)) }; });
   const byDay = new Map<string, any[]>(); for (const u of home.upcoming) { if (!byDay.has(u.date)) byDay.set(u.date, []); byDay.get(u.date)!.push(u); }
   const STC: Record<string, string> = { NEW: "info", WORKING: "warn", QUALIFIED: "info", PROPOSAL: "warn", SENT: "info", FOLLOWUP: "warn", WON: "pass", LOST: "fail", NO_RESPONSE: "warn", CLOSED: "info", JUNK: "fail" };
@@ -121,7 +122,8 @@ function HomeDash({ go, openLead, m, d }: any) {
           <div className="rowflex" style={{ justifyContent: "space-between" }}><b style={{ fontSize: 16 }}>🤖 Workpile Agent</b><span style={{ fontSize: 12.5, display: "flex", gap: 7, alignItems: "center" }}><span className="liveDot" /> {home.agent.active_count > 0 ? `LIVE — ${home.agent.active_count} of 4 automations on` : "PAUSED — all automations off"}</span></div>
           <p style={{ opacity: .85, fontSize: 13, margin: "6px 0 10px" }}>The agent works the backlog between your logins — scoring, assigning, de-duping, reactivating — inside your guardrails: nothing customer-facing sends without approval, prices only ever come from the price book. {auto.last_automation_at ? `Last run ${dt(auto.last_automation_at)}.` : "It hasn't run yet."}</p>
           <div className="rowflex" style={{ marginBottom: 10 }}>{autoNames.map(([k, l]) => <span key={k} className="tinyBadge" style={{ background: auto[k] ? "#22c55e" : "rgba(255,255,255,.18)", color: "#fff", border: 0 }}>{auto[k] ? "✓" : "○"} {l}</span>)}
-            <button className="btn small" style={{ background: "#fff", color: "#14532d", marginLeft: "auto", position: "relative", zIndex: 1 }} onClick={() => setRunOpen(true)}>▶ Run agent now</button>
+            {(home.untouched_count || 0) > 0 && <button className="btn small" style={{ background: "#fde047", color: "#713f12", position: "relative", zIndex: 1, fontWeight: 700 }} onClick={async () => { const r = await api("/api/agent/triage-untouched", { method: "POST", body: {} }).catch(() => null); if (r) window.dispatchEvent(new CustomEvent("wp-agent", { detail: { executionId: r.id } })); }}>⚡ Handle {home.untouched_count} untouched — AI does the work, you approve the sends</button>}
+            <button className="btn small" style={{ background: "#fff", color: "#14532d", position: "relative", zIndex: 1 }} onClick={() => setRunOpen(true)}>▶ Run agent now</button>
             <button className="btn ghost small" style={{ color: "#fff", borderColor: "rgba(255,255,255,.45)", background: "transparent", position: "relative", zIndex: 1 }} onClick={() => go({ view: "ai" })}>Open AI Assistant</button></div>
           {home.agent.runs.length > 0 && <div style={{ display: "flex", flexDirection: "column", gap: 6, position: "relative", zIndex: 1 }}>{home.agent.runs.slice(0, 3).map((r: any, i: number) => <div className="agentRun" key={i}><b>{r.agent}</b> — {r.summary} <span style={{ opacity: .7 }}>· {dt(r.created_at)}</span></div>)}</div>}
           {ins.length > 0 && <div style={{ marginTop: 10, position: "relative", zIndex: 1 }}>{ins.slice(0, 2).map((i: any, k: number) => <div key={k} style={{ fontSize: 13, padding: "5px 0", borderTop: "1px solid rgba(255,255,255,.15)" }}>{i.icon} <b>{i.title}</b> — <span style={{ opacity: .85 }}>{i.detail}</span></div>)}</div>}
@@ -148,12 +150,19 @@ function HomeDash({ go, openLead, m, d }: any) {
           <GoalGauge pct={m.first_pass_approval_rate} target={90} />
           <p className="muted" style={{ textAlign: "center", fontSize: 12.5, margin: "2px 0 4px" }}>{m.first_pass_approval_rate >= 90 ? "🎉 Target beaten — the agent's drafts are landing first try." : "Proposals approved without changes ÷ decided. The agent's drafting quality drives this."}</p>
         </div>
-        <div className="card animIn" style={{ animationDelay: "150ms" }}><h3 style={{ marginTop: 0 }}>Upcoming — next 7 days</h3>
-          <div className="weekStrip">{week.map(wd => <div key={wd.key}><div className="wd">{wd.dow}</div><div className={`wn ${wd.key === todayStr ? "today" : ""} ${wd.has ? "has" : ""}`}>{wd.num}</div></div>)}</div>
-          {[...byDay.entries()].map(([day, items]) => <div key={day}><div className="muted" style={{ fontSize: 12, fontWeight: 700, margin: "8px 0 6px" }}>{day === todayStr ? "Today" : new Date(day + "T12:00:00").toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}</div>
-            {items.map((u: any, i: number) => <div className="upCard" key={i} style={{ background: (KINDC[u.kind] || ["#f1f5f9"])[0], animationDelay: `${i * 70}ms` }} onClick={() => u.lead_id && openLead(u.lead_id)}><b>{(KINDC[u.kind] || ["", "•"])[1]} {u.title}</b><span>{u.sub}</span></div>)}</div>)}
-          {home.upcoming.length === 0 && <p className="muted">Nothing scheduled this week. The agent flags leads with no next step so this never stays empty for long.</p>}
-          <button className="btn ghost small" style={{ marginTop: 4 }} onClick={() => (window as any).wpGoTab?.("planner", "calendar")}>Open calendar →</button>
+        <div className="card animIn" style={{ animationDelay: "150ms" }}><h3 style={{ marginTop: 0 }}>📅 Calendar <span style={{ float: "right", display: "flex", gap: 4 }}><button className="btn ghost small" onClick={() => { const d = new Date(calDay + "T12:00:00"); d.setDate(d.getDate() - 7); setCalDay(d.toISOString().slice(0, 10)); }}>‹ Week</button><button className="btn ghost small" onClick={() => setCalDay(todayStr)}>Today</button><button className="btn ghost small" onClick={() => { const d = new Date(calDay + "T12:00:00"); d.setDate(d.getDate() + 7); setCalDay(d.toISOString().slice(0, 10)); }}>Week ›</button></span></h3>
+          {(() => { const monday = new Date(calDay + "T12:00:00"); monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7)); const days = [...Array(7)].map((_, i) => { const d = new Date(monday); d.setDate(d.getDate() + i); const key = d.toISOString().slice(0, 10); return { key, dow: d.toLocaleDateString(undefined, { weekday: "narrow" }), num: d.getDate(), n: home.upcoming.filter((u: any) => u.date === key).length }; });
+            const dayItems = home.upcoming.filter((u: any) => u.date === calDay);
+            const overdue = calDay === todayStr ? home.upcoming.filter((u: any) => u.date < todayStr && !calDone.has(u.task_id || "")) : [];
+            const row = (u: any, i: number) => <div className="upCard" key={(u.task_id || u.kind + u.date + u.title) + i} style={{ background: (KINDC[u.kind] || ["#f1f5f9"])[0], animationDelay: `${i * 40}ms`, opacity: calDone.has(u.task_id || "") ? .45 : 1 }} onClick={() => u.lead_id && openLead(u.lead_id)}><b style={{ flex: 1 }}>{(KINDC[u.kind] || ["", "•"])[1]} {u.title}{u.time && u.time !== "00:00" ? ` · ${u.time}` : ""}</b><span>{u.sub}</span>{u.kind === "task" && u.task_id && !calDone.has(u.task_id) && <button className="btn small" style={{ padding: "2px 9px" }} onClick={async (e) => { e.stopPropagation(); await api(`/api/tasks/${u.task_id}/complete`, { method: "POST", body: {} }).catch(() => {}); setCalDone(prev => new Set(prev).add(u.task_id)); toast("Task done ✓"); }}>✓ Done</button>}</div>;
+            return (<>
+              <div className="weekStrip">{days.map(wd => <div key={wd.key} onClick={() => setCalDay(wd.key)} style={{ cursor: "pointer" }}><div className="wd">{wd.dow}</div><div className={`wn ${wd.key === todayStr ? "today" : ""} ${wd.n ? "has" : ""}`} style={wd.key === calDay ? { outline: "2.5px solid #166534", outlineOffset: 1 } : undefined}>{wd.num}</div>{wd.n > 0 && <div style={{ fontSize: 10, textAlign: "center", color: "#64748b" }}>{wd.n} item{wd.n === 1 ? "" : "s"}</div>}</div>)}</div>
+              {overdue.length > 0 && <div style={{ marginTop: 6 }}><div className="muted" style={{ fontSize: 12, fontWeight: 700, color: "#b3261e" }}>⚠ Overdue ({overdue.length})</div>{overdue.slice(0, 5).map(row)}{overdue.length > 5 && <p className="muted" style={{ fontSize: 12 }}>+{overdue.length - 5} more overdue — work them in the Queue.</p>}</div>}
+              <div className="muted" style={{ fontSize: 12, fontWeight: 700, margin: "10px 0 6px" }}>{calDay === todayStr ? "Today" : new Date(calDay + "T12:00:00").toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}</div>
+              {dayItems.map(row)}
+              {dayItems.length === 0 && <p className="muted">Nothing scheduled this day — visits, crew days, tasks, follow-ups, callbacks, invoice due dates and expiries all land here.</p>}
+            </>); })()}
+          <button className="btn ghost small" style={{ marginTop: 4 }} onClick={() => (window as any).wpGoTab?.("planner", "calendar")}>Open full calendar →</button>
         </div>
         <div className="card animIn" style={{ animationDelay: "220ms" }}><h3 style={{ marginTop: 0 }}>Quick links</h3>
           <div className="qlRow" onClick={() => go({ view: "myday" })}>🌅 Today's plan <span style={{ marginLeft: "auto" }}>›</span></div>
@@ -2087,10 +2096,12 @@ function ToastHost() {
   return <div className="toastHost">{items.map(t => <div key={t.id} className="toast">{t.msg}</div>)}</div>;
 }
 
-function AgentPanel({ close }: any) {
+function AgentPanel({ close, focusId }: any) {
   const [prov, setProv] = useState<any>(null); const [text, setText] = useState(""); const [ex, setEx] = useState<any>(null); const [hist, setHist] = useState<any[]>([]); const [sel, setSel] = useState<Set<string>>(new Set()); const [busy, setBusy] = useState(false); const [err, setErr] = useState("");
   const loadHist = () => { api("/api/agent/executions").then(setHist).catch(() => {}); };
   useEffect(() => { api("/api/ai/provider").then(setProv).catch(() => {}); loadHist(); }, []);
+  useEffect(() => { if (focusId) api(`/api/agent/executions/${focusId}`).then((r: any) => { setEx(r); setSel(new Set()); }).catch(() => {}); }, [focusId]);
+  const triage = async () => { if (busy) return; setBusy(true); setErr(""); try { const r = await api("/api/agent/triage-untouched", { method: "POST", body: {} }); setEx(r); setSel(new Set()); loadHist(); } catch (e: any) { setErr(e.message); } setBusy(false); };
   const run = async (instruction: string, parent?: string) => { if (!instruction.trim() || busy) return; setBusy(true); setErr(""); try { const r = await api("/api/agent/execute", { method: "POST", body: { instruction, parent_id: parent || undefined } }); setEx(r); setSel(new Set()); setText(""); loadHist(); } catch (e: any) { setErr(e.message); } setBusy(false); };
   const decide = async (mode: "approve" | "reject") => { if (!ex || !sel.size) return; setBusy(true); try { const r = await api(`/api/agent/executions/${ex.id}/decide`, { method: "POST", body: mode === "approve" ? { approve: [...sel] } : { reject: [...sel] } }); setEx(r); setSel(new Set()); loadHist(); } catch (e: any) { setErr(e.message); } setBusy(false); };
   const cancel = async () => { if (!ex) return; const r = await api(`/api/agent/executions/${ex.id}/cancel`, { method: "POST", body: {} }); setEx(r); loadHist(); };
@@ -2101,7 +2112,7 @@ function AgentPanel({ close }: any) {
     <div style={{ padding: "10px 16px", borderBottom: "1px solid #eef2f7", fontSize: 12.5 }} className="muted">{prov ? (prov.configured ? <>Connected: <b>{prov.label}</b>{prov.model ? ` · ${prov.model}` : ""}</> : <>Deterministic mode — <b>no AI provider connected</b>. The agent plans with rules; connect a provider in Automations for generative planning.</>) : "…"}</div>
     <div style={{ padding: 16, overflowY: "auto", flex: 1 }}>
       <div className="rowflex"><input style={{ flex: 1 }} placeholder="Tell the agent what to do…" value={text} onChange={e => setText(e.target.value)} onKeyDown={e => { if (e.key === "Enter") run(text, followParent); }} /><button className="btn" disabled={busy} onClick={() => run(text, followParent)}>{busy ? "Working…" : followParent ? "Follow up" : "Run"}</button></div>
-      <div className="chipRow" style={{ marginTop: 8 }}>{["Review my new leads, qualify and assign the best ones", "Prepare proposals for qualified leads", "Recover customers who haven't responded", "Find jobs with missing documents", "How is the business doing?"].map(x => <button key={x} className="chip" onClick={() => run(x)}>{x}</button>)}</div>
+      <div className="chipRow" style={{ marginTop: 8 }}>{["Review my new leads, qualify and assign the best ones", "Prepare proposals for qualified leads", "Recover customers who haven't responded", "Find jobs with missing documents", "How is the business doing?"].map(x => <button key={x} className="chip" onClick={() => run(x)}>{x}</button>)}<button className="chip" style={{ background: "#dcfce7", fontWeight: 700 }} onClick={triage}>⚡ Handle all untouched leads</button></div>
       {err && <div className="err">{err}</div>}
       {ex && <div style={{ marginTop: 14 }}>
         <p style={{ margin: "0 0 4px" }}><b>“{ex.instruction}”</b></p>
@@ -2110,7 +2121,7 @@ function AgentPanel({ close }: any) {
           {s.status === "pending" ? <input type="checkbox" checked={sel.has(s.id)} onChange={() => setSel(prev => { const n = new Set(prev); if (n.has(s.id)) n.delete(s.id); else n.add(s.id); return n; })} style={{ width: 16, height: 16, marginTop: 2 }} /> : <span style={{ width: 16, textAlign: "center" }}>{s.status === "done" ? "✓" : s.status === "failed" ? "✗" : s.status === "rejected" ? "—" : "•"}</span>}
           <div style={{ flex: 1 }}><span className="tinyBadge" style={{ background: CB[s.control] || "#e2e8f0" }}>{s.control}{s.needs_approval ? " · approval" : ""}</span> <b style={{ fontSize: 13.5 }}>{s.label}</b>{s.result && <div className="muted" style={{ fontSize: 12.5, marginTop: 2 }}>{s.result}</div>}</div>
         </div>)}
-        {ex.status === "awaiting_approval" && <div className="rowflex" style={{ marginTop: 10 }}><button className="btn small" disabled={!sel.size || busy} onClick={() => decide("approve")}>Approve selected ({sel.size})</button><button className="btn ghost small" disabled={!sel.size || busy} onClick={() => decide("reject")}>Reject selected</button><button className="btn ghost small" onClick={cancel}>Cancel run</button></div>}
+        {ex.status === "awaiting_approval" && <div className="rowflex" style={{ marginTop: 10 }}>{(() => { const pend = (ex.plan || []).filter((s: any) => s.status === "pending"); const allSel = pend.length > 0 && pend.every((s: any) => sel.has(s.id)); return <button className="btn ghost small" onClick={() => setSel(allSel ? new Set() : new Set(pend.map((s: any) => s.id)))}>{allSel ? "Clear selection" : `Select all ${pend.length} pending`}</button>; })()}<button className="btn small" disabled={!sel.size || busy} onClick={() => decide("approve")}>Approve selected ({sel.size})</button><button className="btn ghost small" disabled={!sel.size || busy} onClick={() => decide("reject")}>Reject selected</button><button className="btn ghost small" onClick={cancel}>Cancel run</button></div>}
         {ex.summary && !["awaiting_approval", "executing", "planning"].includes(ex.status) && <div style={{ background: "#f0fdf4", borderRadius: 8, padding: 10, marginTop: 10, whiteSpace: "pre-wrap", fontSize: 13 }}>{ex.summary}</div>}
       </div>}
       {hist.length > 0 && <div style={{ marginTop: 18 }}><h4 style={{ margin: "0 0 6px" }}>Previous runs</h4>{hist.slice(0, 8).map((h: any) => <p key={h.id} className="clickable" style={{ margin: "5px 0", fontSize: 13 }} onClick={() => { setEx(h); setSel(new Set()); }}>“{h.instruction}” <span className="muted">· {String(h.status).replaceAll("_", " ")} · {new Date(h.created_at).toLocaleString()}</span></p>)}</div>}
@@ -2121,7 +2132,8 @@ function AgentPanel({ close }: any) {
 function App() {
   useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key !== "Escape") return; const wraps = document.querySelectorAll(".modalWrap"); const last = wraps[wraps.length - 1] as HTMLElement | undefined; if (!last) return; const btns = Array.from(last.querySelectorAll("button")); const closer = btns.find(b => (b.textContent || "").includes("✕")); if (closer) (closer as HTMLButtonElement).click(); }; window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, []);
   const [user, setUser] = useState<any>(null); const [login, setLogin] = useState({ email: "", password: "" }); const [err, setErr] = useState("");
-  const [nav, setNav] = useState<Nav>({ view: "queue" }); const [agentOpen, setAgentOpen] = useState(false); const [users, setUsers] = useState<any[]>([]); const [priceBook, setPriceBook] = useState<any[]>([]);
+  const [nav, setNav] = useState<Nav>({ view: "queue" }); const [agentOpen, setAgentOpen] = useState(false); const [agentFocus, setAgentFocus] = useState("");
+  useEffect(() => { const h = (e: any) => { setAgentFocus(e.detail?.executionId || ""); setAgentOpen(true); }; window.addEventListener("wp-agent", h); return () => window.removeEventListener("wp-agent", h); }, []); const [users, setUsers] = useState<any[]>([]); const [priceBook, setPriceBook] = useState<any[]>([]);
 const [sb, setSb] = useState(() => localStorage.getItem("wp_sb") || "open"); const [mOpen, setMOpen] = useState(false);
   const [notifs, setNotifs] = useState<any[]>([]); const [unread, setUnread] = useState(0); const [bellOpen, setBellOpen] = useState(false); const [verifyMsg, setVerifyMsg] = useState("");
 const [pending, setPending] = useState(0); const [creating, setCreating] = useState(false); const [leadId, setLeadId] = useState<string | null>(null); const [tick, setTick] = useState(0);
@@ -2217,7 +2229,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       </EB>
       {jobOpen && <JobDetail id={jobOpen} users={users} priceBook={priceBook} close={() => setJobOpen(null)} refresh={() => setTick(t => t + 1)} openLead={(lid: string) => { setJobOpen(null); setLeadId(lid); }} />}
       {custOpen && <CustomerDetail id={custOpen} close={() => setCustOpen(null)} openLead={openLead} openJob={(id: string) => setJobOpen(id)} />}
-      {agentOpen && <AgentPanel close={() => setAgentOpen(false)} />}
+      {agentOpen && <AgentPanel close={() => setAgentOpen(false)} focusId={agentFocus} />}
       {ltOpen && <LogTimeModal close={() => setLtOpen(false)} done={() => setTick(t => t + 1)} />}
       {creating && <CreateLead users={users} done={(id: any) => { setCreating(false); setTick(t => t + 1); if (id) openLead(id); }} />}
       {palOpen && <CommandPalette close={() => setPalOpen(false)} go={go} openLead={openLead} newLead={() => setCreating(true)} />}
