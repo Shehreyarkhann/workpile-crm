@@ -338,7 +338,7 @@ function Handoffs() {
 
 function Ops() {
   function TimesheetsCard() {
-  const mondayOf = (d: Date) => { const x = new Date(d); const day = (x.getDay() + 6) % 7; x.setDate(x.getDate() - day); return x.toISOString().slice(0, 10); };
+  const mondayOf = (d: Date) => { const x = new Date(d); const day = (x.getDay() + 6) % 7; x.setDate(x.getDate() - day); x.setHours(0, 0, 0, 0); return x.toISOString().slice(0, 10); };
   const [week, setWeek] = useState(mondayOf(new Date())); const [data, setData] = useState<any>(null);
   const [editId, setEditId] = useState(""); const [days, setDays] = useState<any>({}); const [notes, setNotes] = useState(""); const [msg, setMsg] = useState("");
   const load = () => { api("/api/timesheets?week=" + week).then(setData).catch(() => {}); };
