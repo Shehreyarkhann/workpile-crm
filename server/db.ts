@@ -179,6 +179,14 @@ export function initSchema() {
   } catch { /* migration is best-effort idempotent; schema guards above already applied */ }
 }
 
+let __txDepth = 0;
+export function withTx<T>(fn: () => T): T {
+  if (__txDepth > 0) return fn();
+  db.exec("BEGIN IMMEDIATE");
+  __txDepth++;
+  try { const r = fn(); db.exec("COMMIT"); __txDepth--; return r; }
+  catch (e) { try { db.exec("ROLLBACK"); } catch {} __txDepth--; throw e; }
+}
 export function logEvent(workspaceId: string, leadId: string, actor: string, type: string, fromState: string | null, toState: string | null, payload: any = {}) {
   db.prepare("INSERT INTO lead_events (id,lead_id,workspace_id,actor,type,from_state,to_state,payload,created_at) VALUES (?,?,?,?,?,?,?,?,?)")
     .run(uid("evt"), leadId, workspaceId, actor, type, fromState, toState, JSON.stringify(payload), now());

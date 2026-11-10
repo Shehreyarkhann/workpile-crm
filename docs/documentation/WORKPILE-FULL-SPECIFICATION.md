@@ -121,7 +121,7 @@ Rules implemented in code:
 | `crm.ts` | v4/v5/v6 layer: accounts/contacts + conversion, feed (Chatter), custom fields, campaigns, duplicates/merge, assignment rules, notes/files aggregation, tasks/calendar, dashboard pins + report builder, doc templates, home aggregate |
 | `ai.ts` | Scoring, cleanup preview/apply, insights v1+v2, next-best-action, reactivation, automation runner + run logging |
 | `agents.ts` | Named agents: triage, packet check, demand gap; prompt-injection scanner |
-| `db.ts` | Schema (61 tables), migrations, password hashing, id/time helpers |
+| `db.ts` | Schema (62 tables), migrations, password hashing, id/time helpers |
 | `metrics.ts` | The metrics engine behind dashboards/reports (FPAR, win rate, cycle times, leaderboard) |
 | `comms.ts` | Outbound queue + delivery (Resend/Twilio adapters, honest test mode), notifications (with entity targets), TCPA consent gate |
 | `followups.ts` | 12-touch business-day cadence engine, template rendering, enroll/stop logic |
@@ -164,7 +164,7 @@ Every row carries `workspace_id`; every query is workspace-scoped; sessions bind
 
 ## 5. Data model
 
-61 tables. The core graph (simplified):
+62 tables. The core graph (simplified):
 
 - **workspaces** — tenant root: plan/trial state, proposal header (`pt_*`), logo, automation toggles (`auto_score/assign/dedupe/reactivate`, `last_automation_at`), approval policy.
 - **users** — logins (seat-counted), role, custom permissions JSON, active flag.

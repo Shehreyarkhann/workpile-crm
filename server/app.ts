@@ -1,7 +1,7 @@
 // Workpile — API application (spec §5 state machine, §6 approvals, §9 proposals, §14 public API, §14.5 handoffs, §25 Gregory P0s)
 import express from "express";
 import { createHash, randomBytes } from "node:crypto";
-import { db, uid, now, hashPassword, verifyPassword, apiKeyHash, logEvent, audit } from "./db.ts";
+import { db, uid, now, hashPassword, verifyPassword, apiKeyHash, logEvent, audit, withTx } from "./db.ts";
 import { triageLead, packetCheck, demandGap, demandPool, injectionScan } from "./agents.ts";
 import { metrics, morningBrief } from "./metrics.ts";
 import { parseEmail, parseMbox, parseEmailCsv, suggestInboxAction } from "./inbox.ts";
@@ -197,6 +197,9 @@ function transition(workspaceId: string, actor: string, lead: any, toState: stri
 }
 // ---- jobs (slice 30 core): a WON lead gets an operational Job exactly once ----
 export function ensureJobForLead(workspaceId: string, actor: string, lead: any) {
+  return withTx(() => ensureJobForLeadInner(workspaceId, actor, lead));
+}
+function ensureJobForLeadInner(workspaceId: string, actor: string, lead: any) {
   const existing = db.prepare("SELECT * FROM jobs WHERE lead_id=?").get(lead.id) as any;
   if (existing) return existing;
   const prop = db.prepare("SELECT * FROM proposals WHERE lead_id=? ORDER BY (signed_at IS NOT NULL) DESC, version DESC").get(lead.id) as any;
@@ -834,13 +837,13 @@ app.get("/api/outbox", requireAuth, (req: any, res) => res.json(db.prepare("SELE
 
 // ---------- slice 2: webhook endpoints + delivery worker controls ----------
 app.get("/api/webhooks", requireAuth, (req: any, res) => res.json(db.prepare("SELECT id,url,events,active,created_at FROM webhook_endpoints WHERE workspace_id=?").all(req.user.workspace_id)));
-app.post("/api/webhooks", requireAuth, (req: any, res) => {
+app.post("/api/webhooks", requireAuth, needPerm("can_settings"), (req: any, res) => {
   if (!["OWNER", "ADMIN", "OPS_ADMIN"].includes(req.user.role)) return res.status(403).json({ error: { code: "forbidden" } });
   const id = uid("whk");
   db.prepare("INSERT INTO webhook_endpoints (id,workspace_id,url,secret,events,created_at) VALUES (?,?,?,?,?,?)").run(id, req.user.workspace_id, req.body.url, req.body.secret || randomBytes(18).toString("hex"), req.body.events || "outcome.final", now());
   res.status(201).json({ id, url: req.body.url });
 });
-app.delete("/api/webhooks/:id", requireAuth, (req: any, res) => { db.prepare("UPDATE webhook_endpoints SET active=0 WHERE id=? AND workspace_id=?").run(req.params.id, req.user.workspace_id); res.json({ ok: true }); });
+app.delete("/api/webhooks/:id", requireAuth, needPerm("can_settings"), (req: any, res) => { db.prepare("UPDATE webhook_endpoints SET active=0 WHERE id=? AND workspace_id=?").run(req.params.id, req.user.workspace_id); res.json({ ok: true }); });
 app.post("/api/worker/run", requireAuth, async (req: any, res) => { const { processDeliveries } = await import("./worker.ts"); res.json(await processDeliveries()); });
 app.post("/api/handoffs/:id/replay", requireAuth, async (req: any, res) => { const { replayDelivery } = await import("./worker.ts"); const ok = replayDelivery(req.params.id); res.status(ok ? 200 : 404).json({ ok }); });
 
@@ -976,11 +979,11 @@ app.get("/api/canned-replies", requireAuth, (req: any, res) => {
   }
   res.json(rows);
 });
-app.post("/api/canned-replies", requireAuth, (req: any, res) => { const id = uid("can"); db.prepare("INSERT INTO canned_replies (id,workspace_id,category,title,body,created_at) VALUES (?,?,?,?,?,?)").run(id, req.user.workspace_id, String(req.body.category || "general"), String(req.body.title || "Untitled"), String(req.body.body || ""), now()); res.status(201).json(db.prepare("SELECT * FROM canned_replies WHERE id=?").get(id)); });
-app.delete("/api/canned-replies/:id", requireAuth, (req: any, res) => { db.prepare("DELETE FROM canned_replies WHERE id=? AND workspace_id=?").run(req.params.id, req.user.workspace_id); res.json({ ok: true }); });
+app.post("/api/canned-replies", requireAuth, needPerm("can_settings"), (req: any, res) => { const id = uid("can"); db.prepare("INSERT INTO canned_replies (id,workspace_id,category,title,body,created_at) VALUES (?,?,?,?,?,?)").run(id, req.user.workspace_id, String(req.body.category || "general"), String(req.body.title || "Untitled"), String(req.body.body || ""), now()); res.status(201).json(db.prepare("SELECT * FROM canned_replies WHERE id=?").get(id)); });
+app.delete("/api/canned-replies/:id", requireAuth, needPerm("can_settings"), (req: any, res) => { db.prepare("DELETE FROM canned_replies WHERE id=? AND workspace_id=?").run(req.params.id, req.user.workspace_id); res.json({ ok: true }); });
 app.get("/api/inbox-rules", requireAuth, (req: any, res) => res.json(db.prepare("SELECT * FROM inbox_rules WHERE workspace_id=? ORDER BY created_at").all(req.user.workspace_id)));
-app.post("/api/inbox-rules", requireAuth, (req: any, res) => { const id = uid("rul"); db.prepare("INSERT INTO inbox_rules (id,workspace_id,name,match_field,match_value,action,action_value,active,created_at) VALUES (?,?,?,?,?,?,?,1,?)").run(id, req.user.workspace_id, String(req.body.name || "Rule"), String(req.body.match_field || "sender"), String(req.body.match_value || ""), String(req.body.action || "assign"), req.body.action_value || null, now()); const r = applyInboxRules(req.user.workspace_id); res.status(201).json({ rule: db.prepare("SELECT * FROM inbox_rules WHERE id=?").get(id), applied_now: r.applied }); });
-app.delete("/api/inbox-rules/:id", requireAuth, (req: any, res) => { db.prepare("DELETE FROM inbox_rules WHERE id=? AND workspace_id=?").run(req.params.id, req.user.workspace_id); res.json({ ok: true }); });
+app.post("/api/inbox-rules", requireAuth, needPerm("can_settings"), (req: any, res) => { const id = uid("rul"); db.prepare("INSERT INTO inbox_rules (id,workspace_id,name,match_field,match_value,action,action_value,active,created_at) VALUES (?,?,?,?,?,?,?,1,?)").run(id, req.user.workspace_id, String(req.body.name || "Rule"), String(req.body.match_field || "sender"), String(req.body.match_value || ""), String(req.body.action || "assign"), req.body.action_value || null, now()); const r = applyInboxRules(req.user.workspace_id); res.status(201).json({ rule: db.prepare("SELECT * FROM inbox_rules WHERE id=?").get(id), applied_now: r.applied }); });
+app.delete("/api/inbox-rules/:id", requireAuth, needPerm("can_settings"), (req: any, res) => { db.prepare("DELETE FROM inbox_rules WHERE id=? AND workspace_id=?").run(req.params.id, req.user.workspace_id); res.json({ ok: true }); });
 
 app.post("/api/inbox/:id/convert-task", requireAuth, (req: any, res) => {
   const it = db.prepare("SELECT * FROM inbox_items WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
@@ -1315,8 +1318,8 @@ app.post("/api/sync/run", requireAuth, async (req: any, res) => {
   res.json(stats);
 });
 app.post("/api/ai/cleanup/preview", requireAuth, (req: any, res) => res.json(cleanupPreview(req.user.workspace_id)));
-app.post("/api/ai/cleanup/apply", requireAuth, (req: any, res) => res.json(cleanupApply(req.user.workspace_id, req.user.id, req.body.actions || [])));
-app.post("/api/ai/reactivate", requireAuth, (req: any, res) => res.json(reactivateStale(req.user.workspace_id, req.user.id)));
+app.post("/api/ai/cleanup/apply", requireAuth, needPerm("can_settings"), (req: any, res) => res.json(cleanupApply(req.user.workspace_id, req.user.id, req.body.actions || [])));
+app.post("/api/ai/reactivate", requireAuth, needPerm("can_settings"), (req: any, res) => res.json(reactivateStale(req.user.workspace_id, req.user.id)));
 
 // ---------- slice 8: outbound comms, password reset, notifications ----------
 app.get("/api/comms/status", requireAuth, (_req: any, res) => res.json({ email: emailConfigured() ? "configured" : "test_mode", sms: smsConfigured() ? "configured" : "test_mode", note: "Test mode records messages in the outbox without sending — set RESEND_API_KEY / TWILIO_* on the server to go live." }));
@@ -1638,7 +1641,7 @@ app.post("/api/ai/automations", requireAuth, needPerm("can_settings"), (req: any
   for (const f of fields) if (req.body[f] !== undefined) db.prepare(`UPDATE workspaces SET ${f}=? WHERE id=?`).run(req.body[f] ? 1 : 0, req.user.workspace_id);
   res.json(db.prepare("SELECT auto_assign, auto_dedupe, auto_reactivate, auto_score, last_automation_at FROM workspaces WHERE id=?").get(req.user.workspace_id));
 });
-app.post("/api/ai/automations/run", requireAuth, (req: any, res) => res.json({ result: runAutomationsFor(req.user.workspace_id) }));
+app.post("/api/ai/automations/run", requireAuth, needPerm("can_settings"), (req: any, res) => res.json({ result: runAutomationsFor(req.user.workspace_id) }));
 app.get("/api/ai/runs", requireAuth, (req: any, res) => {
   const runs = db.prepare("SELECT * FROM agent_runs WHERE workspace_id=? ORDER BY created_at DESC LIMIT 20").all(req.user.workspace_id);
   res.json(runs);
@@ -1769,6 +1772,6 @@ app.post("/api/leads/:id/followups/stop", requireAuth, (req: any, res) => { stop
 app.get("/api/health", (_req, res) => res.json({ ok: true, service: "leadflow-os", time: now() }));
 
 // ---------- v4: Salesforce-parity CRM layer (slices 37-46) ----------
-registerCrm(app, requireAuth);
-registerDocTemplates(app, requireAuth);
+registerCrm(app, requireAuth, needPerm);
+registerDocTemplates(app, requireAuth, needPerm);
 registerHome(app, requireAuth);

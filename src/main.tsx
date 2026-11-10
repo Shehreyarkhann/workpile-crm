@@ -53,6 +53,26 @@ function useCountUp(target: number, dur = 750) {
   return v;
 }
 
+function FinancesStrip({ f }: any) {
+  if (!f) return null;
+  const cell = (label: string, x: any, accent?: string) => (<div style={{ flex: "1 1 150px", minWidth: 140 }} title={x?.definition || ""}>
+    <div className="tiny muted" style={{ fontWeight: 700, letterSpacing: 0.3 }}>{label}</div>
+    <div style={{ fontSize: 21, fontWeight: 800, color: accent || "var(--ink)" }}>{money(x?.value || 0)}</div>
+    <div className="tiny muted" style={{ lineHeight: 1.35 }}>{x?.definition || ""}</div>
+  </div>);
+  return (<div className="card wpRise" style={{ marginTop: 12 }}>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}><b>💰 Money — kept separate, on purpose</b><span className="tiny muted">Estimates are not revenue. Each figure has one definition.</span></div>
+    <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 10 }}>
+      {cell("ESTIMATED PIPELINE", f.estimated_pipeline)}
+      {cell("PROPOSALS OUT", f.proposal_value_outstanding)}
+      {cell("APPROVED", f.approved_proposal_value)}
+      {cell("SIGNED CONTRACTS", f.signed_contract_value, "#157347")}
+      {cell("INVOICED", f.invoiced_value)}
+      {cell("COLLECTED CASH", f.collected_cash, "#157347")}
+      {cell("RECEIVABLES OPEN", f.outstanding_receivables, "#b45309")}
+    </div>
+  </div>);
+}
 function HomeDash({ go, openLead, m, d }: any) {
   const [home, setHome] = useState<any>(null); const [ins, setIns] = useState<any[]>([]);
   const [runOpen, setRunOpen] = useState(false); const [toasts, setToasts] = useState<any[]>([]); const [actRange, setActRange] = useState(30);
@@ -78,7 +98,9 @@ function HomeDash({ go, openLead, m, d }: any) {
           <div className="statCard animIn" style={{ animationDelay: "180ms", ["--glow" as any]: "#e879f9" }} onClick={() => go({ view: "leads", leads: { bucket: "won" } })}><div className="ic" style={{ background: "#fce7f3" }}>🏆</div><div className="v">${num(wonM)}</div><div className="l">Won value — {num(m.won)} deals all time</div></div>
         </div>
 
-        <div className="agentCard animIn" style={{ animationDelay: "120ms" }}>
+        <FinancesStrip f={home.finances} />
+
+                <div className="agentCard animIn" style={{ animationDelay: "120ms" }}>
           <div className="rowflex" style={{ justifyContent: "space-between" }}><b style={{ fontSize: 16 }}>🤖 Workpile Agent</b><span style={{ fontSize: 12.5, display: "flex", gap: 7, alignItems: "center" }}><span className="liveDot" /> {home.agent.active_count > 0 ? `LIVE — ${home.agent.active_count} of 4 automations on` : "PAUSED — all automations off"}</span></div>
           <p style={{ opacity: .85, fontSize: 13, margin: "6px 0 10px" }}>The agent works the backlog between your logins — scoring, assigning, de-duping, reactivating — inside your guardrails: nothing customer-facing sends without approval, prices only ever come from the price book. {auto.last_automation_at ? `Last run ${dt(auto.last_automation_at)}.` : "It hasn't run yet."}</p>
           <div className="rowflex" style={{ marginBottom: 10 }}>{autoNames.map(([k, l]) => <span key={k} className="tinyBadge" style={{ background: auto[k] ? "#22c55e" : "rgba(255,255,255,.18)", color: "#fff", border: 0 }}>{auto[k] ? "✓" : "○"} {l}</span>)}
@@ -1751,7 +1773,7 @@ function DuplicatesView({ embedded }: any) {
   useEffect(load, []);
   return (<div>{!embedded && <><h2 className="pt">Duplicates</h2><p className="sub">Same phone or email on more than one lead. Merge keeps the oldest record as the survivor and moves everything — tasks, proposals, documents, time, history — onto it. The duplicate closes as DUPLICATE and disappears from lists (Salesforce-style).</p></>}
     {msg && <div className="ok">{msg}</div>}
-    {groups.map(g => <div className="card" key={g.key} style={{ marginBottom: 10 }}><b>{g.count} leads share {g.key}</b>
+    {groups.map(g => <div className="card" key={g.key} style={{ marginBottom: 10 }}><b>{g.count} leads</b> <span className="chip" style={{ background: g.match_type === "exact" ? "#e7f6ec" : "#fdf3e0", color: g.match_type === "exact" ? "#157347" : "#9a6a00", fontWeight: 700 }}>{g.match_type === "exact" ? "Exact identity" : "Candidate"} · {Math.round((g.confidence ?? 0.99) * 100)}% match</span> <span className="tiny muted">{(g.signals || ["shared key"]).join(", ")}</span>
       {g.leads.map((l: any, i: number) => <div key={l.id} className="rowflex" style={{ padding: "6px 0", borderBottom: "1px solid #eef2f7" }}><span style={{ flex: 1 }}><b>{l.contact_name}</b> — {l.service_requested} · {money(l.est_value)} · <Badge s={l.state} /> · since {dOnly(l.created_at)}{i === 0 ? " · ⭐ survivor (oldest)" : ""}</span>
         {i > 0 && <button className="btn small" onClick={async () => { if (!confirm(`Merge this lead into "${g.leads[0].contact_name} — ${g.leads[0].service_requested}"? Everything moves; this copy closes as a duplicate.`)) return; await api(`/api/leads/${l.id}/merge`, { method: "POST", body: { into_id: g.leads[0].id } }); setMsg("Merged ✓ — history consolidated on the survivor"); load(); }}>Merge into survivor</button>}</div>)}
     </div>)}

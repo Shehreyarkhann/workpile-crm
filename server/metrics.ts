@@ -43,3 +43,19 @@ export function morningBrief(workspaceId: string) {
   const undelivered = qa("SELECT COUNT(*) c FROM outcome_deliveries WHERE workspace_id=? AND last_status IN ('pending','failed')", workspaceId)[0].c;
   return { generated_at: new Date().toISOString(), headline: `${pendingApprovals} approvals waiting · ${m.backlog_remaining} in backlog · ${stuck.length} stuck`, pending_approvals: pendingApprovals, backlog_remaining: m.backlog_remaining, stuck, undelivered_finals: undelivered, metrics_snapshot: { fpar: m.first_pass_approval_rate, win_rate: m.win_rate, pipeline_open_value: m.pipeline_open_value } };
 }
+
+// ---- Target-state §17.1: financial values are SEPARATE concepts, never blended.
+// Each figure carries its definition so no screen can present one as another.
+export function financialSummary(workspaceId: string) {
+  const FINALS = "('WON','LOST','NO_RESPONSE','JUNK','DUPLICATE','UNSERVICEABLE','CLOSED')";
+  const one = (sql: string) => { const r = db.prepare(sql).get(workspaceId) as any; return Math.round((r?.v || 0) * 100) / 100; };
+  return {
+    estimated_pipeline: { value: one(`SELECT COALESCE(SUM(est_value),0) v FROM leads WHERE workspace_id=? AND state NOT IN ${FINALS}`), definition: "Sum of estimated values on open leads. An estimate — not revenue." },
+    proposal_value_outstanding: { value: one("SELECT COALESCE(SUM(total),0) v FROM proposals WHERE workspace_id=? AND status='sent'"), definition: "Total of proposals sent to customers and not yet signed or expired." },
+    approved_proposal_value: { value: one("SELECT COALESCE(SUM(p.total),0) v FROM proposals p WHERE p.workspace_id=? AND p.status IN ('draft','sent') AND EXISTS (SELECT 1 FROM approvals a WHERE a.proposal_id=p.id AND a.decision='approved')"), definition: "Total of proposals that passed the approval gate and are not yet signed." },
+    signed_contract_value: { value: one("SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND stage!='CANCELLED'"), definition: "Contract value of signed work (job value incl. approved change orders)." },
+    invoiced_value: { value: one("SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND invoice_status IN ('invoiced','paid')"), definition: "Value of jobs that have been invoiced (incl. those since paid)." },
+    collected_cash: { value: one("SELECT COALESCE(SUM(amount),0) v FROM payments WHERE workspace_id=? AND status='paid'"), definition: "Cash actually received through recorded payments (e.g. deposits). The only 'money in' figure." },
+    outstanding_receivables: { value: one("SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND invoice_status='invoiced'"), definition: "Invoiced job value not yet marked paid." },
+  };
+}

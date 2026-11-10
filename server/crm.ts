@@ -3,7 +3,8 @@
 // campaigns, assignment rules, duplicates + merge, notes, files, tasks app,
 // calendar, global search, favorites, report builder + dashboard pins.
 // Everything here works on the real tables — no dummy data paths.
-import { db, uid, now, audit } from "./db.ts";
+import { db, uid, now, audit, withTx } from "./db.ts";
+import { financialSummary } from "./metrics.ts";
 import { notify } from "./comms.ts";
 
 const J = (s: any, fb: any = null) => { try { return JSON.parse(s ?? ""); } catch { return fb; } };
@@ -35,6 +36,9 @@ export function initCrmSchema() {
 // ---------- slice 37: conversion (Salesforce Lead -> Account + Contact + Opportunity/Job) ----------
 export function convertLeadToCustomer(workspaceId: string, lead: any) {
   if (!lead) return null;
+  return withTx(() => convertLeadToCustomerInner(workspaceId, lead));
+}
+function convertLeadToCustomerInner(workspaceId: string, lead: any) {
   const contact = db.prepare("SELECT * FROM contacts WHERE id=?").get(lead.contact_id) as any;
   let accountId = lead.account_id || contact?.account_id || null;
   if (!accountId) {
@@ -96,7 +100,8 @@ function entityLabel(ws: string, type: string, id: string) {
   return id;
 }
 
-export function registerCrm(app: any, requireAuth: any) {
+export function registerCrm(app: any, requireAuth: any, needPerm: any = null) {
+  const settingsGuard = needPerm ? needPerm("can_settings") : ((_req: any, _res: any, next: any) => next());
   initCrmSchema();
   const ws = (req: any) => req.user.workspace_id;
   const err = (res: any, code: number, msg: string) => res.status(code).json({ error: { code: "crm", message: msg } });
@@ -152,10 +157,10 @@ export function registerCrm(app: any, requireAuth: any) {
 
   // ----- Custom fields -----
   app.get("/api/custom-fields", requireAuth, (req: any, res: any) => { const o = req.query.object || "lead"; res.json(db.prepare("SELECT * FROM custom_fields WHERE workspace_id=? AND object_type=? AND active=1 ORDER BY sort, created_at").all(ws(req), o)); });
-  app.post("/api/custom-fields", requireAuth, (req: any, res: any) => { const b = req.body || {}; const key = String(b.key || b.label || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, ""); if (!key || !b.label) return err(res, 422, "Label required");
+  app.post("/api/custom-fields", requireAuth, settingsGuard, (req: any, res: any) => { const b = req.body || {}; const key = String(b.key || b.label || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, ""); if (!key || !b.label) return err(res, 422, "Label required");
     const id = uid("cf"); try { db.prepare("INSERT INTO custom_fields (id,workspace_id,object_type,key,label,field_type,options,sort,created_at) VALUES (?,?,?,?,?,?,?,?,?)").run(id, ws(req), b.object_type || "lead", key, b.label, b.field_type || "text", JSON.stringify(b.options || []), Number(b.sort) || 0, now()); } catch { return err(res, 409, "A field with that name already exists on this object"); }
     res.status(201).json(db.prepare("SELECT * FROM custom_fields WHERE id=?").get(id)); });
-  app.delete("/api/custom-fields/:id", requireAuth, (req: any, res: any) => { db.prepare("UPDATE custom_fields SET active=0 WHERE id=? AND workspace_id=?").run(req.params.id, ws(req)); res.json({ ok: true }); });
+  app.delete("/api/custom-fields/:id", requireAuth, settingsGuard, (req: any, res: any) => { db.prepare("UPDATE custom_fields SET active=0 WHERE id=? AND workspace_id=?").run(req.params.id, ws(req)); res.json({ ok: true }); });
   app.post("/api/custom-values", requireAuth, (req: any, res: any) => { const { object_type, entity_id, values } = req.body || {}; const table = object_type === "job" ? "jobs" : object_type === "account" ? "accounts" : "leads";
     const row = db.prepare(`SELECT custom FROM ${table} WHERE id=? AND workspace_id=?`).get(entity_id, ws(req)) as any; if (!row) return err(res, 404, "record not found");
     const merged = { ...J(row.custom, {}), ...(values || {}) }; db.prepare(`UPDATE ${table} SET custom=? WHERE id=?`).run(JSON.stringify(merged), entity_id); res.json({ custom: merged }); });
@@ -181,17 +186,36 @@ export function registerCrm(app: any, requireAuth: any) {
 
   // ----- Assignment rules -----
   app.get("/api/assignment-rules", requireAuth, (req: any, res: any) => { res.json(db.prepare("SELECT * FROM assignment_rules WHERE workspace_id=? ORDER BY sort, created_at").all(ws(req))); });
-  app.post("/api/assignment-rules", requireAuth, (req: any, res: any) => { const b = req.body || {}; if (!b.field || b.value === undefined) return err(res, 422, "Rule needs a field and a value"); const id = uid("ar");
+  app.post("/api/assignment-rules", requireAuth, settingsGuard, (req: any, res: any) => { const b = req.body || {}; if (!b.field || b.value === undefined) return err(res, 422, "Rule needs a field and a value"); const id = uid("ar");
     db.prepare("INSERT INTO assignment_rules (id,workspace_id,name,sort,field,op,value,assign_mode,assign_user_id,pool,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(id, ws(req), b.name || "Rule", Number(b.sort) || 0, b.field, b.op || "contains", String(b.value), b.assign_mode || "user", b.assign_user_id || null, JSON.stringify(b.pool || []), now());
     res.status(201).json(db.prepare("SELECT * FROM assignment_rules WHERE id=?").get(id)); });
-  app.patch("/api/assignment-rules/:id", requireAuth, (req: any, res: any) => { const b = req.body || {}; const F = ["name", "active", "sort", "field", "op", "value", "assign_mode", "assign_user_id"]; const sets = F.filter(f => b[f] !== undefined);
+  app.patch("/api/assignment-rules/:id", requireAuth, settingsGuard, (req: any, res: any) => { const b = req.body || {}; const F = ["name", "active", "sort", "field", "op", "value", "assign_mode", "assign_user_id"]; const sets = F.filter(f => b[f] !== undefined);
     if (b.pool !== undefined) { sets.push("pool" as any); } if (!sets.length) return err(res, 422, "nothing to update");
     const vals = sets.map(f => f === "pool" ? JSON.stringify(b.pool || []) : b[f]); db.prepare(`UPDATE assignment_rules SET ${sets.map(f => f + "=?").join(",")} WHERE id=? AND workspace_id=?`).run(...vals, req.params.id, ws(req)); res.json({ ok: true }); });
-  app.delete("/api/assignment-rules/:id", requireAuth, (req: any, res: any) => { db.prepare("DELETE FROM assignment_rules WHERE id=? AND workspace_id=?").run(req.params.id, ws(req)); res.json({ ok: true }); });
+  app.delete("/api/assignment-rules/:id", requireAuth, settingsGuard, (req: any, res: any) => { db.prepare("DELETE FROM assignment_rules WHERE id=? AND workspace_id=?").run(req.params.id, ws(req)); res.json({ ok: true }); });
 
   // ----- Duplicates + merge -----
-  app.get("/api/duplicates", requireAuth, (req: any, res: any) => { const groups = db.prepare(`SELECT dedupe_key, COUNT(*) n FROM leads WHERE workspace_id=? AND dedupe_key!='' AND state!='DUPLICATE' AND merged_into_id IS NULL GROUP BY dedupe_key HAVING n>1 ORDER BY n DESC`).all(ws(req)) as any[];
-    res.json(groups.map(g => ({ key: g.dedupe_key, count: g.n, leads: db.prepare(`SELECT l.id, l.service_requested, l.state, l.est_value, l.created_at, c.name contact_name, c.phone contact_phone, c.email contact_email FROM leads l LEFT JOIN contacts c ON c.id=l.contact_id WHERE l.workspace_id=? AND l.dedupe_key=? AND l.state!='DUPLICATE' ORDER BY l.created_at`).all(ws(req), g.dedupe_key) }))); });
+  app.get("/api/duplicates", requireAuth, (req: any, res: any) => {
+    const W = ws(req);
+    const leadRow = (l: any) => ({ id: l.id, service_requested: l.service_requested, state: l.state, est_value: l.est_value, created_at: l.created_at, contact_name: l.contact_name, contact_phone: l.contact_phone, contact_email: l.contact_email, location: l.location });
+    const all = db.prepare(`SELECT l.id, l.service_requested, l.state, l.est_value, l.created_at, l.dedupe_key, l.location, c.name contact_name, c.phone contact_phone, c.email contact_email FROM leads l LEFT JOIN contacts c ON c.id=l.contact_id WHERE l.workspace_id=? AND l.state!='DUPLICATE' AND l.merged_into_id IS NULL ORDER BY l.created_at`).all(W) as any[];
+    const groups: any[] = []; const used = new Set<string>();
+    const byKey = new Map<string, any[]>();
+    for (const l of all) { if (!l.dedupe_key) continue; if (!byKey.has(l.dedupe_key)) byKey.set(l.dedupe_key, []); byKey.get(l.dedupe_key)!.push(l); }
+    for (const [key, ls] of byKey) if (ls.length > 1) { ls.forEach(l => used.add(l.id)); groups.push({ key, count: ls.length, match_type: "exact", confidence: 0.99, signals: ["normalized phone/email identity"], leads: ls.map(leadRow) }); }
+    const norm = (v: string) => String(v || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    const digits = (v: string) => String(v || "").replace(/\D/g, "").slice(-10);
+    const rest = all.filter(l => !used.has(l.id));
+    const cand = new Map<string, { leads: any[]; signals: string[]; confidence: number }>();
+    const push = (k: string, l: any, signals: string[], confidence: number) => { if (!cand.has(k)) cand.set(k, { leads: [], signals, confidence }); const g = cand.get(k)!; if (!g.leads.find(x => x.id === l.id)) g.leads.push(l); };
+    for (const l of rest) {
+      if (l.contact_email) push("em:" + norm(l.contact_email), l, ["same email"], 0.95);
+      if (digits(l.contact_phone).length === 10) push("ph:" + digits(l.contact_phone), l, ["same phone"], 0.97);
+      if (norm(l.contact_name)) { push("ns:" + norm(l.contact_name) + "|" + norm(l.service_requested), l, ["same name + service"], 0.7); push("nl:" + norm(l.contact_name) + "|" + norm(l.location), l, ["same name + location"], 0.65); }
+    }
+    for (const [k, g] of cand) if (g.leads.length > 1) groups.push({ key: k, count: g.leads.length, match_type: "candidate", confidence: g.confidence, signals: g.signals, leads: g.leads.map(leadRow) });
+    groups.sort((a, b) => b.confidence - a.confidence || b.count - a.count);
+    res.json(groups); });
   app.post("/api/leads/:id/merge", requireAuth, (req: any, res: any) => { const dupe = db.prepare("SELECT * FROM leads WHERE id=? AND workspace_id=?").get(req.params.id, ws(req)) as any; const into = db.prepare("SELECT * FROM leads WHERE id=? AND workspace_id=?").get(req.body?.into_id, ws(req)) as any;
     if (!dupe || !into || dupe.id === into.id) return err(res, 422, "Pick two different leads");
     for (const t of ["activities", "tasks", "proposals", "documents", "time_entries", "job_crew", "job_schedule", "lead_events", "inbox_items", "signatures"]) { try { db.prepare(`UPDATE ${t} SET lead_id=? WHERE lead_id=?`).run(into.id, dupe.id); } catch { /* table shape varies */ } }
@@ -267,23 +291,24 @@ export function ensureDocTemplates(workspaceId: string) {
       .run(uid("dtpl"), workspaceId, name, intro, terms, DEFAULT_FOOTER, 1, i === 0 ? 1 : 0, now(), now());
   });
 }
-export function registerDocTemplates(app: any, requireAuth: any) {
+export function registerDocTemplates(app: any, requireAuth: any, needPerm: any = null) {
+  const settingsGuard = needPerm ? needPerm("can_settings") : ((_req: any, _res: any, next: any) => next());
   ensureDocTemplates("__boot__"); // creates the table on a scratch key; seeds happen per-workspace on first list
   const ws = (req: any) => req.user.workspace_id;
   const err = (res: any, code: number, msg: string) => res.status(code).json({ error: { code: "doctpl", message: msg } });
   app.get("/api/doc-templates", requireAuth, (req: any, res: any) => { ensureDocTemplates(ws(req)); res.json(db.prepare("SELECT * FROM doc_templates WHERE workspace_id=? ORDER BY is_default DESC, created_at").all(ws(req))); });
-  app.post("/api/doc-templates", requireAuth, (req: any, res: any) => { const b = req.body || {}; ensureDocTemplates(ws(req)); const id = uid("dtpl");
+  app.post("/api/doc-templates", requireAuth, settingsGuard, (req: any, res: any) => { const b = req.body || {}; ensureDocTemplates(ws(req)); const id = uid("dtpl");
     const src = b.from_id ? db.prepare("SELECT * FROM doc_templates WHERE id=? AND workspace_id=?").get(b.from_id, ws(req)) as any : null;
     db.prepare("INSERT INTO doc_templates (id,workspace_id,name,intro_html,terms_html,footer,include_logo,is_default,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
       .run(id, ws(req), (b.name || src?.name + " (copy)" || "New template").slice(0, 120), sanitizeHtml(b.intro_html ?? src?.intro_html ?? DEFAULT_INTRO), sanitizeHtml(b.terms_html ?? src?.terms_html ?? DEFAULT_TERMS), String(b.footer ?? src?.footer ?? DEFAULT_FOOTER).slice(0, 500), b.include_logo === false ? 0 : 1, 0, now(), now());
     res.status(201).json(db.prepare("SELECT * FROM doc_templates WHERE id=?").get(id)); });
-  app.patch("/api/doc-templates/:id", requireAuth, (req: any, res: any) => { const b = req.body || {}; const cur = db.prepare("SELECT * FROM doc_templates WHERE id=? AND workspace_id=?").get(req.params.id, ws(req)) as any; if (!cur) return err(res, 404, "not found");
+  app.patch("/api/doc-templates/:id", requireAuth, settingsGuard, (req: any, res: any) => { const b = req.body || {}; const cur = db.prepare("SELECT * FROM doc_templates WHERE id=? AND workspace_id=?").get(req.params.id, ws(req)) as any; if (!cur) return err(res, 404, "not found");
     if (b.is_default) db.prepare("UPDATE doc_templates SET is_default=0 WHERE workspace_id=?").run(ws(req));
     const newDefault = b.is_default === undefined ? cur.is_default : (b.is_default ? 1 : 0);
     db.prepare("UPDATE doc_templates SET name=?, intro_html=?, terms_html=?, footer=?, include_logo=?, is_default=?, updated_at=? WHERE id=?")
       .run((b.name ?? cur.name).slice(0, 120), sanitizeHtml(b.intro_html ?? cur.intro_html), sanitizeHtml(b.terms_html ?? cur.terms_html), String(b.footer ?? cur.footer).slice(0, 500), b.include_logo === undefined ? cur.include_logo : (b.include_logo ? 1 : 0), newDefault, now(), req.params.id);
     res.json(db.prepare("SELECT * FROM doc_templates WHERE id=?").get(req.params.id)); });
-  app.delete("/api/doc-templates/:id", requireAuth, (req: any, res: any) => { const rows = db.prepare("SELECT id, is_default FROM doc_templates WHERE workspace_id=?").all(ws(req)) as any[]; if (rows.length <= 1) return err(res, 422, "Keep at least one template");
+  app.delete("/api/doc-templates/:id", requireAuth, settingsGuard, (req: any, res: any) => { const rows = db.prepare("SELECT id, is_default FROM doc_templates WHERE workspace_id=?").all(ws(req)) as any[]; if (rows.length <= 1) return err(res, 422, "Keep at least one template");
     const gone = rows.find(r => r.id === req.params.id); db.prepare("DELETE FROM doc_templates WHERE id=? AND workspace_id=?").run(req.params.id, ws(req));
     if (gone?.is_default) { const rest = db.prepare("SELECT id FROM doc_templates WHERE workspace_id=? ORDER BY created_at").get(ws(req)) as any; if (rest) db.prepare("UPDATE doc_templates SET is_default=1 WHERE id=?").run(rest.id); }
     res.json({ ok: true }); });
@@ -291,6 +316,7 @@ export function registerDocTemplates(app: any, requireAuth: any) {
 
 // ---------- v6: home command-center aggregate (article pattern: signals + agent state, assembled) ----------
 export function registerHome(app: any, requireAuth: any) {
+  app.get("/api/finances", requireAuth, (req: any, res: any) => { res.json(financialSummary(req.user.workspace_id)); });
   app.get("/api/home", requireAuth, (req: any, res: any) => {
     const w = req.user.workspace_id;
     // 30-day activity series (every lead event = work happening)
@@ -311,6 +337,6 @@ export function registerHome(app: any, requireAuth: any) {
     const runs = (db.prepare("SELECT agent, output, created_at FROM agent_runs WHERE workspace_id=? ORDER BY created_at DESC LIMIT 6").all(w) as any[]).map(r => { let sum = ""; try { const o = JSON.parse(r.output); sum = Object.entries(o).filter(([, v]) => typeof v === "number" && (v as number) > 0).map(([k, v]) => `${k.replaceAll("_", " ")}: ${v}`).join(" · "); } catch { sum = String(r.output).slice(0, 90); } return { agent: r.agent, summary: sum || "no changes needed", created_at: r.created_at }; });
     const propWeek = (db.prepare("SELECT COUNT(*) c FROM proposals WHERE workspace_id=? AND created_at>=date('now','-7 days') AND status IN ('sent','signed','viewed')").get(w) as any).c;
     const propWeekAll = (db.prepare("SELECT COUNT(*) c FROM proposals WHERE workspace_id=? AND created_at>=date('now','-7 days')").get(w) as any).c;
-    res.json({ activity_series: series, upcoming: up.slice(0, 12), recently_assigned: recent, agent: { automations: wrow, runs, active_count: [wrow?.auto_score, wrow?.auto_assign, wrow?.auto_dedupe, wrow?.auto_reactivate].filter(Boolean).length }, proposals_sent_week: propWeek, proposals_built_week: propWeekAll });
+    res.json({ activity_series: series, upcoming: up.slice(0, 12), recently_assigned: recent, agent: { automations: wrow, runs, active_count: [wrow?.auto_score, wrow?.auto_assign, wrow?.auto_dedupe, wrow?.auto_reactivate].filter(Boolean).length }, proposals_sent_week: propWeek, proposals_built_week: propWeekAll, finances: financialSummary(w) });
   });
 }
