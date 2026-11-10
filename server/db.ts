@@ -90,6 +90,8 @@ export function initSchema() {
     "ALTER TABLE notifications ADD COLUMN entity_id TEXT",
     "ALTER TABLE workspaces ADD COLUMN logo_data TEXT",
     "ALTER TABLE approvals ADD COLUMN content_hash TEXT",
+    "ALTER TABLE workspaces ADD COLUMN agent_level INTEGER",
+    "UPDATE workspaces SET agent_level=4 WHERE agent_level IS NULL AND followup_enabled=1 AND (auto_score=1 OR auto_assign=1 OR auto_dedupe=1 OR auto_reactivate=1)",
     "ALTER TABLE sessions ADD COLUMN impersonated_by TEXT",
     "ALTER TABLE sessions ADD COLUMN impersonation_expires_at TEXT",
     "ALTER TABLE timesheets ADD COLUMN reviewed_by TEXT",

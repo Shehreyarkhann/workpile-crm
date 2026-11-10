@@ -1047,6 +1047,33 @@ function InboxPage() {
   return (<div><h2 className="pt">Inbox</h2><p className="sub">Every inbound message, triaged into seven categories with a suggested action — convert, reply, file, or ignore. Nothing sits unread and unowned.</p><InboxQueue inbox={inbox} reload={load} /></div>);
 }
 
+function AutonomyCard() {
+  const [a, setA] = useState<any>(null); const [msg, setMsg] = useState("");
+  const load = () => { api("/api/ai/autonomy").then(setA).catch(() => {}); };
+  useEffect(load, []);
+  if (!a) return null;
+  const pick = async (lvl: number) => { try { const r = await api("/api/ai/autonomy", { method: "PATCH", body: { level: lvl } }); setMsg(`Level set — L${r.level} ${r.level_name}`); load(); } catch (e: any) { setMsg(e.message); } };
+  return (<div className="card"><h3>🎚 Agent autonomy — L{a.level} · {a.level_name}</h3><p className="muted" style={{ marginTop: 0 }}>How far the agent may go on its own in this workspace{a.explicit ? "" : " (default level — set one to make it explicit)"}. The armed automations decide <i>what</i> it works on; this decides <i>how far</i> it goes. Every run is logged either way.</p>
+    {a.levels.map((l: any) => <label key={l.level} className="check" style={{ display: "flex", gap: 8, padding: "6px 0", borderBottom: "1px solid #eef2f7", cursor: "pointer" }}><input type="radio" style={{ width: "auto", marginTop: 2 }} name="autonomy" checked={a.level === l.level} onChange={() => pick(l.level)} /><span><b>L{l.level} — {l.name}</b><br /><span className="muted">{l.summary}</span></span></label>)}
+    {msg && <div className="ok" style={{ marginTop: 8 }}>{msg}</div>}</div>);
+}
+
+function AgentMetricsCard() {
+  const [m, setM] = useState<any>(null);
+  useEffect(() => { api("/api/ai/metrics").then(setM).catch(() => {}); }, []);
+  if (!m) return null;
+  const runs = Object.values(m.runs_30d || {}).reduce((a: number, b: any) => a + Number(b || 0), 0) as number;
+  return (<div className="card"><h3>📈 Agent acceptance — last 30 days</h3>
+    <div className="rowflex" style={{ gap: 18, flexWrap: "wrap" }}>
+      <span><b style={{ fontSize: 20 }}>{runs}</b><br /><span className="muted">agent runs</span></span>
+      <span><b style={{ fontSize: 20 }}>{m.actions_applied_30d}</b><br /><span className="muted">actions applied</span></span>
+      <span><b style={{ fontSize: 20 }}>{m.fpar === null ? "—" : m.fpar + "%"}</b><br /><span className="muted">first-pass approval ({m.approvals_decided} decided)</span></span>
+      <span><b style={{ fontSize: 20 }}>{m.merges_30d}</b><br /><span className="muted">duplicate merges</span></span>
+      <span><b style={{ fontSize: 20 }}>~{m.est_minutes_saved_30d} min</b><br /><span className="muted">time saved</span></span>
+    </div>
+    <p className="muted" style={{ marginBottom: 0, fontSize: 12 }}>{m.time_saved_basis}</p></div>);
+}
+
 function QuietHoursCard() {
   const [q, setQ] = useState<any>(null); const [msg, setMsg] = useState("");
   useEffect(() => { api("/api/settings/cadence").then(setQ).catch(() => {}); }, []);
@@ -1283,6 +1310,8 @@ function AIAssistant({ go }: any) {
         <div className="rowflex" style={{ marginTop: 10 }}><button className="btn ghost small" onClick={async () => { const r = await api("/api/ai/automations/run", { method: "POST", body: {} }); setMsg("Auto-pilot ran ✓ — " + JSON.stringify(r.result)); loadIns(); api("/api/ai/automations").then(setAuto).catch(() => {}); }}>Run auto-pilot now</button><span className="muted">{auto.last_automation_at ? "Last ran " + dt(auto.last_automation_at) : "Has not run yet"}</span></div>
       </div>}
     </div>
+    <AutonomyCard />
+    <AgentMetricsCard />
     <QuietHoursCard />
     <div className="card"><h3>AI Cleanup — duplicates, spam, scoring, assignment</h3>
       {!prev && !result && <button className="btn" onClick={scan}>Run cleanup scan</button>}

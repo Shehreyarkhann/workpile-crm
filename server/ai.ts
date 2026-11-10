@@ -110,16 +110,38 @@ export function logAgentRun(ws: string, agent: string, leadId: string | null, ou
     .run(uid("run"), ws, agent, leadId, "rules-v2", "v2", "", typeof output === "string" ? output : JSON.stringify(output), null, now());
 }
 
+export function agentLevel(w: any): number {
+  if (w?.agent_level !== null && w?.agent_level !== undefined) return Number(w.agent_level);
+  return (w?.auto_score || w?.auto_assign || w?.auto_dedupe || w?.auto_reactivate) ? 3 : 1;
+}
+export const AGENT_LEVELS = ["Observe", "Suggest", "Draft", "Bounded execution", "Controlled execution"];
+
 export function runAutomationsFor(ws: string): any {
   const w = db.prepare("SELECT * FROM workspaces WHERE id=?").get(ws) as any;
   if (!w) return null;
+  const level = agentLevel(w);
   const actions: string[] = [];
   if (w.auto_score) actions.push("score");
   if (w.auto_assign) actions.push("assign");
   if (w.auto_dedupe) actions.push("dedupe");
-  let result: any = {};
-  if (actions.length) result = cleanupApply(ws, "ai-automation", actions);
-  if (w.auto_reactivate) result.reactivation_tasks = reactivateStale(ws, "ai-automation").tasks_created;
+  let result: any = { level, level_name: AGENT_LEVELS[level] };
+  if (level <= 0) {
+    result.mode = "observe";
+    result.insights = insights(ws).length;
+  } else if (level <= 1) {
+    result.mode = "suggest";
+    const p: any = cleanupPreview(ws);
+    result.suggested = { duplicates: p.duplicate_count, spam: p.spam_count, unassigned: p.unassigned_count, unscored: p.unscored_count };
+  } else if (level === 2) {
+    result.mode = "draft";
+    const p: any = cleanupPreview(ws);
+    result.suggested = { duplicates: p.duplicate_count, spam: p.spam_count, unassigned: p.unassigned_count, unscored: p.unscored_count };
+    if (w.auto_reactivate) result.reactivation_tasks = reactivateStale(ws, "ai-automation").tasks_created;
+  } else {
+    result.mode = "execute";
+    if (actions.length) result = { ...result, ...cleanupApply(ws, "ai-automation", actions) };
+    if (w.auto_reactivate) result.reactivation_tasks = reactivateStale(ws, "ai-automation").tasks_created;
+  }
   db.prepare("UPDATE workspaces SET last_automation_at=? WHERE id=?").run(now(), ws);
   logAgentRun(ws, "automation", null, result);
   return result;
