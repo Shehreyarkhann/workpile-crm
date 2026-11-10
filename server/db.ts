@@ -63,6 +63,7 @@ export function initSchema() {
   CREATE TABLE IF NOT EXISTS payments (id TEXT PRIMARY KEY, workspace_id TEXT, proposal_id TEXT, kind TEXT DEFAULT 'deposit', amount REAL, currency TEXT DEFAULT 'USD', mode TEXT DEFAULT 'test', stripe_session_id TEXT, status TEXT DEFAULT 'pending', link TEXT, created_at TEXT, paid_at TEXT);
   CREATE TABLE IF NOT EXISTS background_jobs (id TEXT PRIMARY KEY, kind TEXT, payload TEXT, status TEXT DEFAULT 'queued', attempts INTEGER DEFAULT 0, run_after TEXT, last_error TEXT, created_at TEXT, updated_at TEXT);
   CREATE TABLE IF NOT EXISTS outbox_events (id TEXT PRIMARY KEY, workspace_id TEXT, type TEXT, entity_id TEXT, payload TEXT, created_at TEXT, processed_at TEXT);
+  CREATE TABLE IF NOT EXISTS audit_requests (id TEXT PRIMARY KEY, email TEXT, rows_count INTEGER, recoverable_value REAL, recoverable_count INTEGER, created_at TEXT);
   CREATE TABLE IF NOT EXISTS attachments (id TEXT PRIMARY KEY, workspace_id TEXT, entity_type TEXT, entity_id TEXT, name TEXT, mime TEXT, size INTEGER, storage_key TEXT, uploaded_by TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS price_overrides (id TEXT PRIMARY KEY, workspace_id TEXT, proposal_id TEXT, lead_id TEXT, item_id TEXT, item_name TEXT, prev_price REAL, new_price REAL, reason TEXT, user_id TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS feature_flags (workspace_id TEXT, flag TEXT, enabled INTEGER DEFAULT 0, updated_at TEXT, PRIMARY KEY (workspace_id, flag));

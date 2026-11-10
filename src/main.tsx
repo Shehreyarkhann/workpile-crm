@@ -814,7 +814,7 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any)
     </tbody></table>
       <div className="rowflex" style={{ marginTop: 12 }}><input style={{ flex: 2 }} placeholder="New item name" value={nb.name} onChange={e => setNb({ ...nb, name: e.target.value })} /><input style={{ width: 90 }} placeholder="unit" value={nb.unit} onChange={e => setNb({ ...nb, unit: e.target.value })} /><input style={{ width: 120 }} type="number" placeholder="standard $" value={nb.standard_price} onChange={e => setNb({ ...nb, standard_price: e.target.value })} /><input style={{ width: 120 }} type="number" placeholder="floor $" value={nb.floor_price} onChange={e => setNb({ ...nb, floor_price: e.target.value })} /><button className="btn" onClick={async () => { await api("/api/price-book", { method: "POST", body: { ...nb, standard_price: Number(nb.standard_price) || 0, floor_price: Number(nb.floor_price) || 0 } }); setNb({ name: "", unit: "job", standard_price: "", floor_price: "" }); loadAll(); }}>Add item</button></div>
       <p className="muted">Proposals can only price from this book — the floor is the margin guardrail the Approval Gate enforces.</p></div>}
-    {tab === "templates" && canSettings && <div className="card"><DocTemplatesEditor /><h3>Message templates</h3>{tpls.map(t => <div key={t.id} style={{ borderBottom: "1px solid #eef2f7", padding: "10px 0" }}><b>{t.name}</b> <span className="muted">· {t.kind} · v{t.version} · {t.active ? "active" : "inactive"}</span>{tplEdit?.id === t.id ? <><textarea rows={5} value={tplEdit.body} onChange={e => setTplEdit({ ...tplEdit, body: e.target.value })} /><span className="rowflex" style={{ marginTop: 6 }}><button className="btn small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "PATCH", body: { body: tplEdit.body } }); setTplEdit(null); loadAll(); }}>Save</button><button className="btn ghost small" onClick={() => setTplEdit(null)}>Cancel</button></span></> : <><p className="muted" style={{ whiteSpace: "pre-wrap" }}>{t.body}</p><button className="btn ghost small" onClick={() => setTplEdit({ id: t.id, body: t.body })}>Edit</button></>} <button className="btn ghost small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></div>)}
+    {tab === "templates" && canSettings && <div className="card"><VerticalPacksCard /><DocTemplatesEditor /><h3>Message templates</h3>{tpls.map(t => <div key={t.id} style={{ borderBottom: "1px solid #eef2f7", padding: "10px 0" }}><b>{t.name}</b> <span className="muted">· {t.kind} · v{t.version} · {t.active ? "active" : "inactive"}</span>{tplEdit?.id === t.id ? <><textarea rows={5} value={tplEdit.body} onChange={e => setTplEdit({ ...tplEdit, body: e.target.value })} /><span className="rowflex" style={{ marginTop: 6 }}><button className="btn small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "PATCH", body: { body: tplEdit.body } }); setTplEdit(null); loadAll(); }}>Save</button><button className="btn ghost small" onClick={() => setTplEdit(null)}>Cancel</button></span></> : <><p className="muted" style={{ whiteSpace: "pre-wrap" }}>{t.body}</p><button className="btn ghost small" onClick={() => setTplEdit({ id: t.id, body: t.body })}>Edit</button></>} <button className="btn ghost small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></div>)}
       <div className="formgrid" style={{ marginTop: 12 }}><div><label className="f">New template name</label><input value={nt.name} onChange={e => setNt({ ...nt, name: e.target.value })} /></div><div className="full"><label className="f">Body (merge fields: {"{{contact_name}} {{service}} {{total}}"})</label><textarea rows={4} value={nt.body} onChange={e => setNt({ ...nt, body: e.target.value })} /></div></div>
       <button className="btn" style={{ marginTop: 10 }} onClick={async () => { await api("/api/templates", { method: "POST", body: nt }); setNt({ name: "", body: "" }); loadAll(); }}>Add template</button></div>}
     {tab === "services" && canSettings && <div className="card">{svcs.map(sv => <div className="check" key={sv.id}><span className={`st ${sv.active ? "pass" : "fail"}`}>{sv.active ? "✓" : "✗"}</span><span style={{ flex: 1 }}>{sv.name} {sv.is_catalog ? "" : "(not in catalog — Demand Gap territory)"}</span><button className="btn ghost small" onClick={async () => { await api(`/api/services/${sv.id}`, { method: "PATCH", body: { active: !sv.active } }); loadAll(); }}>{sv.active ? "Deactivate" : "Activate"}</button></div>)}
@@ -939,6 +939,7 @@ function Admin() {
   const [ws, setWs] = useState<any[]>([]); const [syn, setSyn] = useState<any>(null); const [dlq, setDlq] = useState<any[]>([]);
   useEffect(() => { api("/api/admin/workspaces").then(setWs).catch(() => {}); api("/api/admin/dlq").then(setDlq).catch(() => {}); }, []);
   return (<div><h2 className="pt">Platform Admin</h2><p className="sub">Operator view across every workspace on this deployment.</p>
+    <ActivationCard />
     <div className="card" style={{ padding: 6 }}><table><thead><tr><th>Workspace</th><th>Leads</th><th>Users</th><th>Pending approvals</th><th>Dead letters</th></tr></thead><tbody>{ws.map((w: any) => <tr key={w.id}><td>{w.name}</td><td>{num(w.leads)}</td><td>{num(w.users)}</td><td>{num(w.pending_approvals)}</td><td>{num(w.dead_letters)}</td></tr>)}</tbody></table></div>
     <div className="card"><h3>Dead-letter queue ({dlq.length})</h3>{dlq.map((d: any) => <p key={d.id} className="muted">{d.outcome} · lead {String(d.lead_id).slice(0, 14)}… · {d.last_error || ""}</p>)}{dlq.length === 0 && <p className="muted">Empty — every delivery either landed or is still retrying.</p>}
       <button className="btn" onClick={async () => setSyn(await api("/api/admin/synthetics"))}>Run SLO synthetics</button>
@@ -1045,6 +1046,24 @@ function InboxPage() {
   const load = () => { api("/api/inbox").then(setInbox).catch(() => {}); };
   useEffect(load, []);
   return (<div><h2 className="pt">Inbox</h2><p className="sub">Every inbound message, triaged into seven categories with a suggested action — convert, reply, file, or ignore. Nothing sits unread and unowned.</p><InboxQueue inbox={inbox} reload={load} /></div>);
+}
+
+function VerticalPacksCard() {
+  const [packs, setPacks] = useState<any[]>([]); const [msg, setMsg] = useState("");
+  useEffect(() => { api("/api/templates/verticals").then(setPacks).catch(() => {}); }, []);
+  if (!packs.length) return null;
+  const apply = async (id: string) => { try { const r = await api(`/api/templates/verticals/${id}/apply`, { method: "POST", body: {} }); setMsg(`${r.pack}: +${r.added.services} services, +${r.added.price_book_items} price-book items, +${r.added.custom_fields} fields. ${r.note}`); } catch (e: any) { setMsg(e.message); } };
+  return (<div style={{ marginBottom: 16 }}><h3>Vertical starter packs</h3><p className="muted" style={{ marginTop: 0 }}>Start from your trade's shape: services, a price-book skeleton (prices at $0 — yours to set), and lead fields. Applying twice adds nothing twice.</p>
+    {packs.map(p => <div key={p.id} className="rowflex" style={{ padding: "6px 0", borderBottom: "1px solid #eef2f7" }}><b>{p.name}</b><span className="muted">{p.services} services · {p.fields} fields</span><span style={{ flex: 1 }} /><button className="btn ghost small" onClick={() => apply(p.id)}>Apply pack</button></div>)}
+    {msg && <div className="ok" style={{ marginTop: 8 }}>{msg}</div>}</div>);
+}
+
+function ActivationCard() {
+  const [a, setA] = useState<any>(null);
+  useEffect(() => { api("/api/admin/activation").then(setA).catch(() => {}); }, []);
+  if (!a) return null;
+  const labels: any = { has_leads: "Has leads", has_proposals: "Has proposals", has_decided_approval: "Approval decided", has_jobs: "Has jobs", has_won: "Has won work", has_team: "Team of 2+" };
+  return (<div className="card"><h3 style={{ marginTop: 0 }}>Activation funnel — % of workspaces reaching each milestone</h3><div className="rowflex" style={{ gap: 18, flexWrap: "wrap" }}>{Object.entries(a.milestone_pct).map(([k, v]: any) => <span key={k}><b style={{ fontSize: 20 }}>{v}%</b><br /><span className="muted">{labels[k] || k}</span></span>)}</div></div>);
 }
 
 function AutonomyCard() {
