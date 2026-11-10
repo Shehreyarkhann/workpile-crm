@@ -227,10 +227,17 @@ aside.rail .sideHead { flex-direction: column; gap: 6px; }
 .recentRow { display: flex; align-items: center; gap: 12px; padding: 10px 4px; border-bottom: 1px solid #eef2f7; cursor: pointer; border-radius: 8px; transition: background .15s; }
 .recentRow:hover { background: #f8fafc; }
 .avatar { width: 38px; height: 38px; border-radius: 50%; background: #dcfce7; color: #166534; display: flex; align-items: center; justify-content: center; font-weight: 700; flex: none; }
-.upCard { border-radius: 12px; padding: 11px 13px; margin-bottom: 9px; cursor: pointer; transition: transform .18s ease, box-shadow .18s ease; animation: wpSlideL .5s cubic-bezier(.22,.9,.3,1) both; }
+.upCard { display:grid; grid-template-columns:34px minmax(0,1fr) 78px; align-items:center; gap:11px; border-radius: 12px; padding: 10px 12px; margin-bottom: 9px; cursor: pointer; transition: transform .18s ease, box-shadow .18s ease; animation: wpSlideL .5s cubic-bezier(.22,.9,.3,1) both; }
 .upCard:hover { transform: translateX(3px); box-shadow: 0 6px 16px rgba(15,40,25,.10); }
-.upCard b { display: block; font-size: 13.5px; }
-.upCard span { font-size: 12px; opacity: .75; }
+.upIc { width:34px; height:34px; border-radius:9px; background:rgba(255,255,255,.65); display:flex; align-items:center; justify-content:center; font-size:16px; }
+.upMain { min-width:0; display:flex; flex-direction:column; gap:1px; }
+.upMain b { font-size: 13.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.upSub { font-size: 12px; opacity: .75; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.upAct { display:flex; justify-content:flex-end; align-items:center; min-height:28px; }
+.upDone { width:74px; height:28px; padding:0; font-size:12.5px; }
+.upTime { font-size:12.5px; font-weight:700; opacity:.7; }
+.calIc { width:34px; height:34px; flex:none; border-radius:9px; background:#f1f5f9; display:flex; align-items:center; justify-content:center; font-size:16px; }
+.calAct { display:flex; gap:6px; justify-content:flex-end; min-width:190px; flex:none; }
 .weekStrip { display: grid; grid-template-columns: repeat(7, 1fr); text-align: center; margin-bottom: 12px; }
 .weekStrip .wd { font-size: 11px; color: #94a3b8; }
 .weekStrip .wn { font-size: 14px; font-weight: 600; width: 30px; height: 30px; line-height: 30px; margin: 2px auto 0; border-radius: 50%; }
@@ -329,3 +336,14 @@ aside.rail .sideHead { flex-direction: column; gap: 6px; }
   .lpFoot { padding-bottom:64px; }
 }
 @media (max-width:430px){ .lpMoney { grid-template-columns:1fr; } .lpMoneyCard:last-child { grid-column:auto; } .lpFacts b { font-size:22px; } }
+
+.qRow { display:grid; grid-template-columns:22px 116px minmax(0,1fr) 84px 104px; gap:12px; align-items:center; padding:10px 14px; margin-bottom:8px; }
+.qCheck { display:flex; align-items:center; justify-content:center; }
+.qBadge { white-space:nowrap; text-align:center; overflow:hidden; }
+.qTitle { min-width:0; display:flex; flex-direction:column; gap:1px; }
+.qTitle b { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.qTitle span { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:12.5px; }
+.qQuick { display:flex; justify-content:flex-end; }
+.qDoneBtn { width:80px; }
+.qBtn { width:104px; height:32px; }
+@media (max-width:640px){ .qRow { grid-template-columns:22px minmax(0,1fr) 96px; } .qBadge, .qQuick { display:none; } .qBtn { width:96px; } }
