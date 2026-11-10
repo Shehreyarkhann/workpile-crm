@@ -745,6 +745,30 @@ function CreateLead({ users, done }: any) {
   </div></div>);
 }
 
+function WeeklyReportCard() {
+  const mondayOf = (d: Date) => { const x = new Date(d); const day = (x.getDay() + 6) % 7; x.setDate(x.getDate() - day); x.setHours(0, 0, 0, 0); return x.toISOString().slice(0, 10); };
+  const [week, setWeek] = useState(mondayOf(new Date())); const [r, setR] = useState<any>(null); const [copied, setCopied] = useState(false);
+  useEffect(() => { api("/api/status-report?week=" + week).then(setR).catch(() => {}); }, [week]);
+  const shift = (n: number) => { const d = new Date(week + "T12:00:00"); d.setDate(d.getDate() + n * 7); setWeek(mondayOf(d)); };
+  return (<div className="card" style={{ borderLeft: "4px solid #166534" }}><div className="rowflex" style={{ justifyContent: "space-between" }}><h3 style={{ margin: 0 }}>📋 Weekly Status Report — the owner's one-pager</h3>
+    <span className="rowflex"><button className="btn ghost small" onClick={() => shift(-1)}>← Prev</button><b>Week of {week}</b><button className="btn ghost small" onClick={() => shift(1)}>Next →</button>
+    <a className="btn ghost small" style={{ textDecoration: "none" }} href={`/print/status-report?week=${week}`} target="_blank" rel="noreferrer">🖨 Print / PDF</a>
+    <button className="btn small" onClick={async () => { if (r?.text) { await navigator.clipboard.writeText(r.text).catch(() => {}); setCopied(true); setTimeout(() => setCopied(false), 2000); } }}>{copied ? "Copied ✓" : "Copy summary"}</button></span></div>
+    {!r && <p className="muted">Building your week…</p>}
+    {r && <div className="kpis" style={{ marginTop: 12, gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))" }}>
+      <div className="kpi"><div className="lab">New leads</div><div className="val">{r.new_leads}</div><div className="hint">Backlog open: {r.backlog.open} ({money(r.backlog.pipeline_value)})</div></div>
+      <div className="kpi"><div className="lab">Won</div><div className="val">{r.won.count}</div><div className="hint">{money(r.won.value)} · Lost {r.lost.count} · No response {r.no_response}</div></div>
+      <div className="kpi"><div className="lab">Proposals</div><div className="val">{r.proposals.count}</div><div className="hint">{money(r.proposals.value)} created this week</div></div>
+      <div className="kpi"><div className="lab">Approvals</div><div className="val">{r.approvals.rate ?? "—"}{r.approvals.rate !== null && r.approvals.rate !== undefined ? "%" : ""}</div><div className="hint">{r.approvals.decided} decided · {r.approvals.pending} waiting</div></div>
+      <div className="kpi"><div className="lab">Field reports</div><div className="val">{r.field_reports.pct ?? "—"}{r.field_reports.pct !== null && r.field_reports.pct !== undefined ? "%" : ""}</div><div className="hint">{r.field_reports.filed}/{r.field_reports.expected} filed</div></div>
+      <div className="kpi"><div className="lab">Timesheets</div><div className="val">{r.timesheets.pct ?? "—"}{r.timesheets.pct !== null && r.timesheets.pct !== undefined ? "%" : ""}</div><div className="hint">{r.timesheets.submitted}/{r.timesheets.expected} submitted</div></div>
+      <div className="kpi"><div className="lab">Labor</div><div className="val">{r.labor.hours}h</div><div className="hint">{money(r.labor.cost)} across {r.labor.jobs} jobs</div></div>
+      <div className="kpi"><div className="lab">Inbox</div><div className="val">{r.inbox.cleared}</div><div className="hint">cleared · {r.inbox.open_now} still open</div></div>
+    </div>}
+    {r && r.top_jobs?.length > 0 && <p className="muted" style={{ marginBottom: 0 }}>Top jobs by labor: {r.top_jobs.map((j: any) => `${j.service_requested} (${j.customer || "—"}) — ${j.h}h / ${money(j.a)}`).join(" · ")}</p>}
+  </div>);
+}
+
 function Reports() {
   const [fc, setFc] = useState<any>(null);
   useEffect(() => { api("/api/forecast").then(setFc).catch(() => {}); }, []);
@@ -752,6 +776,7 @@ function Reports() {
   useEffect(() => { api("/api/reports?dataset=" + ds).then(r => setRows(r.rows)).catch(() => {}); }, [ds]);
   const tot = rows.reduce((a, r) => ({ leads: a.leads + (r.leads || 0), won: a.won + (r.won || 0), lost: a.lost + (r.lost || 0), value: a.value + (r.value || 0), won_value: a.won_value + (r.won_value || 0) }), { leads: 0, won: 0, lost: 0, value: 0, won_value: 0 });
   return (<div><h2 className="pt">Reports</h2><p className="sub">Tabular reports over your live data — the Salesforce Reports equivalent, without the report-builder maze. Export anything to CSV.</p>
+    <WeeklyReportCard />
     {fc && <><div className="kpis">
       <div className="kpi"><div className="lab">🔮 Weighted forecast</div><div className="val">{money(fc.weighted_pipeline)}</div><div className="hint">of {money(fc.raw_pipeline)} raw pipeline, probability-weighted by stage</div></div>
       <div className="kpi"><div className="lab">🎯 Win rate (30d)</div><div className="val">{fc.intel.win_rate_30d === null ? "—" : fc.intel.win_rate_30d + "%"}</div><div className="hint">{num(fc.intel.decided_30d)} decided in the last 30 days</div></div>
@@ -892,6 +917,31 @@ function ProposalTemplateEditor() {
       <p className="pd-sign">Signature: ______________________________&nbsp;&nbsp;Name (print): ______________________________&nbsp;&nbsp;Date: ______________</p>
       <div className="pd-foot">{sample(t.footer)}</div>
     </div>}
+  </div>);
+}
+
+function PrintStatusReport() {
+  const [r, setR] = useState<any>(null); const [ws, setWs] = useState<any>(null);
+  useEffect(() => { const wk = new URLSearchParams(location.search).get("week") || ""; api("/api/status-report" + (wk ? "?week=" + wk : "")).then(setR).catch(() => {}); api("/api/settings").then(x => setWs(x.workspace)).catch(() => {}); }, []);
+  useEffect(() => { if (r) { const t = setTimeout(() => window.print(), 600); return () => clearTimeout(t); } }, [r]);
+  if (!r) return <div className="printdoc">Loading report…</div>;
+  const Row = ({ k, v }: any) => <div className="pd-row"><span>{k}</span><b>{v}</b></div>;
+  return (<div className="printdoc">
+    <div className="pd-head"><div><h1>{ws?.name || "Weekly Status Report"}</h1><p>Weekly Status Report — week of {r.week_of} to {r.week_to}</p></div></div>
+    <h3>Pipeline</h3>
+    <Row k="New leads in" v={r.new_leads} /><Row k="Backlog still open" v={`${r.backlog.open} (${money(r.backlog.pipeline_value)} in pipeline)`} />
+    <Row k="Proposals created" v={`${r.proposals.count} (${money(r.proposals.value)})`} /><Row k="Won" v={`${r.won.count} (${money(r.won.value)})`} />
+    <Row k="Lost / No response" v={`${r.lost.count} / ${r.no_response}`} /><Row k="Approvals" v={`${r.approvals.decided} decided · ${r.approvals.rate ?? "—"}% approved · ${r.approvals.pending} waiting`} />
+    <h3>Field & Labor</h3>
+    <Row k="Field reports filed" v={`${r.field_reports.filed}/${r.field_reports.expected} (${r.field_reports.pct ?? "—"}%)`} />
+    <Row k="Timesheets submitted" v={`${r.timesheets.submitted}/${r.timesheets.expected} (${r.timesheets.pct ?? "—"}%)`} />
+    <Row k="Labor" v={`${r.labor.hours} hours · ${money(r.labor.cost)} across ${r.labor.jobs} jobs`} />
+    <Row k="Crew assignments" v={r.scheduled.assignments} />
+    {(r.top_jobs || []).map((j: any, i: number) => <Row key={i} k={`· ${j.service_requested} — ${j.customer || ""}`} v={`${j.h}h / ${money(j.a)}`} />)}
+    <h3>Office</h3>
+    <Row k="Inbox received / cleared" v={`${r.inbox.received} / ${r.inbox.cleared} (${r.inbox.open_now} still open)`} />
+    <Row k="Final outcomes undelivered" v={r.handoffs_undelivered} />
+    <p className="pd-foot">Generated by Workpile from live data — no hand-kept spreadsheet.</p>
   </div>);
 }
 
@@ -1183,4 +1233,4 @@ function BookingPage({ slug }: any) {
     <p className="muted" style={{ fontSize: 12 }}>By booking you agree we may call/text about this request. No spam, ever.</p></div></div>);
 }
 const __path = window.location.pathname;
-createRoot(document.getElementById("root")!).render(__path.startsWith("/book/") ? <BookingPage slug={__path.split("/")[2]} /> : __path.startsWith("/print/proposal/") ? <PrintProposal id={__path.split("/")[3]} /> : <App />);
+createRoot(document.getElementById("root")!).render(__path.startsWith("/book/") ? <BookingPage slug={__path.split("/")[2]} /> : __path.startsWith("/print/proposal/") ? <PrintProposal id={__path.split("/")[3]} /> : __path.startsWith("/print/status-report") ? <PrintStatusReport /> : <App />);

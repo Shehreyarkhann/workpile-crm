@@ -17,6 +17,7 @@ import { queueAndDeliver, notify, notifyOwners, emailConfigured, smsConfigured }
 import { weekStartOf, ensureWeek, chaseRow, sumDays } from "./timesheets.ts";
 import { rateFor, logTime, jobLabor, DEFAULT_CLASSES } from "./labor.ts";
 import { ensureDay, chaseReport, todayStr } from "./fieldreports.ts";
+import { weeklyReport } from "./statusreport.ts";
 import { enrollFollowup, stopFollowups } from "./followups.ts";
 
 import { providerStatus, authUrl, listConnections } from "./oauth.ts";
@@ -1120,6 +1121,10 @@ app.get("/api/dashboard", requireAuth, (req: any, res) => {
 });
 
 // Reports (§ Salesforce-parity: tabular reports + CSV export)
+app.get("/api/status-report", requireAuth, (req: any, res) => {
+  try { res.json(weeklyReport(req.user.workspace_id, req.query.week ? String(req.query.week) : undefined)); }
+  catch (e: any) { res.status(500).json({ error: { code: "report_failed", message: String(e?.message || e) } }); }
+});
 app.get("/api/reports", requireAuth, (req: any, res) => {
   const ws = req.user.workspace_id; const kind = String(req.query.dataset || "by_owner");
   const Q: Record<string, string> = {
