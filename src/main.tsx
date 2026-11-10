@@ -39,6 +39,126 @@ function GettingStarted({ go }: any) {
     <div className="chipRow" style={{ marginTop: 8 }}>{steps.map((x: any, i: number) => <button key={i} className={"chip" + (x.done ? " on" : "")} onClick={() => go({ view: x.view })}>{x.done ? "✓ " : "→ "}{x.label}</button>)}</div></div>);
 }
 
+function GoalGauge({ pct, target }: any) { const p = Math.max(0, Math.min(100, pct || 0)); const R = 74, C = Math.PI * R; const ticks = [0, 25, 50, 75, 100];
+  return (<div className="gaugeWrap"><svg width="190" height="112" viewBox="0 0 190 112">
+    {ticks.map(t => { const a = Math.PI * (1 - t / 100); const x1 = 95 + (R + 7) * Math.cos(a), y1 = 100 - (R + 7) * Math.sin(a), x2 = 95 + (R - 9) * Math.cos(a), y2 = 100 - (R - 9) * Math.sin(a); return <line key={t} x1={x1} y1={y1} x2={x2} y2={y2} stroke={t <= p ? "#16a34a" : "#e2e8f0"} strokeWidth="5" strokeLinecap="round" />; })}
+    <path d={`M ${95 - R} 100 A ${R} ${R} 0 0 1 ${95 + R} 100`} fill="none" stroke="#eef2f7" strokeWidth="13" strokeLinecap="round" />
+    <path d={`M ${95 - R} 100 A ${R} ${R} 0 0 1 ${95 + R} 100`} fill="none" stroke="#16a34a" strokeWidth="13" strokeLinecap="round" strokeDasharray={`${C * p / 100} ${C}`} style={{ transition: "stroke-dasharray 1s cubic-bezier(.22,.9,.3,1)" }} />
+    <text x="95" y="82" textAnchor="middle" fontSize="30" fontWeight="800" fill="#1b1b1a">{pct === null || pct === undefined ? "—" : pct + "%"}</text>
+    <text x="95" y="100" textAnchor="middle" fontSize="11.5" fill="#94a3b8">of {target}% target</text>
+  </svg></div>); }
+function useCountUp(target: number, dur = 750) {
+  const [v, setV] = useState(0);
+  useEffect(() => { let raf = 0; const t0 = performance.now(); const step = (t: number) => { const p = Math.min(1, (t - t0) / dur); setV(Math.round(target * (1 - Math.pow(1 - p, 3)))); if (p < 1) raf = requestAnimationFrame(step); }; raf = requestAnimationFrame(step); return () => cancelAnimationFrame(raf); }, [target]);
+  return v;
+}
+
+function HomeDash({ go, openLead, m, d }: any) {
+  const [home, setHome] = useState<any>(null); const [ins, setIns] = useState<any[]>([]);
+  const [runOpen, setRunOpen] = useState(false); const [toasts, setToasts] = useState<any[]>([]); const [actRange, setActRange] = useState(30);
+  useEffect(() => { api("/api/home").then(setHome).catch(() => {}); api("/api/ai/insights").then(setIns).catch(() => {}); }, []);
+  const toast = (text: string) => { const id = Date.now() + Math.random(); setToasts(t => [...t, { id, text }]); setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 5200); };
+  const pipe = useCountUp(Math.round(m.pipeline_open_value || 0)); const wonM = useCountUp(Math.round(d.won_value || 0));
+  if (!home) return <div className="card animIn"><p className="muted">Assembling your command center…</p></div>;
+  const maxA = Math.max(1, ...home.activity_series.map((s: any) => s.count));
+  const auto = home.agent.automations || {};
+  const autoNames: [string, string][] = [["auto_score", "Scoring"], ["auto_assign", "Assignment"], ["auto_dedupe", "De-dupe"], ["auto_reactivate", "Reactivation"]];
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const KINDC: Record<string, [string, string]> = { callback: ["#fef9c3", "📞"], visit: ["#fce7f3", "📍"], schedule: ["#dbeafe", "👷"], task: ["#dcfce7", "✅"], followup: ["#ede9fe", "🔁"] };
+  const week: any[] = [...Array(7)].map((_, i) => { const dt = new Date(Date.now() + i * 86400000); return { key: dt.toISOString().slice(0, 10), dow: dt.toLocaleDateString(undefined, { weekday: "narrow" }), num: dt.getDate(), has: home.upcoming.some((u: any) => u.date === dt.toISOString().slice(0, 10)) }; });
+  const byDay = new Map<string, any[]>(); for (const u of home.upcoming) { if (!byDay.has(u.date)) byDay.set(u.date, []); byDay.get(u.date)!.push(u); }
+  const STC: Record<string, string> = { NEW: "info", WORKING: "warn", QUALIFIED: "info", PROPOSAL: "warn", SENT: "info", FOLLOWUP: "warn", WON: "pass", LOST: "fail", NO_RESPONSE: "warn", CLOSED: "info", JUNK: "fail" };
+  return (<div>
+    <div className="homeGrid">
+      <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
+        <div className="statRow">
+          <div className="statCard animIn" style={{ animationDelay: "0ms", ["--glow" as any]: "#22c55e" }} onClick={() => go({ view: "leads", leads: { bucket: "proposal" } })}><div className="ic" style={{ background: "#dcfce7" }}>💵</div><div className="v">${num(pipe)}</div><div className="l">Open pipeline — qualified → sent</div></div>
+          <div className="statCard animIn" style={{ animationDelay: "60ms", ["--glow" as any]: "#f59e0b" }} onClick={() => go({ view: "leads", leads: { bucket: "proposal" } })}><div className="ic" style={{ background: "#fef9c3" }}>📨</div><div className="v">{home.proposals_sent_week}<span style={{ fontSize: 14, color: "#94a3b8" }}> / {home.proposals_built_week} built</span></div><div className="l">Proposals sent this week ★ North Star</div></div>
+          <div className="statCard animIn" style={{ animationDelay: "120ms", ["--glow" as any]: "#38bdf8" }} onClick={() => go({ view: "approvals" })}><div className="ic" style={{ background: "#dbeafe" }}>✅</div><div className="v">{m.first_pass_approval_rate !== null && m.first_pass_approval_rate !== undefined ? m.first_pass_approval_rate + "%" : "—"}</div><div className="l">First-pass approval · target 90%</div></div>
+          <div className="statCard animIn" style={{ animationDelay: "180ms", ["--glow" as any]: "#e879f9" }} onClick={() => go({ view: "leads", leads: { bucket: "won" } })}><div className="ic" style={{ background: "#fce7f3" }}>🏆</div><div className="v">${num(wonM)}</div><div className="l">Won value — {num(m.won)} deals all time</div></div>
+        </div>
+
+        <div className="agentCard animIn" style={{ animationDelay: "120ms" }}>
+          <div className="rowflex" style={{ justifyContent: "space-between" }}><b style={{ fontSize: 16 }}>🤖 Workpile Agent</b><span style={{ fontSize: 12.5, display: "flex", gap: 7, alignItems: "center" }}><span className="liveDot" /> {home.agent.active_count > 0 ? `LIVE — ${home.agent.active_count} of 4 automations on` : "PAUSED — all automations off"}</span></div>
+          <p style={{ opacity: .85, fontSize: 13, margin: "6px 0 10px" }}>The agent works the backlog between your logins — scoring, assigning, de-duping, reactivating — inside your guardrails: nothing customer-facing sends without approval, prices only ever come from the price book. {auto.last_automation_at ? `Last run ${dt(auto.last_automation_at)}.` : "It hasn't run yet."}</p>
+          <div className="rowflex" style={{ marginBottom: 10 }}>{autoNames.map(([k, l]) => <span key={k} className="tinyBadge" style={{ background: auto[k] ? "#22c55e" : "rgba(255,255,255,.18)", color: "#fff", border: 0 }}>{auto[k] ? "✓" : "○"} {l}</span>)}
+            <button className="btn small" style={{ background: "#fff", color: "#14532d", marginLeft: "auto", position: "relative", zIndex: 1 }} onClick={() => setRunOpen(true)}>▶ Run agent now</button>
+            <button className="btn ghost small" style={{ color: "#fff", borderColor: "rgba(255,255,255,.45)", background: "transparent", position: "relative", zIndex: 1 }} onClick={() => go({ view: "ai" })}>Open AI Assistant</button></div>
+          {home.agent.runs.length > 0 && <div style={{ display: "flex", flexDirection: "column", gap: 6, position: "relative", zIndex: 1 }}>{home.agent.runs.slice(0, 3).map((r: any, i: number) => <div className="agentRun" key={i}><b>{r.agent}</b> — {r.summary} <span style={{ opacity: .7 }}>· {dt(r.created_at)}</span></div>)}</div>}
+          {ins.length > 0 && <div style={{ marginTop: 10, position: "relative", zIndex: 1 }}>{ins.slice(0, 2).map((i: any, k: number) => <div key={k} style={{ fontSize: 13, padding: "5px 0", borderTop: "1px solid rgba(255,255,255,.15)" }}>{i.icon} <b>{i.title}</b> — <span style={{ opacity: .85 }}>{i.detail}</span></div>)}</div>}
+        </div>
+
+        <div className="card animIn" style={{ animationDelay: "200ms" }}><h3 style={{ marginTop: 0 }}>Activity <span className="muted" style={{ fontWeight: 400, fontSize: 12.5 }}>every action the team + agent took, per day</span><span style={{ float: "right" }} className="segPills"><button className={actRange === 14 ? "on" : ""} onClick={() => setActRange(14)}>14 days</button><button className={actRange === 30 ? "on" : ""} onClick={() => setActRange(30)}>30 days</button></span></h3>
+          <div className="actBars">{home.activity_series.slice(30 - actRange).map((s: any, i: number) => <div key={i} className={`ab ${s.day === todayStr ? "today" : ""}`} title={`${s.label}: ${s.count} actions`} style={{ height: `${Math.max(3, 100 * s.count / Math.max(1, ...home.activity_series.slice(30 - actRange).map((x: any) => x.count)))}%`, transitionDelay: `${i * 18}ms` }} />)}</div>
+          <div className="rowflex" style={{ justifyContent: "space-between" }}><span className="muted" style={{ fontSize: 11.5 }}>{home.activity_series[30 - actRange]?.label}</span><span className="muted" style={{ fontSize: 11.5 }}>{home.activity_series[29]?.label} · today ●</span></div>
+        </div>
+
+        <div className="card animIn" style={{ animationDelay: "260ms" }}><h3 style={{ marginTop: 0 }}>Recently assigned <span className="more" onClick={() => go({ view: "leads" })}>View all →</span></h3>
+          {home.recently_assigned.map((l: any, i: number) => <div className="recentRow animIn" key={l.id} style={{ animationDelay: `${i * 55}ms` }} onClick={() => openLead(l.id)}>
+            <div className="avatar">{(l.contact_name || "?").split(" ").map((x: string) => x[0]).slice(0, 2).join("")}</div>
+            <div style={{ flex: 1, minWidth: 0 }}><b>{l.contact_name || "—"}</b><div className="muted" style={{ fontSize: 12.5 }}>{l.service_requested} · {money(l.est_value)}{l.ai_score ? ` · AI score ${l.ai_score}` : ""}</div></div>
+            <span className="muted" style={{ fontSize: 12.5 }}>{relTime(l.created_at)}<br />{l.owner_name || "Unassigned"}</span>
+            <span className={`st ${STC[l.state] || "info"}`}>{l.state.replaceAll("_", " ")}</span>
+          </div>)}
+          {home.recently_assigned.length === 0 && <p className="muted">No leads yet — import a CSV or connect a source and the agent starts working.</p>}
+        </div>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <div className="card animIn" style={{ animationDelay: "200ms" }}><h3 style={{ marginTop: 0 }}>Goal — first-pass approval <span className="seeAll" onClick={() => go({ view: "approvals" })}>Approvals ↗</span></h3>
+          <GoalGauge pct={m.first_pass_approval_rate} target={90} />
+          <p className="muted" style={{ textAlign: "center", fontSize: 12.5, margin: "2px 0 4px" }}>{m.first_pass_approval_rate >= 90 ? "🎉 Target beaten — the agent's drafts are landing first try." : "Proposals approved without changes ÷ decided. The agent's drafting quality drives this."}</p>
+        </div>
+        <div className="card animIn" style={{ animationDelay: "150ms" }}><h3 style={{ marginTop: 0 }}>Upcoming — next 7 days</h3>
+          <div className="weekStrip">{week.map(wd => <div key={wd.key}><div className="wd">{wd.dow}</div><div className={`wn ${wd.key === todayStr ? "today" : ""} ${wd.has ? "has" : ""}`}>{wd.num}</div></div>)}</div>
+          {[...byDay.entries()].map(([day, items]) => <div key={day}><div className="muted" style={{ fontSize: 12, fontWeight: 700, margin: "8px 0 6px" }}>{day === todayStr ? "Today" : new Date(day + "T12:00:00").toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}</div>
+            {items.map((u: any, i: number) => <div className="upCard" key={i} style={{ background: (KINDC[u.kind] || ["#f1f5f9"])[0], animationDelay: `${i * 70}ms` }} onClick={() => u.lead_id && openLead(u.lead_id)}><b>{(KINDC[u.kind] || ["", "•"])[1]} {u.title}</b><span>{u.sub}</span></div>)}</div>)}
+          {home.upcoming.length === 0 && <p className="muted">Nothing scheduled this week. The agent flags leads with no next step so this never stays empty for long.</p>}
+          <button className="btn ghost small" style={{ marginTop: 4 }} onClick={() => (window as any).wpGoTab?.("planner", "calendar")}>Open calendar →</button>
+        </div>
+        <div className="card animIn" style={{ animationDelay: "220ms" }}><h3 style={{ marginTop: 0 }}>Quick links</h3>
+          <div className="qlRow" onClick={() => go({ view: "myday" })}>🌅 Today's plan <span style={{ marginLeft: "auto" }}>›</span></div>
+          <div className="qlRow" onClick={() => (window as any).wpGoTab?.("planner", "tasks")}>🔁 Follow-ups & tasks <span style={{ marginLeft: "auto" }}>›</span></div>
+          <div className="qlRow" onClick={() => go({ view: "queue" })}>⚡ Work the backlog <span style={{ marginLeft: "auto" }}>›</span></div>
+          <div className="qlRow" onClick={() => go({ view: "approvals" })}>✅ Approvals inbox <span style={{ marginLeft: "auto" }}>›</span></div>
+          <div className="qlRow" onClick={() => go({ view: "reports" })}>📊 Monthly target & reports <span style={{ marginLeft: "auto" }}>›</span></div>
+        </div>
+      </div>
+    </div>
+    {runOpen && <AgentRunModal close={() => setRunOpen(false)} done={(msg: string) => { setRunOpen(false); toast(msg); api("/api/home").then(setHome).catch(() => {}); }} />}
+    <div className="toastBox">{toasts.map(t => <div className="toast" key={t.id}>✅ {t.text}</div>)}</div>
+  </div>);
+}
+
+function AgentRunModal({ close, done }: any) {
+  const [phase, setPhase] = useState(0); const [result, setResult] = useState<any>(null); const [err, setErr] = useState("");
+  const stepsRef = useRef<any[]>([]);
+  useEffect(() => { (async () => {
+    const auto = await api("/api/ai/automations").catch(() => ({}));
+    const plan: any[] = [];
+    if (auto.auto_score) plan.push(["score", "🎯", "Scoring every lead", "scored", "leads scored"]);
+    if (auto.auto_assign) plan.push(["assign", "👤", "Assigning unowned leads", "assigned", "leads assigned"]);
+    if (auto.auto_dedupe) plan.push(["dedupe", "🧹", "Merging duplicates", "archived_duplicates", "duplicates archived"]);
+    if (auto.auto_reactivate) plan.push(["reactivate", "🔁", "Reactivating stale leads", "reactivation_tasks", "follow-up tasks created"]);
+    stepsRef.current = plan;
+    if (!plan.length) { setErr("All four automations are off — the agent has nothing it's allowed to do. Turn them on in AI Assistant → Auto-pilot, or below."); return; }
+    const r = await api("/api/ai/automations/run", { method: "POST", body: {} }).catch((e: any) => ({ error: e.message }));
+    if ((r as any).error) { setErr((r as any).error); return; }
+    setResult(r.result || {});
+    for (let i = 0; i <= plan.length; i++) { setPhase(i); await new Promise(res => setTimeout(res, 650)); }
+  })(); }, []);
+  const plan = stepsRef.current;
+  const summary = result ? [["scored", "scored"], ["assigned", "assigned"], ["archived_duplicates", "duplicates archived"], ["reactivation_tasks", "reactivation tasks"]].filter(([k]) => result[k] > 0).map(([k, l]) => `${result[k]} ${l}`).join(" · ") : "";
+  return (<div className="modalWrap" onClick={close}><div className="modal" style={{ maxWidth: 520 }} onClick={e => e.stopPropagation()}>
+    <h3 style={{ marginTop: 0 }}>🤖 Agent run</h3>
+    <p className="muted" style={{ marginTop: 0 }}>Controlled autonomy: the agent executes the steps you've switched on, logs every action, and stops at your approval gates.</p>
+    {err && <><div className="err">{err}</div><div className="rowflex" style={{ marginTop: 10 }}><button className="btn small" onClick={async () => { await api("/api/ai/automations", { method: "POST", body: { auto_score: true, auto_assign: true, auto_dedupe: true, auto_reactivate: true } }); done("All automations switched on — run the agent again any time"); }}>Switch all four on</button><button className="btn ghost small" onClick={close}>Close</button></div></>}
+    {!err && plan.map((s: any, i: number) => <div className="stepRow" key={s[0]}>{phase > i ? <span style={{ fontSize: 17 }}>✅</span> : phase === i ? <span className="stepSpin" /> : <span style={{ opacity: .35, fontSize: 17 }}>{s[1]}</span>}<span style={{ flex: 1, opacity: phase >= i ? 1 : .45 }}>{s[2]}</span>{phase > i && result && <b>{result[s[3]] ?? 0} {s[4]}</b>}</div>)}
+    {!err && result && phase > plan.length - 1 && <div style={{ marginTop: 12 }}><div className="ok">Run complete — {summary || "everything was already clean; no changes needed"}.</div><div className="rowflex" style={{ marginTop: 10 }}><button className="btn" onClick={() => done(`Agent run complete — ${summary || "no changes needed"}`)}>Done</button></div></div>}
+    {!err && !result && <p className="muted">Starting…</p>}
+  </div></div>);
+}
+
 function Dashboard({ go, openLead }: any) {
   const [d, setD] = useState<any>(null); const [ins, setIns] = useState<any[]>([]); const [brief, setBrief] = useState<any>(null);
   useEffect(() => { api("/api/dashboard").then(setD).catch(() => {}); api("/api/ai/insights").then(setIns).catch(() => {}); api("/api/brief").then(setBrief).catch(() => {}); }, []);
@@ -56,18 +176,9 @@ function Dashboard({ go, openLead }: any) {
         {brief.backlog_remaining > 0 && <button className="chip" onClick={() => go({ view: "leads", leads: { bucket: "new" } })}>{brief.backlog_remaining} in backlog →</button>}
         <button className="chip" onClick={() => go({ view: "ai" })}>🤖 AI insights →</button></div></div>
       <div className="briefSide">{(brief.stuck || []).slice(0, 3).map((t: any, i: number) => <div key={i}>⏰ {t.service_requested} — {t.state.replaceAll("_", " ").toLowerCase()}, overdue</div>)}</div></div>}
+    <HomeDash go={go} openLead={openLead} m={m} d={d} />
     <GettingStarted go={go} />
     <DashboardPins />
-    <div className="kpis">
-      <K lab="Total leads" val={num(m.total_leads)} hint="All time · click to open Leads" onClick={() => go({ view: "leads" })} />
-      <K lab="Won" val={num(m.won)} hint={`${money(d.won_value)} won value`} onClick={() => go({ view: "leads", leads: { bucket: "won" } })} />
-      <K lab="Win rate" val={m.win_rate !== null ? m.win_rate + "%" : "—"} hint={`${num(m.won)} won · ${num(m.lost)} lost`} onClick={() => go({ view: "leads", leads: { bucket: "closed" } })} />
-      <K lab="Open pipeline" val={money(m.pipeline_open_value)} hint="Qualified → proposal sent" onClick={() => go({ view: "leads", leads: { bucket: "proposal" } })} />
-      <K lab="First-pass approval" val={m.first_pass_approval_rate !== null ? m.first_pass_approval_rate + "%" : "—"} hint={`${num(m.approvals_decided)} decided · median ${m.approval_cycle_median_hrs ?? "—"}h cycle`} onClick={() => go({ view: "approvals" })} />
-      <K lab="Backlog remaining" val={num(m.backlog_remaining)} hint="New + triaged, unworked" onClick={() => go({ view: "leads", leads: { bucket: "new" } })} />
-      <K lab="Overdue follow-ups" val={num(m.overdue_followups)} hint={`${num(m.leads_no_next_step)} leads with no next step`} onClick={() => go({ view: "leads", leads: { bucket: "working" } })} />
-      <K lab="Avg won deal" val={money(d.avg_won_value)} hint={`First response median ${m.first_response_median_min ?? "—"} min`} onClick={() => go({ view: "leads", leads: { bucket: "won" } })} />
-    </div>
     {ins.length > 0 && <div className="card"><h3>🤖 AI insights <span className="more" onClick={() => go({ view: "ai" })}>Open AI Assistant →</span></h3>{ins.slice(0, 3).map((i: any, k: number) => <div className="insight" key={k}><div className="ic">{i.icon}</div><div><b>{i.title}</b><p>{i.detail}</p></div></div>)}</div>}
     <div className="grid3">
       <div className="card funnel"><h3>Pipeline funnel <span className="more" onClick={() => go({ view: "leads" })}>Open leads →</span></h3>

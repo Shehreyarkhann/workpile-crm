@@ -194,3 +194,62 @@ aside.rail .sideHead { flex-direction: column; gap: 6px; }
 .salebar .tag { background:#f59e0b; color:#451a03; padding:2px 10px; border-radius:99px; font-size:12px; font-weight:800; letter-spacing:.4px; }
 .savebadge { position:absolute; top:12px; right:12px; background:#fef3c7; color:#92400e; border:1px solid #f59e0b; font-size:11.5px; font-weight:800; padding:3px 9px; border-radius:99px; }
 .feat { position:relative; }
+
+/* ---- v6: motion system + home command center ---- */
+@keyframes wpFadeUp { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+@keyframes wpPop { 0% { opacity: 0; transform: scale(.94) translateY(10px); } 100% { opacity: 1; transform: none; } }
+@keyframes wpPulse { 0% { box-shadow: 0 0 0 0 rgba(34,197,94,.5); } 70% { box-shadow: 0 0 0 7px rgba(34,197,94,0); } 100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); } }
+@keyframes wpSlideL { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: none; } }
+@keyframes wpSpin { to { transform: rotate(360deg); } }
+@keyframes wpToastIn { from { opacity: 0; transform: translateY(16px) scale(.97); } to { opacity: 1; transform: none; } }
+.animIn { animation: wpFadeUp .55s cubic-bezier(.22,.9,.3,1) both; }
+.modalWrap { animation: wpFadeUp .18s ease both; }
+.modalWrap .modal { animation: wpPop .32s cubic-bezier(.22,.9,.3,1) both; }
+.kpi, .card { transition: transform .22s ease, box-shadow .22s ease; }
+.kpi:hover { transform: translateY(-3px); box-shadow: 0 10px 24px rgba(15,40,25,.10); }
+.homeGrid { display: grid; grid-template-columns: minmax(0,1fr) 350px; gap: 16px; align-items: start; }
+@media (max-width: 1100px) { .homeGrid { grid-template-columns: 1fr; } }
+.statRow { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+@media (max-width: 900px) { .statRow { grid-template-columns: repeat(2, 1fr); } }
+.statCard { background: #fff; border: 1px solid #e6ebf0; border-radius: 14px; padding: 14px 16px; cursor: pointer; transition: transform .22s ease, box-shadow .22s ease; }
+.statCard:hover { transform: translateY(-3px); box-shadow: 0 12px 26px rgba(15,40,25,.10); }
+.statCard .ic { width: 38px; height: 38px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 18px; margin-bottom: 8px; }
+.statCard .v { font-size: 24px; font-weight: 800; letter-spacing: -.02em; }
+.statCard .l { color: #64748b; font-size: 12.5px; margin-top: 2px; }
+.agentCard { background: linear-gradient(135deg, #14532d 0%, #166534 55%, #15803d 100%); color: #fff; border-radius: 16px; padding: 18px; position: relative; overflow: hidden; }
+.agentCard::after { content: ""; position: absolute; right: -60px; top: -60px; width: 200px; height: 200px; border-radius: 50%; background: rgba(255,255,255,.08); }
+.liveDot { width: 9px; height: 9px; border-radius: 50%; background: #4ade80; display: inline-block; animation: wpPulse 1.8s infinite; }
+.agentRun { background: rgba(255,255,255,.10); border-radius: 10px; padding: 8px 10px; font-size: 12.5px; }
+.actBars { display: flex; align-items: flex-end; gap: 3px; height: 110px; padding-top: 8px; }
+.actBars .ab { flex: 1; background: linear-gradient(180deg, #22c55e, #16a34a); border-radius: 4px 4px 2px 2px; min-height: 3px; transition: height .8s cubic-bezier(.22,.9,.3,1), filter .15s; cursor: pointer; }
+.actBars .ab:hover { filter: brightness(1.25); }
+.actBars .ab.today { background: linear-gradient(180deg, #f59e0b, #d97706); }
+.recentRow { display: flex; align-items: center; gap: 12px; padding: 10px 4px; border-bottom: 1px solid #eef2f7; cursor: pointer; border-radius: 8px; transition: background .15s; }
+.recentRow:hover { background: #f8fafc; }
+.avatar { width: 38px; height: 38px; border-radius: 50%; background: #dcfce7; color: #166534; display: flex; align-items: center; justify-content: center; font-weight: 700; flex: none; }
+.upCard { border-radius: 12px; padding: 11px 13px; margin-bottom: 9px; cursor: pointer; transition: transform .18s ease, box-shadow .18s ease; animation: wpSlideL .5s cubic-bezier(.22,.9,.3,1) both; }
+.upCard:hover { transform: translateX(3px); box-shadow: 0 6px 16px rgba(15,40,25,.10); }
+.upCard b { display: block; font-size: 13.5px; }
+.upCard span { font-size: 12px; opacity: .75; }
+.weekStrip { display: grid; grid-template-columns: repeat(7, 1fr); text-align: center; margin-bottom: 12px; }
+.weekStrip .wd { font-size: 11px; color: #94a3b8; }
+.weekStrip .wn { font-size: 14px; font-weight: 600; width: 30px; height: 30px; line-height: 30px; margin: 2px auto 0; border-radius: 50%; }
+.weekStrip .wn.today { background: #f59e0b; color: #fff; }
+.weekStrip .wn.has { box-shadow: inset 0 -3px 0 #22c55e; border-radius: 10px; }
+.qlRow { display: flex; align-items: center; gap: 10px; padding: 10px 6px; border-bottom: 1px solid #eef2f7; cursor: pointer; font-weight: 600; font-size: 13.5px; transition: padding-left .15s; }
+.qlRow:hover { padding-left: 12px; color: #166534; }
+.stepRow { display: flex; gap: 10px; align-items: center; padding: 9px 0; border-bottom: 1px solid #eef2f7; font-size: 14px; }
+.stepSpin { width: 18px; height: 18px; border: 2.5px solid #bbf7d0; border-top-color: #16a34a; border-radius: 50%; animation: wpSpin .7s linear infinite; flex: none; }
+.toastBox { position: fixed; right: 18px; bottom: 18px; z-index: 200; display: flex; flex-direction: column; gap: 8px; }
+.toast { background: #14532d; color: #fff; border-radius: 12px; padding: 12px 16px; box-shadow: 0 14px 34px rgba(0,0,0,.25); animation: wpToastIn .35s cubic-bezier(.22,.9,.3,1) both; max-width: 360px; font-size: 13.5px; }
+
+/* ---- v6b: reference design language (rounded, glow, gauge, pills) ---- */
+.homeGrid .card, .statCard { border-radius: 16px; }
+.statCard { position: relative; overflow: hidden; }
+.statCard::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 4px; background: var(--glow, #22c55e); opacity: .85; }
+.segPills { display: inline-flex; background: #f1f5f9; border-radius: 999px; padding: 3px; gap: 2px; }
+.segPills button { border: 0; background: transparent; padding: 5px 13px; border-radius: 999px; font-size: 12.5px; font-weight: 600; color: #64748b; cursor: pointer; transition: all .18s; }
+.segPills button.on { background: #fff; color: #14532d; box-shadow: 0 2px 8px rgba(15,40,25,.12); }
+.gaugeWrap { text-align: center; padding: 4px 0 0; }
+.seeAll { color: #16a34a; font-weight: 700; font-size: 12.5px; cursor: pointer; float: right; }
+.seeAll:hover { text-decoration: underline; }

@@ -19,7 +19,7 @@ import { rateFor, logTime, jobLabor, DEFAULT_CLASSES, resolveWorker, listWorkers
 import { ensureDay, chaseReport, todayStr } from "./fieldreports.ts";
 import { weeklyReport } from "./statusreport.ts";
 import { enrollFollowup, stopFollowups } from "./followups.ts";
-import { registerCrm, registerDocTemplates, convertLeadToCustomer, applyAssignmentRules, onLeadCreated } from "./crm.ts";
+import { registerCrm, registerDocTemplates, registerHome, convertLeadToCustomer, applyAssignmentRules, onLeadCreated } from "./crm.ts";
 
 import { providerStatus, authUrl, listConnections } from "./oauth.ts";
 
@@ -1771,3 +1771,4 @@ app.get("/api/health", (_req, res) => res.json({ ok: true, service: "leadflow-os
 // ---------- v4: Salesforce-parity CRM layer (slices 37-46) ----------
 registerCrm(app, requireAuth);
 registerDocTemplates(app, requireAuth);
+registerHome(app, requireAuth);

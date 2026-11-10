@@ -288,3 +288,29 @@ export function registerDocTemplates(app: any, requireAuth: any) {
     if (gone?.is_default) { const rest = db.prepare("SELECT id FROM doc_templates WHERE workspace_id=? ORDER BY created_at").get(ws(req)) as any; if (rest) db.prepare("UPDATE doc_templates SET is_default=1 WHERE id=?").run(rest.id); }
     res.json({ ok: true }); });
 }
+
+// ---------- v6: home command-center aggregate (article pattern: signals + agent state, assembled) ----------
+export function registerHome(app: any, requireAuth: any) {
+  app.get("/api/home", requireAuth, (req: any, res: any) => {
+    const w = req.user.workspace_id;
+    // 30-day activity series (every lead event = work happening)
+    const series: any[] = [];
+    const rows = db.prepare("SELECT date(created_at) d, COUNT(*) c FROM lead_events WHERE workspace_id=? AND created_at>=date('now','-29 days') GROUP BY d").all(w) as any[];
+    const byD = new Map(rows.map(r => [r.d, r.c]));
+    for (let i = 29; i >= 0; i--) { const dt = new Date(Date.now() - i * 86400000); const key = dt.toISOString().slice(0, 10); series.push({ day: key, label: dt.toLocaleDateString(undefined, { month: "short", day: "numeric" }), count: byD.get(key) || 0 }); }
+    // upcoming 7 days (same sources as the calendar)
+    const from = new Date().toISOString().slice(0, 10); const to = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10); const up: any[] = [];
+    for (const t of db.prepare("SELECT t.*, l.service_requested, c.name contact_name FROM tasks t LEFT JOIN leads l ON l.id=t.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE t.workspace_id=? AND t.status='open' AND date(t.due_at) BETWEEN date(?) AND date(?)").all(w, from, to) as any[]) up.push({ date: String(t.due_at).slice(0, 10), kind: "task", title: t.title, sub: t.contact_name || "", lead_id: t.lead_id });
+    for (const c of db.prepare("SELECT cb.*, l.service_requested, ct.name contact_name FROM callbacks cb JOIN leads l ON l.id=cb.lead_id LEFT JOIN contacts ct ON ct.id=l.contact_id WHERE cb.workspace_id=? AND cb.status='open' AND date(cb.due_at) BETWEEN date(?) AND date(?)").all(w, from, to) as any[]) up.push({ date: String(c.due_at).slice(0, 10), kind: "callback", title: "Callback — " + (c.contact_name || c.service_requested), sub: c.service_requested || "", lead_id: c.lead_id });
+    for (const s of db.prepare("SELECT js.*, l.service_requested, c.name contact_name, COALESCE(wk.name, u.name) worker FROM job_schedule js JOIN leads l ON l.id=js.lead_id LEFT JOIN contacts c ON c.id=l.contact_id LEFT JOIN workers wk ON wk.id=js.worker_id LEFT JOIN users u ON u.id=js.user_id WHERE js.workspace_id=? AND date(js.work_date) BETWEEN date(?) AND date(?)").all(w, from, to) as any[]) up.push({ date: String(s.work_date).slice(0, 10), kind: "schedule", title: `${s.worker || "Crew"} on site`, sub: `${s.contact_name || ""} — ${s.service_requested || ""}`, lead_id: s.lead_id });
+    for (const f of db.prepare("SELECT fe.*, l.service_requested, c.name contact_name FROM followup_enrollments fe JOIN leads l ON l.id=fe.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE fe.workspace_id=? AND fe.status='active' AND date(fe.next_due_at) BETWEEN date(?) AND date(?)").all(w, from, to) as any[]) up.push({ date: String(f.next_due_at).slice(0, 10), kind: "followup", title: `Follow-up step ${(f.step_idx || 0) + 1}`, sub: `${f.contact_name || ""} — ${f.service_requested || ""}`, lead_id: f.lead_id });
+    for (const v of db.prepare("SELECT v.*, l.service_requested, c.name contact_name FROM site_visits v LEFT JOIN leads l ON l.id=v.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE v.workspace_id=? AND date(v.scheduled_at) BETWEEN date(?) AND date(?)").all(w, from, to) as any[]) up.push({ date: String(v.scheduled_at).slice(0, 10), kind: "visit", title: "Site visit", sub: `${v.contact_name || ""} — ${v.service_requested || ""}`, lead_id: v.lead_id });
+    up.sort((a, b) => a.date.localeCompare(b.date));
+    const recent = db.prepare("SELECT l.id, l.state, l.service_requested, l.est_value, l.ai_score, l.created_at, l.updated_at, c.name contact_name, u.name owner_name FROM leads l LEFT JOIN contacts c ON c.id=l.contact_id LEFT JOIN users u ON u.id=l.owner_id WHERE l.workspace_id=? AND l.state<>'DUPLICATE' ORDER BY l.created_at DESC LIMIT 8").all(w);
+    const wrow = db.prepare("SELECT auto_score, auto_assign, auto_dedupe, auto_reactivate, last_automation_at FROM workspaces WHERE id=?").get(w) as any;
+    const runs = (db.prepare("SELECT agent, output, created_at FROM agent_runs WHERE workspace_id=? ORDER BY created_at DESC LIMIT 6").all(w) as any[]).map(r => { let sum = ""; try { const o = JSON.parse(r.output); sum = Object.entries(o).filter(([, v]) => typeof v === "number" && (v as number) > 0).map(([k, v]) => `${k.replaceAll("_", " ")}: ${v}`).join(" · "); } catch { sum = String(r.output).slice(0, 90); } return { agent: r.agent, summary: sum || "no changes needed", created_at: r.created_at }; });
+    const propWeek = (db.prepare("SELECT COUNT(*) c FROM proposals WHERE workspace_id=? AND created_at>=date('now','-7 days') AND status IN ('sent','signed','viewed')").get(w) as any).c;
+    const propWeekAll = (db.prepare("SELECT COUNT(*) c FROM proposals WHERE workspace_id=? AND created_at>=date('now','-7 days')").get(w) as any).c;
+    res.json({ activity_series: series, upcoming: up.slice(0, 12), recently_assigned: recent, agent: { automations: wrow, runs, active_count: [wrow?.auto_score, wrow?.auto_assign, wrow?.auto_dedupe, wrow?.auto_reactivate].filter(Boolean).length }, proposals_sent_week: propWeek, proposals_built_week: propWeekAll });
+  });
+}
