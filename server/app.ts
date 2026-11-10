@@ -14,6 +14,7 @@ import { billingStatus, createCheckout, handleBillingEvent, PLANS, ensureSubscri
 import { cleanupPreview, cleanupApply, insights, insightsV2, reactivateStale, scoreLead, nextBestAction, runAutomationsFor, logAgentRun } from "./ai.ts";
 import { emitEvent, EVENTS } from "./integrations.ts";
 import { queueAndDeliver, notify, notifyOwners, emailConfigured, smsConfigured } from "./comms.ts";
+import { weekStartOf, ensureWeek, chaseRow, sumDays } from "./timesheets.ts";
 import { enrollFollowup, stopFollowups } from "./followups.ts";
 
 import { providerStatus, authUrl, listConnections } from "./oauth.ts";
@@ -327,6 +328,44 @@ app.get("/api/ops", requireAuth, (req: any, res) => {
   });
 });
 app.post("/api/field-reports/:id/submit", requireAuth, (req: any, res) => { db.prepare("UPDATE field_reports SET status='submitted', submitted_at=? WHERE id=?").run(now(), req.params.id); res.json({ ok: true }); });
+// ---------- slice 20: timesheets — log, chase, payroll export ----------
+app.get("/api/timesheets", requireAuth, (req: any, res) => {
+  const ws = req.user.workspace_id;
+  const week = String(req.query.week || weekStartOf(new Date()));
+  ensureWeek(ws, week);
+  const rows = db.prepare("SELECT t.*, u.name manager FROM timesheets t LEFT JOIN users u ON u.id=t.manager_id WHERE t.workspace_id=? AND t.week_of=? ORDER BY u.name").all(ws, week) as any[];
+  for (const r of rows) { try { r.days = r.days ? JSON.parse(r.days) : null; } catch { r.days = null; } r.overdue = r.status === "missing" && week < weekStartOf(new Date()); }
+  const summary = { submitted: rows.filter(r => r.status === "submitted").length, missing: rows.filter(r => r.status === "missing").length, total_hours: rows.reduce((a, r) => a + (r.hours || 0), 0) };
+  res.json({ week_of: week, rows, summary });
+});
+app.post("/api/timesheets", requireAuth, (req: any, res) => {
+  const ws = req.user.workspace_id; const b = req.body || {};
+  const managerId = b.manager_id || req.user.id;
+  const mgr = db.prepare("SELECT * FROM users WHERE id=? AND workspace_id=?").get(managerId, ws) as any;
+  if (!mgr) return res.status(422).json({ error: { code: "bad_manager" } });
+  const week = String(b.week_of || weekStartOf(new Date()));
+  ensureWeek(ws, week);
+  const days = b.days && typeof b.days === "object" ? b.days : null;
+  const hours = days ? sumDays(days) : (Number(b.hours) || 0);
+  db.prepare("UPDATE timesheets SET status='submitted', submitted_at=?, hours=?, days=?, notes=? WHERE workspace_id=? AND manager_id=? AND week_of=?")
+    .run(now(), hours, days ? JSON.stringify(days) : null, String(b.notes || ""), ws, managerId, week);
+  res.json(db.prepare("SELECT * FROM timesheets WHERE workspace_id=? AND manager_id=? AND week_of=?").get(ws, managerId, week));
+});
+app.post("/api/timesheets/:id/chase", requireAuth, (req: any, res) => {
+  const row = db.prepare("SELECT * FROM timesheets WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!row) return res.status(404).json({ error: { code: "not_found" } });
+  chaseRow(row);
+  res.json({ chased: true });
+});
+app.get("/api/timesheets/export", requireAuth, needPerm("can_export"), (req: any, res) => {
+  const ws = req.user.workspace_id; const week = String(req.query.week || weekStartOf(new Date()));
+  ensureWeek(ws, week);
+  const rows = db.prepare("SELECT t.*, u.name manager, u.email FROM timesheets t LEFT JOIN users u ON u.id=t.manager_id WHERE t.workspace_id=? AND t.week_of=? ORDER BY u.name").all(ws, week) as any[];
+  const head = "manager,email,week_of,mon,tue,wed,thu,fri,sat,sun,total_hours,status,notes";
+  const lines = rows.map(r => { let d: any = {}; try { d = r.days ? JSON.parse(r.days) : {}; } catch { d = {}; } const esc = (v: any) => `"${String(v ?? "").replaceAll('"', '""')}"`; return [esc(r.manager), esc(r.email), r.week_of, d.mon || "", d.tue || "", d.wed || "", d.thu || "", d.fri || "", d.sat || "", d.sun || "", r.hours ?? "", r.status, esc(r.notes || "")].join(","); });
+  res.setHeader("Content-Type", "text/csv"); res.setHeader("Content-Disposition", `attachment; filename="timesheets-${week}.csv"`);
+  res.send([head, ...lines].join("\n"));
+});
 app.post("/api/timesheets/:id/submit", requireAuth, (req: any, res) => { db.prepare("UPDATE timesheets SET status='submitted', submitted_at=? WHERE id=?").run(now(), req.params.id); res.json({ ok: true }); });
 
 // CSV import (§4.1) — header heuristics + vendor-native shapes (Tier 2 importers):
@@ -1151,9 +1190,13 @@ app.get("/api/myday", requireAuth, (req: any, res) => {
   const approvals_waiting = canApprove ? db.prepare(`SELECT a.id, a.lead_id, a.submitted_at, a.tier, c.name contact_name, l.service_requested, l.est_value FROM approvals a JOIN leads l ON l.id=a.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE a.workspace_id=? AND a.decision IS NULL ORDER BY a.submitted_at LIMIT 6`).all(ws) : [];
   const followups_due = db.prepare(`SELECT f.*, c.name contact_name, l.service_requested FROM followup_enrollments f JOIN leads l ON l.id=f.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE f.workspace_id=? AND f.status='active' AND f.next_due_at<? ORDER BY f.next_due_at LIMIT 6`).all(ws, tomorrow);
   const wins = db.prepare(`SELECT COUNT(*) c, COALESCE(SUM(est_value),0) v FROM leads WHERE workspace_id=? AND state='WON' AND updated_at>=?`).get(ws, new Date(Date.now() - 7 * 86400000).toISOString()) as any;
+  const lastWeek = weekStartOf(new Date(Date.now() - 7 * 86400000));
+  ensureWeek(ws, lastWeek);
+  const myTs = db.prepare("SELECT * FROM timesheets WHERE workspace_id=? AND manager_id=? AND week_of=?").get(ws, me, lastWeek) as any;
+  const timesheet_alert = myTs && myTs.status === "missing" ? { week_of: lastWeek } : null;
   const inbox_open = db.prepare(`SELECT * FROM inbox_items WHERE workspace_id=? AND COALESCE(status,'open')='open' AND (owner_id=? OR owner_id IS NULL) ORDER BY next_action_due_at LIMIT 6`).all(ws, me);
   const inbox_count = (db.prepare(`SELECT COUNT(*) c FROM inbox_items WHERE workspace_id=? AND COALESCE(status,'open')='open'`).get(ws) as any).c;
-  res.json({ overdue_tasks, today_tasks, my_leads_due, approvals_waiting, approvals_count: approvals_waiting.length, followups_due, wins_week: { count: wins.c, value: wins.v }, inbox_open, inbox_count });
+  res.json({ overdue_tasks, today_tasks, my_leads_due, approvals_waiting, approvals_count: approvals_waiting.length, followups_due, wins_week: { count: wins.c, value: wins.v }, inbox_open, inbox_count, timesheet_alert });
 });
 // ---------- slice 9: activity pulse + follow-ups ----------
 app.get("/api/activity", requireAuth, (req: any, res) => {

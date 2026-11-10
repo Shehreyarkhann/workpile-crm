@@ -337,7 +337,38 @@ function Handoffs() {
 }
 
 function Ops() {
-  function InboxQueue({ inbox, reload }: any) {
+  function TimesheetsCard() {
+  const mondayOf = (d: Date) => { const x = new Date(d); const day = (x.getDay() + 6) % 7; x.setDate(x.getDate() - day); return x.toISOString().slice(0, 10); };
+  const [week, setWeek] = useState(mondayOf(new Date())); const [data, setData] = useState<any>(null);
+  const [editId, setEditId] = useState(""); const [days, setDays] = useState<any>({}); const [notes, setNotes] = useState(""); const [msg, setMsg] = useState("");
+  const load = () => { api("/api/timesheets?week=" + week).then(setData).catch(() => {}); };
+  useEffect(load, [week]);
+  const shift = (n: number) => { const d = new Date(week + "T12:00:00"); d.setDate(d.getDate() + n * 7); setWeek(mondayOf(d)); };
+  const startEdit = (r: any) => { setEditId(r.id); setDays(r.days || {}); setNotes(r.notes || ""); };
+  const save = async (r: any) => { await api("/api/timesheets", { method: "POST", body: { manager_id: r.manager_id, week_of: week, days, notes } }); setEditId(""); setMsg(`Timesheet saved for ${r.manager} ✓`); load(); };
+  const chase = async (r: any) => { await api(`/api/timesheets/${r.id}/chase`, { method: "POST", body: {} }); setMsg(`Chase sent to ${r.manager} ✓`); load(); };
+  const chaseAll = async () => { if (!data) return; for (const r of data.rows.filter((x: any) => x.status === "missing")) await api(`/api/timesheets/${r.id}/chase`, { method: "POST", body: {} }); setMsg("All missing timesheets chased ✓"); load(); };
+  const dayNames = [["mon", "Mon"], ["tue", "Tue"], ["wed", "Wed"], ["thu", "Thu"], ["fri", "Fri"], ["sat", "Sat"], ["sun", "Sun"]];
+  return (<div className="card"><h3>Timesheets — logged, chased, payroll-ready</h3>
+    <div className="rowflex" style={{ marginBottom: 8 }}><button className="btn ghost small" onClick={() => shift(-1)}>← Prev week</button><b>Week of {week}</b><button className="btn ghost small" onClick={() => shift(1)}>Next week →</button><button className="btn ghost small" onClick={() => setWeek(mondayOf(new Date()))}>This week</button>
+      <span style={{ flex: 1 }} />
+      <button className="btn ghost small" onClick={chaseAll}>📣 Chase all missing</button>
+      <a className="btn ghost small" style={{ textDecoration: "none" }} href={`/api/timesheets/export?week=${week}`}>⬇ Payroll CSV</a></div>
+    {msg && <div className="ok">{msg}</div>}
+    {!data && <p className="muted">Loading…</p>}
+    {data && <><p className="muted" style={{ marginTop: 0 }}>{data.summary.submitted} of {data.rows.length} submitted · {data.summary.total_hours} hours logged · {data.summary.missing} missing. Expected sheets are created automatically for every field manager; missing ones past their week get chased automatically (and you can chase any time).</p>
+    <table><thead><tr><th>Manager</th><th>Status</th><th>Hours</th><th></th></tr></thead><tbody>
+      {data.rows.map((r: any) => <tr key={r.id}><td>{r.manager}</td><td>{r.status === "submitted" ? <span className="st pass">submitted</span> : r.overdue ? <span className="st fail">missing · overdue</span> : <span className="st warn">missing</span>}{r.chased_at ? <span className="muted"> · chased {dOnly(r.chased_at)}</span> : ""}</td><td>{r.hours ?? "—"}</td>
+        <td><span className="rowflex">{r.status === "missing" && <button className="btn ghost small" onClick={() => chase(r)}>Chase</button>}<button className="btn ghost small" onClick={() => startEdit(r)}>{r.status === "submitted" ? "Edit" : "Log hours"}</button></span>
+        {editId === r.id && <div style={{ marginTop: 8 }}><div className="rowflex">{dayNames.map(([k, lab]) => <label key={k} style={{ fontSize: 12 }}>{lab}<input type="number" min="0" max="24" style={{ width: 58, display: "block" }} value={days[k] ?? ""} onChange={e => setDays({ ...days, [k]: e.target.value === "" ? "" : Number(e.target.value) })} /></label>)}<b style={{ alignSelf: "end", paddingBottom: 8 }}>Σ {dayNames.reduce((a, [k]) => a + (Number(days[k]) || 0), 0)}h</b></div>
+          <input placeholder="Notes (jobs covered, PTO, etc.)" value={notes} onChange={e => setNotes(e.target.value)} style={{ marginTop: 6 }} />
+          <div className="rowflex" style={{ marginTop: 6 }}><button className="btn small" onClick={() => save(r)}>Save timesheet</button><button className="btn ghost small" onClick={() => setEditId("")}>Cancel</button></div></div>}</td></tr>)}
+      {data.rows.length === 0 && <tr><td colSpan={4} className="muted">No field managers (PM / Lead Owner roles) in this workspace yet.</td></tr>}
+    </tbody></table></>}
+  </div>);
+}
+
+function InboxQueue({ inbox, reload }: any) {
   const [cat, setCat] = useState("all"); const [openId, setOpenId] = useState(""); const [sug, setSug] = useState<any>(null); const [draft, setDraft] = useState(""); const [msg, setMsg] = useState("");
   const cats = ["all", "client_active_job", "proposal", "field", "vendor", "finance", "admin"];
   const counts: Record<string, number> = {}; for (const i of inbox) if ((i.status || "open") === "open") counts[i.category] = (counts[i.category] || 0) + 1;
@@ -378,12 +409,13 @@ const [d, setD] = useState<any>(null); const [inbox, setInbox] = useState<any[]>
   return (<div><h2 className="pt">Ops Console</h2><p className="sub">The daily chase, in one place: field reports, timesheets, site visits, paperwork, and the full inbox (not just leads).</p>
     <div className="grid2">
       <div className="card"><h3>Field reports</h3><table><thead><tr><th>Manager</th><th>Date</th><th>Status</th><th></th></tr></thead><tbody>{d.field_reports.map((r: any) => <tr key={r.id}><td>{r.manager}</td><td>{r.report_date}</td><td>{r.status}</td><td>{r.status !== "submitted" && <button className="btn ghost small" onClick={() => chase("field-reports", r.id)}>Mark submitted</button>}</td></tr>)}</tbody></table></div>
-      <div className="card"><h3>Timesheets</h3><table><thead><tr><th>Manager</th><th>Week of</th><th>Hours</th><th>Status</th><th></th></tr></thead><tbody>{d.timesheets.map((t: any) => <tr key={t.id}><td>{t.manager}</td><td>{t.week_of}</td><td>{t.hours ?? "—"}</td><td>{t.status}</td><td>{t.status !== "submitted" && <button className="btn ghost small" onClick={() => chase("timesheets", t.id)}>Mark submitted</button>}</td></tr>)}</tbody></table></div>
+      {/* timesheets moved below as full-width card */}
     </div>
     <div className="grid2">
       <div className="card"><h3>Site visits</h3>{d.site_visits.map((v: any) => <p key={v.id} style={{ margin: "6px 0" }}>📍 {v.service_requested} — {dt(v.scheduled_at)} · {v.status}</p>)}{d.site_visits.length === 0 && <p className="muted">None scheduled.</p>}</div>
       <div className="card"><h3>Documents tracker</h3>{d.documents.map((doc: any) => <div className="check" key={doc.id}><span className={`st ${doc.status === "received" ? "pass" : "fail"}`}>{doc.status === "received" ? "✓" : "✗"}</span><span>{doc.name} — {doc.status}{doc.required ? " (required)" : ""}</span></div>)}</div>
     </div>
+    <TimesheetsCard />
     <InboxQueue inbox={inbox} reload={load} />
   </div>);
 }
@@ -810,6 +842,8 @@ function MyDay({ user, openLead, go }: any) {
   const TaskRow = ({ t, late }: any) => <div className="pulseRow" style={{ cursor: "default" }}><span className="pulseIco">{late ? "⏰" : "✅"}</span><div style={{ flex: 1 }} onClick={() => openLead(t.lead_id)}><b>{t.title}</b> <span className="muted">· {t.contact_name || ""} — {t.service_requested || ""}</span><br /><span className={late ? "" : "muted"} style={late ? { color: "#b91c1c", fontWeight: 600 } : {}}>{late ? "Overdue — " : "Due "}{dOnly(t.due_at)}</span></div><button className="btn ghost small" onClick={() => done(t.id)}>✓ Done</button></div>;
   const nothing = d.overdue_tasks.length + d.today_tasks.length + d.my_leads_due.length + d.approvals_waiting.length === 0;
   return (<div><h2 className="pt">{greet}, {first}.</h2><p className="sub">{new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })} — your personal queue. The business dashboard is one click over; this page is just yours.</p>
+    {d.timesheet_alert && <div className="card" style={{ marginBottom: 14, borderLeft: "4px solid #b45309" }}><b>⏱ Your timesheet for the week of {d.timesheet_alert.week_of} is missing.</b> <span className="muted">Log the total here, or open Ops Console → Timesheets for the per-day grid.</span>
+      <span className="rowflex" style={{ marginLeft: 10 }}><input type="number" min="0" placeholder="Total hours" style={{ width: 110 }} id="tsquick" /><button className="btn small" onClick={async () => { const v = (document.getElementById("tsquick") as HTMLInputElement).value; await api("/api/timesheets", { method: "POST", body: { week_of: d.timesheet_alert.week_of, hours: Number(v) || 0 } }); setTickL(t => t + 1); }}>Log it</button></span></div>}
     <div className="kpis" style={{ marginBottom: 14 }}>
       <div className="kpi"><div className="lab">⏰ Overdue tasks</div><div className="val" style={{ color: d.overdue_tasks.length ? "#b91c1c" : undefined }}>{num(d.overdue_tasks.length)}</div><div className="hint">Assigned to you, past due</div></div>
       <div className="kpi" onClick={() => go({ view: "ops" })} style={{ cursor: "pointer" }}><div className="lab">📥 Inbox waiting</div><div className="val" style={{ color: d.inbox_count ? "#b45309" : undefined }}>{num(d.inbox_count || 0)}</div><div className="hint">Client mail & more — not leads</div></div>
