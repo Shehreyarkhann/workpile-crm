@@ -46,12 +46,13 @@
 | Target | Current state | Disposition | Phase | Status / gap |
 |---|---|---|---|---|
 | §11.3 Transactional job creation + outbox | Job creation idempotent ("exactly once"); handoff deliveries act as outbox for outcomes | **Improve** | 1 | ✅ **DONE in v7**: `ensureJobForLead` + conversion wrapped in `withTx` (BEGIN IMMEDIATE … COMMIT/ROLLBACK); outcome outbox already durable (deliveries + DLQ + replay) |
+| §11.2 Job lifecycle states (Awaiting Scheduling → … → Closed/Cancelled) | 8 stages, different names; payment mixed into stage (PAID) | **Improve** | 2 | ✅ **DONE in v9**: 10 target stages; new jobs start Awaiting Scheduling; migration FIELD_DONE→Work Completed, PAPERWORK→Documentation Pending, PAID→Closed (payment lives in invoice_status, which syncs at Invoiced) |
 | §11.4 Change orders affect contract value only when approved | Implemented (approved COs add to job value) | **Keep** | — | — |
-| §12.2 Scheduling conflict warnings (double-book etc.) | Crew scheduling flags double-bookings | **Keep + Improve** | 2 | Add availability + skills + prerequisite warnings |
+| §12.2 Scheduling conflict warnings (double-book etc.) | Crew scheduling flags double-bookings | **Keep + Improve** | 2 | ✅ **DONE in v9**: POST /api/schedule returns same-worker/same-day cross-job conflicts (warning, never a block); exact duplicates still 409. Availability/skills warnings remain future |
 | §12.3 Mobile field experience + offline | PWA; Log Time global; field reports in-app | **Improve** | 2 | Offline queue for time/reports = Build New (pilot-justified) |
-| §13 Timesheets lifecycle (Draft→Submitted→Reviewed→Approved→Rejected→Exported) | Weekly timesheets + missing detection + export | **Keep + Improve** | 2 | Add explicit review states |
+| §13 Timesheets lifecycle (Draft→Submitted→Reviewed→Approved→Rejected→Exported) | Weekly timesheets + missing detection + export | **Keep + Improve** | 2 | ✅ **DONE in v9**: submitted → reviewed → approved/rejected (reason required, can_approve-gated) → exported; payroll CSV exports APPROVED sheets only and marks them exported (two legacy export tests updated to the lifecycle) |
 | §13.3 Rate snapshots; missing class visible, never $0-silent | Implemented exactly so | **Keep** | — | — |
-| §14 Document checklists → Work Queue items | Required-docs tracker; missing docs surface in queue | **Keep** | — | Add expiration tracking + malware scanning (Phase 3, with object storage) |
+| §14 Document checklists → Work Queue items | Required-docs tracker; missing docs surface in queue | **Keep + Improve** | 2 | ✅ **CORRECTED + DONE in v9**: the paperwork queue item existed but its stage filter made it unreachable (dead branch) — fixed; missing required docs on active jobs now surface with the invoicing consequence. Expiration tracking + malware scanning still Phase 3 |
 | §15 Inbox categories/playbooks; delivery states | 7-category triage + playbooks; comms states honest | **Keep** | — | Add suppression list management UI |
 
 ## E. Intelligence, platform, governance (§§16–24, 26–27)
@@ -82,7 +83,7 @@
 
 1. **Tranche 1 (v7) — Correctness:** ✅ baseline tag · docs reconciled · permission matrix + hardening · financial separation · identity resolution v2 · transactional conversion/job creation.
 2. **Tranche 2 (v8) — Revenue lifecycle depth:** ✅ SHIPPED — nav consolidation to 11 · Proposals + Inbox destinations · price overrides with audit · approval content-hash invalidation · cadence quiet hours · work-item persisted fields · Billing inside Settings. 126/126 tests.
-3. **Tranche 3 (v9) — Operations:** job lifecycle alignment · scheduling warnings · timesheet review states · offline field capture.
+3. **Tranche 3 (v9) — Operations:** ✅ SHIPPED — job lifecycle alignment (§11.2 stages + migration) · scheduling conflict warnings · timesheet review lifecycle · paperwork→queue fix. (Offline field capture deferred — PWA shell exists; offline write queue is a Tranche 4 platform item.) 130/130 tests.
 4. **Tranche 4 (v10) — Production platform:** PostgreSQL cutover · durable queue + generalized outbox · object storage · monitoring/alerting · impersonation.
 5. **Tranche 5 (v11) — Intelligence:** autonomy levels + policy engine UI · golden-case agent suites · acceptance metrics.
 6. **Tranche 6 (v12) — Commercial scale:** self-serve Backlog Audit · vertical templates · activation analytics · packaging validation.
