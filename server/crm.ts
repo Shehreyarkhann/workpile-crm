@@ -137,7 +137,22 @@ export function registerCrm(app: any, requireAuth: any, needPerm: any = null) {
     const proposed360 = latestProps.reduce((sm, p) => sm + (p.total || 0), 0);
     const signed360 = latestProps.filter(p => p.status === "signed").reduce((sm, p) => sm + (p.total || 0), 0);
     const net360 = collected360 - refunded360;
-    res.json({ account: { ...a, custom: J(a.custom, {}) }, contacts, leads, jobs, lifetime_value: lifetime, proposals: proposals360, payments: payments360, documents: docs360, money360: { collected: collected360, refunded: refunded360, net_collected: net360, proposals_value: proposed360, signed_value: signed360, outstanding: Math.max(0, signed360 - net360), definitions: { proposed: "Current proposal version per lead", signed: "Signed current versions", collected: "Settled payments", net_collected: "Collected minus refunds", outstanding: "Signed minus net collected" } } });
+    // Customer 360 timeline: the whole relationship, chronological (audit §1B.3)
+    const tl: any[] = [];
+    const leadIds = (leads as any[]).map(l => l.id);
+    if (leadIds.length) {
+      const ph = leadIds.map(() => "?").join(",");
+      for (const e of db.prepare(`SELECT * FROM lead_events WHERE lead_id IN (${ph}) ORDER BY created_at DESC LIMIT 60`).all(...leadIds) as any[]) tl.push({ at: e.created_at, icon: "🎯", text: `Lead: ${e.type.replaceAll("_", " ")}`, lead_id: e.lead_id });
+      for (const m of db.prepare(`SELECT * FROM messages_outbox WHERE lead_id IN (${ph}) ORDER BY created_at DESC LIMIT 40`).all(...leadIds) as any[]) tl.push({ at: m.created_at, icon: m.direction === "in" ? "💬" : "✉️", text: `${m.direction === "in" ? "Customer replied" : "Sent"} · ${m.channel} · ${m.status}${m.subject ? " — " + m.subject : ""}`, lead_id: m.lead_id });
+      for (const ap of db.prepare(`SELECT * FROM approvals WHERE lead_id IN (${ph}) ORDER BY submitted_at DESC LIMIT 20`).all(...leadIds) as any[]) { tl.push({ at: ap.submitted_at, icon: "⚖️", text: "Approval requested", lead_id: ap.lead_id }); if (ap.decided_at) tl.push({ at: ap.decided_at, icon: ap.decision === "approved" ? "✅" : "✏️", text: `Approval ${ap.decision || "decided"}`, lead_id: ap.lead_id }); }
+      for (const sg of db.prepare(`SELECT s.* FROM signatures s JOIN proposals p ON p.id=s.proposal_id WHERE p.lead_id IN (${ph})`).all(...leadIds) as any[]) tl.push({ at: sg.signed_at || sg.created_at, icon: "✍️", text: `Proposal signed by ${sg.signer_name || "customer"}`, lead_id: (proposals360 as any[]).find(p => p.id === sg.proposal_id)?.lead_id });
+      for (const v of db.prepare(`SELECT * FROM site_visits WHERE lead_id IN (${ph}) ORDER BY scheduled_at DESC LIMIT 20`).all(...leadIds) as any[]) tl.push({ at: v.scheduled_at, icon: "📍", text: `Site visit · ${v.status}`, lead_id: v.lead_id });
+    }
+    for (const p of payments360 as any[]) tl.push({ at: p.created_at, icon: p.kind === "refund" ? "↩️" : "💳", text: `${p.kind} ${p.status} — $${p.amount}`, lead_id: p.lead_id });
+    for (const j of jobs as any[]) tl.push({ at: j.created_at, icon: "🔧", text: `Job created — ${j.service_requested} · $${j.value}`, lead_id: j.lead_id, job_id: j.id });
+    if (leadIds.length) { const ph2 = leadIds.map(() => "?").join(","); for (const co of db.prepare(`SELECT * FROM change_orders WHERE lead_id IN (${ph2}) ORDER BY created_at DESC LIMIT 20`).all(...leadIds) as any[]) tl.push({ at: co.created_at, icon: "📝", text: `Change order — ${co.delta_scope || "scope change"} · $${co.delta_total || 0}`, lead_id: co.lead_id }); }
+    tl.sort((x, y) => String(y.at).localeCompare(String(x.at)));
+    res.json({ account: { ...a, custom: J(a.custom, {}) }, contacts, leads, jobs, lifetime_value: lifetime, proposals: proposals360, payments: payments360, documents: docs360, timeline: tl.slice(0, 80), money360: { collected: collected360, refunded: refunded360, net_collected: net360, proposals_value: proposed360, signed_value: signed360, outstanding: Math.max(0, signed360 - net360), definitions: { proposed: "Current proposal version per lead", signed: "Signed current versions", collected: "Settled payments", net_collected: "Collected minus refunds", outstanding: "Signed minus net collected" } } });
   });
   app.patch("/api/accounts/:id", requireAuth, (req: any, res: any) => { const b = req.body || {}; const F = ["name", "phone", "email", "address", "website", "industry", "notes"]; const sets = F.filter(f => b[f] !== undefined); if (!sets.length) return err(res, 422, "nothing to update");
     db.prepare(`UPDATE accounts SET ${sets.map(f => f + "=?").join(",")}, updated_at=? WHERE id=? AND workspace_id=?`).run(...sets.map(f => b[f]), now(), req.params.id, ws(req)); res.json({ ok: true }); });

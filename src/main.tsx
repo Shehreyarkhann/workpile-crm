@@ -1349,7 +1349,24 @@ function PrintProposal({ id }: any) {
   </div>);
 }
 
-function AIAssistant({ go }: any) {
+function AgentCommand({ openLead, openJob }: any) {
+  const [text, setText] = useState(""); const [busy, setBusy] = useState(false); const [report, setReport] = useState<any>(null); const [runs, setRuns] = useState<any[]>([]); const [err, setErr] = useState("");
+  const loadRuns = () => { api("/api/agent/runs").then(setRuns).catch(() => {}); };
+  useEffect(loadRuns, []);
+  const run = async (t?: string) => { const cmd = (t ?? text).trim(); if (!cmd || busy) return; setBusy(true); setErr(""); try { const r = await api("/api/agent/command", { method: "POST", body: { text: cmd } }); setReport(r); setText(""); loadRuns(); } catch (e: any) { setErr(e.message); } setBusy(false); };
+  const examples = ["Get my business organized", "Prepare proposals for all qualified leads missing one", "Review all active jobs — missing documents, scheduling, invoicing", "Find customers and proposals going cold and recover them", "How did we do this week?"];
+  return (<div className="card" style={{ borderLeft: "4px solid #14532d", marginBottom: 14 }}>
+    <h3 style={{ marginTop: 0 }}>🤖 Agent — tell it what to do</h3>
+    <p className="sub" style={{ marginTop: 0 }}>It plans, uses the product's tools, respects your autonomy level and approval rules, and reports back with evidence. It never sends customer messages or changes prices on its own.</p>
+    <div className="rowflex"><input style={{ flex: 1 }} placeholder="e.g. Prepare proposals for all qualified leads missing one" value={text} onChange={e => setText(e.target.value)} onKeyDown={e => { if (e.key === "Enter") run(); }} /><button className="btn" disabled={busy} onClick={() => run()}>{busy ? "Working…" : "Run"}</button></div>
+    <div className="chipRow" style={{ marginTop: 8 }}>{examples.map(x => <button key={x} className="chip" onClick={() => run(x)}>{x}</button>)}</div>
+    {err && <div className="err">{err}</div>}
+    {report && <div style={{ marginTop: 12 }}>{report.results.map((r: any, i: number) => <div key={i} style={{ padding: "8px 0", borderTop: "1px solid #e2e8f0" }}><b>{r.tool.replaceAll("_", " ")}</b> <span className="tinyBadge">{r.mode}</span><br /><span>{r.summary}</span>{r.items.length > 0 && <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>{r.items.slice(0, 8).map((it: any, j: number) => <li key={j}>{it.lead_id ? <span className="clickable" onClick={() => openLead && openLead(it.lead_id)}>{it.label} →</span> : it.label}</li>)}</ul>}</div>)}</div>}
+    {runs.length > 0 && <details style={{ marginTop: 10 }}><summary className="muted" style={{ cursor: "pointer" }}>Previous runs ({runs.length})</summary>{runs.slice(0, 6).map((r: any) => <p key={r.id} className="muted" style={{ margin: "4px 0", fontSize: 12.5 }}>“{r.command}” · {new Date(r.created_at).toLocaleString()} · {r.results?.map((x: any) => x.tool).join(", ")}</p>)}</details>}
+  </div>);
+}
+
+function AIAssistant({ go, openLead, openJob }: any) {
   const [ins, setIns] = useState<any[]>([]); const [prev, setPrev] = useState<any>(null); const [acts, setActs] = useState<any>({ dedupe: true, spam: true, score: true, assign: false });
   const [result, setResult] = useState<any>(null); const [msg, setMsg] = useState("");
   const [auto, setAuto] = useState<any>(null); const [runs, setRuns] = useState<any[]>([]);
@@ -1369,7 +1386,8 @@ function AIAssistant({ go }: any) {
   };
   const setAutoKey = async (k: string, v: boolean) => { const r = await api("/api/ai/automations", { method: "POST", body: { [k]: v } }); setAuto(r); };
   const agentLabel: Record<string, string> = { triage: "🔍 Triage", automation: "🤖 Auto-pilot", nudge: "📨 Nudge", packet_check: "🛂 Packet check" };
-  return (<div><h2 className="pt">AI Assistant</h2><p className="sub">Agents do the chasing, sorting, and scoring — nothing customer-facing ever sends without your approval. Every action here is preview first, apply second; auto-pilot actions are logged below.</p>
+  return (<div>
+    <AgentCommand openLead={openLead} openJob={openJob} /><h2 className="pt">AI Assistant</h2><p className="sub">Agents do the chasing, sorting, and scoring — nothing customer-facing ever sends without your approval. Every action here is preview first, apply second; auto-pilot actions are logged below.</p>
     {msg && <div className="ok">{msg}</div>}
     <div className="card"><h3>Insights — what needs you today</h3>
       {ins.map((i: any, k: number) => <div className="insight" key={k}><div className="ic">{i.icon}</div><div style={{ flex: 1 }}><b>{i.title}</b><p>{i.detail}</p></div>{actFor(i)}</div>)}
@@ -1550,6 +1568,11 @@ function CallbackForm({ leadId, done }: any) {
 
 function WorkQueue({ openLead, openJob, go }: any) {
   const [q, setQ] = useState<any>(null); const [typeF, setTypeF] = useState("all"); const [focus, setFocus] = useState(0);
+  const [sel, setSel] = useState<Set<string>>(new Set()); const [team, setTeam] = useState<any[]>([]); const [bulkMsg, setBulkMsg] = useState("");
+  useEffect(() => { api("/api/users").then(setTeam).catch(() => {}); }, []);
+  const toggleSel = (id: string) => setSel(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const selItems = (q?.items || []).filter((i: any) => sel.has(i.id) && i.lead_id);
+  const bulk = async (action: string, extra: any = {}) => { if (!selItems.length) return; const r = await api("/api/queue/bulk", { method: "POST", body: { lead_ids: selItems.map((i: any) => i.lead_id), action, ...extra } }).catch((e: any) => ({ error: e.message })); if ((r as any).error) { setBulkMsg((r as any).error); return; } setBulkMsg(`${action === "assign" ? "Assigned" : action === "snooze" ? "Snoozed" : "Tasks created for"} ${r.affected} lead${r.affected === 1 ? "" : "s"} ✓`); toast(`Bulk ${action}: ${r.affected} leads ✓`); setSel(new Set()); load(); };
   const load = () => { api("/api/queue").then(setQ).catch(() => {}); };
   useEffect(load, []);
   const items = (q?.items || []).filter((i: any) => typeF === "all" || i.type === typeF);
@@ -1563,9 +1586,11 @@ function WorkQueue({ openLead, openJob, go }: any) {
   if (!q) return <p className="muted">Loading your pile…</p>;
   const LBL: Record<string, string> = { handoff_failed: "⚠ Handoff failed", approval: "✋ Approval", callback: "📞 Callback", followup_overdue: "⏰ Overdue", lead_untouched: "🆕 Untouched", proposal_viewed: "👁 Viewed, unsigned", inbox: "✉ Inbox", proposal_cold: "🧊 Going cold", job_crew: "👷 Needs crew", paperwork: "📄 Paperwork", field_report: "📋 Field report", timesheet: "⏱ Timesheet" };
   return (<div><h2 className="pt">Work Queue</h2><p className="sub">Everything that needs a human, worst-first — leads, email, approvals, jobs, paperwork. Work it to zero. <span className="muted">Keys: J/K move · Enter open</span></p>
+    {selItems.length > 0 && <div className="card" style={{ padding: "10px 14px", marginBottom: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", background: "#f0fdf4" }}><b>{selItems.length} selected</b><select id="bulkAssign" style={{ width: 180 }} defaultValue=""><option value="">Assign to…</option>{team.filter((u: any) => u.permissions?.leads_scope !== "none").map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}</select><button className="btn small" onClick={() => { const v = (document.getElementById("bulkAssign") as HTMLSelectElement).value; if (v) bulk("assign", { assignee_id: v }); else setBulkMsg("Pick a person to assign to first."); }}>Assign</button><button className="btn ghost small" onClick={() => bulk("snooze", { days: 1 })}>Snooze 1d</button><button className="btn ghost small" onClick={() => bulk("snooze", { days: 3 })}>Snooze 3d</button><button className="btn ghost small" onClick={() => bulk("task", { title: "Follow up (bulk from queue)" })}>+ Follow-up task</button><button className="btn ghost small" onClick={() => setSel(new Set())}>Clear</button>{bulkMsg && <span className="muted">{bulkMsg}</span>}</div>}
     <div className="rowflex" style={{ marginBottom: 10 }}><button className={`chip ${typeF === "all" ? "on" : ""}`} onClick={() => setTypeF("all")}>All ({q.total})</button>{Object.entries(q.by_type || {}).map(([t, c]: any) => <button key={t} className={`chip ${typeF === t ? "on" : ""}`} onClick={() => setTypeF(t)}>{LBL[t] || t} ({c})</button>)}<button className="btn ghost small" onClick={load}>↻ Refresh</button></div>
     {items.length === 0 && <div className="card" style={{ textAlign: "center", padding: 34 }}><div style={{ fontSize: 34 }}>🎉</div><h3 style={{ margin: "8px 0 4px" }}>Zero. The pile is clear.</h3><p className="muted">Nothing is waiting on anyone. New leads, mail, and due follow-ups land here the moment they exist.</p></div>}
     {items.map((i: any, ix: number) => <div key={i.id} className="card" style={{ padding: "10px 14px", marginBottom: 8, display: "flex", gap: 12, alignItems: "center", ...(ix === focus ? { outline: "2px solid #166534" } : {}) }}>
+      {i.lead_id && i.type !== "approval" ? <input type="checkbox" checked={sel.has(i.id)} onChange={() => toggleSel(i.id)} onClick={e => e.stopPropagation()} style={{ width: 17, height: 17 }} /> : <span style={{ width: 17 }} />}
       <span className="tinyBadge" style={{ whiteSpace: "nowrap" }}>{LBL[i.type] || i.type}</span>
       <div style={{ flex: 1 }}><b>{i.title}</b><br /><span className="muted">{i.subtitle}</span></div>
       {i.type === "callback" && <button className="btn ghost small" onClick={() => doneQuick(i)}>✓ Done</button>}
@@ -1807,6 +1832,7 @@ function CustomerDetail({ id, close, openLead, openJob }: any) {
     {d.jobs.length === 0 && <p className="muted">No jobs yet.</p>}
     <h4>Lead history ({d.leads.length})</h4>
     {d.leads.map((l: any) => <p key={l.id} style={{ margin: "4px 0" }} className="clickable" onClick={() => openLead(l.id)}>🎯 <b>{l.service_requested}</b> — {money(l.est_value)} · <Badge s={l.state} /></p>)}
+    {(d.timeline || []).length > 0 && <><h4>History — the whole relationship</h4><div style={{ maxHeight: 300, overflowY: "auto" }}>{(d.timeline || []).map((t: any, i: number) => <p key={i} style={{ margin: "4px 0", fontSize: 13 }} className={t.lead_id ? "clickable" : ""} onClick={() => { if (t.job_id && openJob) openJob(t.job_id); else if (t.lead_id) openLead(t.lead_id); }}>{t.icon} {t.text} <span className="muted">· {new Date(t.at).toLocaleDateString()}</span></p>)}</div></>}
     <h4>Proposals ({(d.proposals || []).length}) · {money((d.money360 || {}).proposals_value || 0)} proposed (current versions) · {money((d.money360 || {}).signed_value || 0)} signed · {money((d.money360 || {}).outstanding || 0)} outstanding</h4>
     {(d.proposals || []).map((p: any) => <p key={p.id} style={{ margin: "4px 0" }} className="clickable" onClick={() => openLead(p.lead_id)}>📄 <b>{p.service_requested}</b> — {money(p.total)} · <span className="tinyBadge">{p.status}</span>{p.sent_at ? " · sent " + dOnly(p.sent_at) : ""}{p.signed_at ? " · ✍️ signed " + dOnly(p.signed_at) : ""} →</p>)}
     {(d.proposals || []).length === 0 && <p className="muted">No proposals yet.</p>}
@@ -2116,7 +2142,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       {nav.view === "approvals" && <Approvals openLead={openLead} />}
       {nav.view === "proposals" && <ProposalsView openLead={openLead} />}
       {nav.view === "inbox" && <InboxPage />}
-      {nav.view === "ai" && <AIAssistant go={go} />}
+      {nav.view === "ai" && <AIAssistant go={go} openLead={(id: string) => setLeadId(id)} openJob={(id: string) => setJobOpen(id)} />}
       {nav.view === "imports" && <Imports />}
       {nav.view === "demand" && <Demand openLead={openLead} />}
       {nav.view === "handoffs" && <Handoffs />}

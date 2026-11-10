@@ -121,3 +121,11 @@ Remaining by design: moderated testing with unfamiliar users (first cohort = the
 | Outbox has no consumers | PARTLY — webhooks fire via integrations emitEvent at write time; the outbox is the durable event record | Left as-is deliberately: wiring the relay to webhooks would double-deliver events that already emit directly |
 | LLM agent orchestrator / PG cutover / monolith split | REAL but phased by design | Agent needs the founder's LLM provider + keys decision; PG remains the host cutover item; the audit itself prescribes incremental (not big-bang) refactor |
 Tests: 165/165 (tests/v15.test.ts, 7 tests; slice11 Twilio test now signs its posts; ux onboarding total updated to 10).
+
+## V16 — audit roadmap Phases 2+3 first increment (Nov 10)
+| Item | Shipped |
+|---|---|
+| Customer 360 timeline (§1B.3) | Account detail merges lead events, messages in/out, approvals, signatures, payments, jobs, change orders, site visits into one chronological, clickable History (cap 80) |
+| Work Queue bulk (§Priority 1.4) | Multi-select on lead-backed items (approvals excluded — decisions stay individual): bulk assign owner, snooze 1d/3d, create follow-up tasks; POST /api/queue/bulk, audited |
+| Agent orchestrator v1 (§Priority 2) | server/orchestrator.ts: tool registry (prepare_proposals, ops_review, recover_revenue, exec_brief) + rules planner + policy = autonomy levels (draft tools plan-only below L2, recovery tasks below L3) + persistent runs (agent_runs) + report UI in AI Assistant ("tell it what to do", example chips, run history). Hard rules in code: never sends, never prices, approvals untouched. LLM provider seam (`llmProvider = null`) awaits the founder's provider/key decision |
+Tests: 168/168 (tests/v16.test.ts). Screenshots: docs/screenshots-v23 (agent full-sweep executed live on demo data — 2 drafts created; queue bulk bar; 360 timeline).
