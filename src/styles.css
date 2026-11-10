@@ -159,3 +159,5 @@ aside.rail .sideHead { flex-direction: column; gap: 6px; }
 [data-theme="dark"] .modalCard, [data-theme="dark"] .card { background:var(--card); }
 [data-theme="dark"] .topbar { background:var(--bg); }
 [data-theme="dark"] .chip { background:#16233a; color:var(--ink); border-color:#263449; } [data-theme="dark"] .chip.on { background:#14532d; }
+.landWrap { min-height:100vh; background:var(--bg); padding:20px 14px 60px; display:flex; flex-direction:column; align-items:center; }
+.landWrap .authCard { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:26px; box-shadow:var(--shadow); }

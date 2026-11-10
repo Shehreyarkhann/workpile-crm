@@ -249,14 +249,16 @@ function Approvals({ openLead }: any) {
 
 function Imports() {
   const [csv, setCsv] = useState("name,phone,email,service,value,location\nPat Lee,+15165550199,pat@example.com,Roofing quote,3200,Bay Shore NY");
+  const [format, setFormat] = useState("generic");
   const [res, setRes] = useState<any>(null); const [hist, setHist] = useState<any[]>([]); const [msg, setMsg] = useState("");
   const load = () => { api("/api/imports").then(setHist).catch(() => {}); };
   useEffect(load, []);
-  const run = async () => { try { const r = await api("/api/imports/csv", { method: "POST", body: { csv, filename: "web-import.csv" } }); setRes(r); load(); } catch (e: any) { setMsg(e.message); } };
+  const run = async () => { try { const r = await api("/api/imports/csv", { method: "POST", body: { csv, filename: "web-import.csv", format } }); setRes(r); load(); } catch (e: any) { setMsg(e.message); } };
   const onFile = (f: File) => f.text().then(t => setCsv(t));
   return (<div><h2 className="pt">Import Leads</h2><p className="sub">Bring the backlog in — CSV from any source. Columns are auto-mapped (name, phone, email, service, value, location); duplicates are detected by phone/email and skipped, never double-created.</p>
     {msg && <div className="err">{msg}</div>}
     <div className="card"><h3>1 · Choose file or paste CSV</h3>
+      <div className="rowflex" style={{ marginBottom: 8 }}><label className="f" style={{ margin: 0 }}>This export came from</label><select style={{ width: 230 }} value={format} onChange={e => setFormat(e.target.value)}><option value="generic">Generic CSV</option><option value="jobber">Jobber</option><option value="housecallpro">Housecall Pro</option><option value="servicetitan">ServiceTitan</option><option value="salesforce">Salesforce</option></select><span className="muted">Vendor exports import as-is — no column surgery in Excel first.</span></div>
       <input type="file" accept=".csv" onChange={e => e.target.files && onFile(e.target.files[0])} />
       <textarea rows={9} style={{ marginTop: 10 }} value={csv} onChange={e => setCsv(e.target.value)} />
       <div className="rowflex" style={{ marginTop: 10 }}><button className="btn" onClick={run}>Import {csv.split("\n").filter(Boolean).length - 1 > 0 ? `(${csv.split("\n").filter(Boolean).length - 1} rows)` : ""}</button>
@@ -340,6 +342,7 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump }: any) {
       <div><label className="f">Lead source API key (if required)</label><input value={s.workspace.source_api_key || ""} placeholder="Bearer key for your source system" onChange={e => setS({ ...s, workspace: { ...s.workspace, source_api_key: e.target.value } })} /></div>
     </div><button className="btn" style={{ marginTop: 14 }} onClick={async () => { await api("/api/settings", { method: "PATCH", body: s.workspace }); setMsg("Workspace settings saved ✓"); }}>Save workspace</button></div>}
     {tab === "workspace" && s && <FollowupSettings key={s.workspace.id} ws={s.workspace} />}
+    {tab === "workspace" && s && <BookingSettings key={"bk" + s.workspace.id} ws={s.workspace} />}
     {tab === "pricebook" && <div className="card"><table><thead><tr><th>Item</th><th>Unit</th><th>Standard</th><th>Floor</th><th></th></tr></thead><tbody>
       {priceBook.map((p: any) => <tr key={p.id}><td>{p.name}</td><td>{p.unit}</td><td>{money(p.standard_price)}</td><td>{money(p.floor_price)}</td><td><button className="btn ghost small" onClick={async () => { const v = prompt("New standard price ($)", p.standard_price); if (v) { await api(`/api/price-book/${p.id}`, { method: "PATCH", body: { standard_price: Number(v) } }); loadAll(); } }}>Edit price</button> <button className="btn ghost small" onClick={async () => { await api(`/api/price-book/${p.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></td></tr>)}
     </tbody></table>
@@ -657,6 +660,14 @@ const DEF_STEPS = [
   { day: 5, channel: "sms", template: "{business}: your proposal ({total}) is waiting — review & sign: {link}" },
   { day: 10, channel: "email", template: "Hi {name}, last nudge from {business} — your proposal ({total}) is still open here: {link}" },
 ];
+function BookingSettings({ ws }: any) {
+  const [on, setOn] = useState(!!ws.booking_enabled); const [note, setNote] = useState("");
+  const url = `${location.origin}/book/${ws.booking_slug || ""}`;
+  return (<div className="card" style={{ marginTop: 14 }}><h3 style={{ marginTop: 0 }}>📅 Online booking page</h3>
+    <label className="check" style={{ display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={on} onChange={async e => { setOn(e.target.checked); await api("/api/settings", { method: "PATCH", body: { booking_enabled: e.target.checked } }); setNote(e.target.checked ? "Live ✓" : "Off"); }} style={{ width: "auto" }} /> Let customers book site visits from a public page</label>
+    <p className="muted">Your page: <a href={url} target="_blank" rel="noreferrer">{url}</a> — every booking lands as an owned lead with the visit already scheduled, and owners get notified. Put it on your website, Google profile, and email signature.{note && <> · {note}</>}</p></div>);
+}
+
 function FollowupSettings({ ws }: any) {
   const initSteps = (() => { try { const p = JSON.parse(ws.followup_steps || "null"); if (Array.isArray(p) && p.length) return p; } catch {} return DEF_STEPS; })();
   const [on, setOn] = useState(!!ws.followup_enabled); const [steps, setSteps] = useState<any[]>(initSteps);
@@ -748,4 +759,24 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
     </main>
   </div>);
 }
-createRoot(document.getElementById("root")!).render(<App />);
+function BookingPage({ slug }: any) {
+  const [info, setInfo] = useState<any>(null); const [err, setErr] = useState(""); const [done, setDone] = useState(false);
+  const [f, setF] = useState<any>({ name: "", phone: "", email: "", service: "", when: "", notes: "", location: "" });
+  useEffect(() => { fetch(`/api/public/book/${slug}`).then(r => r.ok ? r.json() : Promise.reject(new Error("nf"))).then(setInfo).catch(() => setErr("This booking page is not available.")); }, []);
+  const submit = async () => { const r = await fetch("/api/public/book", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug, ...f }) }); const j = await r.json().catch(() => ({})); if (!r.ok) { setErr(j.error?.code === "name_and_contact_required" ? "Please add your name and a phone or email." : "Something went wrong — please call us instead."); return; } setDone(true); };
+  if (err) return <div className="landWrap"><div className="authCard" style={{ margin: "10vh auto" }}><Logo /><p>{err}</p></div></div>;
+  if (!info) return <div className="landWrap"><p className="muted" style={{ textAlign: "center", marginTop: "12vh" }}>Loading…</p></div>;
+  if (done) return <div className="landWrap"><div className="authCard" style={{ margin: "10vh auto" }}><Logo /><h2>You're booked ✓</h2><p className="muted">{info.business} has your request{f.when ? ` for ${new Date(f.when).toLocaleString()}` : ""}. We'll confirm shortly — and if anything changes, we'll reach out first.</p></div></div>;
+  return (<div className="landWrap"><div className="authCard" style={{ margin: "6vh auto" }}><Logo /><h2 style={{ marginBottom: 2 }}>Book a visit — {info.business}</h2><p className="muted">Pick a time; we'll confirm by text or email.</p>
+    <label className="f">Your name</label><input value={f.name} onChange={e => setF({ ...f, name: e.target.value })} />
+    <label className="f">Phone</label><input value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} />
+    <label className="f">Email</label><input value={f.email} onChange={e => setF({ ...f, email: e.target.value })} />
+    <label className="f">Service</label><select value={f.service} onChange={e => setF({ ...f, service: e.target.value })}><option value="">Choose…</option>{(info.services || []).map((sv: any) => <option key={sv.name} value={sv.name}>{sv.name}</option>)}</select>
+    <label className="f">Preferred date & time</label><input type="datetime-local" value={f.when} onChange={e => setF({ ...f, when: e.target.value })} />
+    <label className="f">Address / location</label><input value={f.location} onChange={e => setF({ ...f, location: e.target.value })} />
+    <label className="f">Anything we should know?</label><textarea rows={3} value={f.notes} onChange={e => setF({ ...f, notes: e.target.value })} />
+    <button className="btn" style={{ width: "100%", marginTop: 12 }} disabled={!f.name || !(f.phone || f.email)} onClick={submit}>Request this visit</button>
+    <p className="muted" style={{ fontSize: 12 }}>By booking you agree we may call/text about this request. No spam, ever.</p></div></div>);
+}
+const __path = window.location.pathname;
+createRoot(document.getElementById("root")!).render(__path.startsWith("/book/") ? <BookingPage slug={__path.split("/")[2]} /> : <App />);

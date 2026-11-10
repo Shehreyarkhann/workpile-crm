@@ -304,22 +304,32 @@ app.get("/api/ops", requireAuth, (req: any, res) => {
 app.post("/api/field-reports/:id/submit", requireAuth, (req: any, res) => { db.prepare("UPDATE field_reports SET status='submitted', submitted_at=? WHERE id=?").run(now(), req.params.id); res.json({ ok: true }); });
 app.post("/api/timesheets/:id/submit", requireAuth, (req: any, res) => { db.prepare("UPDATE timesheets SET status='submitted', submitted_at=? WHERE id=?").run(now(), req.params.id); res.json({ ok: true }); });
 
-// CSV import (§4.1) — simple CSV, header row; AI mapping = header heuristics
+// CSV import (§4.1) — header heuristics + vendor-native shapes (Tier 2 importers):
+// exports from Jobber, Housecall Pro, ServiceTitan and Salesforce import as-is.
+const IMPORT_FORMATS: Record<string, Record<string, string[]>> = {
+  generic: { name: ["name", "contact", "customer"], first: ["first name", "firstname"], last: ["last name", "lastname"], phone: ["phone", "mobile", "tel"], email: ["email"], service: ["service", "service_requested", "job"], value: ["value", "est_value", "amount"], location: ["location", "address", "zip"] },
+  jobber: { name: ["client", "client name"], first: ["first name"], last: ["last name"], phone: ["phone", "phone number", "mobile phone"], email: ["email", "email address"], service: ["service", "job title", "request title", "quote name"], value: ["total", "quote total", "amount"], location: ["address", "street address", "property address"] },
+  housecallpro: { name: ["customer", "customer name", "name"], first: ["first name"], last: ["last name"], phone: ["phone", "mobile phone", "phone number"], email: ["email", "email address"], service: ["service", "job type", "job name"], value: ["total", "job total", "amount"], location: ["address", "service address"] },
+  servicetitan: { name: ["customer name", "name"], first: ["first name"], last: ["last name"], phone: ["phone", "phone number", "mobile"], email: ["email", "email address"], service: ["job type", "service", "business unit"], value: ["invoice total", "total", "job total"], location: ["address", "location", "service address"] },
+  salesforce: { name: ["name"], first: ["firstname", "first name"], last: ["lastname", "last name"], phone: ["phone", "mobilephone", "mobile"], email: ["email"], service: ["service", "service_requested", "industry"], value: ["amount", "value", "annualrevenue"], location: ["street", "city", "address"] },
+};
 app.post("/api/imports/csv", requireAuth, (req: any, res) => {
+  const format = String(req.body.format || "generic"); const F = IMPORT_FORMATS[format] || IMPORT_FORMATS.generic;
   const lines = String(req.body.csv || "").split(/\r?\n/).filter(Boolean);
   if (lines.length < 2) return res.status(422).json({ error: { code: "empty_csv" } });
   const headers = lines[0].split(",").map(h => h.trim().toLowerCase());
   const idx = (names: string[]) => headers.findIndex(h => names.includes(h));
-  const mi = { name: idx(["name", "contact", "customer"]), phone: idx(["phone", "mobile", "tel"]), email: idx(["email"]), service: idx(["service", "service_requested", "job"]), value: idx(["value", "est_value", "amount"]), location: idx(["location", "address", "zip"]) };
+  const mi = { name: idx(F.name), first: idx(F.first), last: idx(F.last), phone: idx(F.phone), email: idx(F.email), service: idx(F.service), value: idx(F.value), location: idx(F.location) };
   let created = 0, dupes = 0;
   for (const line of lines.slice(1)) {
     const cols = line.split(",").map(c => c.trim());
-    const r = createLead(req.user.workspace_id, req.user.id, { contact: { name: cols[mi.name] || "", phone: cols[mi.phone] || "", email: cols[mi.email] || "" }, service_requested: mi.service >= 0 ? cols[mi.service] : "", est_value: mi.value >= 0 ? Number(cols[mi.value]) || 0 : 0, location: mi.location >= 0 ? cols[mi.location] : "", source: "csv-import" });
+    const fullName = mi.name >= 0 && cols[mi.name] ? cols[mi.name] : [mi.first >= 0 ? cols[mi.first] : "", mi.last >= 0 ? cols[mi.last] : ""].join(" ").trim();
+    const r = createLead(req.user.workspace_id, req.user.id, { contact: { name: fullName, phone: cols[mi.phone] || "", email: cols[mi.email] || "" }, service_requested: mi.service >= 0 ? cols[mi.service] : "", est_value: mi.value >= 0 ? Number(String(cols[mi.value]).replace(/[^0-9.]/g, "")) || 0 : 0, location: mi.location >= 0 ? cols[mi.location] : "", source: format + "-import" });
     r.duplicate ? dupes++ : created++;
   }
   const id = uid("imp");
-  db.prepare("INSERT INTO imports (id,workspace_id,filename,mapping,totals,status,created_at) VALUES (?,?,?,?,?,?,?)").run(id, req.user.workspace_id, req.body.filename || "import.csv", JSON.stringify(mi), JSON.stringify({ created, dupes }), "committed", now());
-  res.json({ import_id: id, created, duplicates: dupes });
+  db.prepare("INSERT INTO imports (id,workspace_id,filename,mapping,totals,status,created_at) VALUES (?,?,?,?,?,?,?)").run(id, req.user.workspace_id, req.body.filename || "import.csv", JSON.stringify({ format, ...mi }), JSON.stringify({ created, dupes }), "committed", now());
+  res.json({ import_id: id, created, duplicates: dupes, format });
 });
 
 // ---------- public API (§14) ----------
@@ -778,6 +788,8 @@ app.get("/api/integrations", requireAuth, (req: any, res) => {
     { id: "stripe", name: "Stripe", status: process.env.STRIPE_SECRET_KEY ? "connected" : "test_mode", detail: "Deposits on signature + Workpile subscriptions." },
     { id: "zapier_make", name: "Zapier / Make / n8n", status: "connected", detail: "Works today through the REST API + webhooks — thousands of apps reachable." },
     { id: "handoff", name: "Final Outcome Handoff", status: eps ? "connected" : "not_configured", detail: "Won → project package into their platform, ack-tracked; every final delivered." },
+    { id: "quickbooks", name: "QuickBooks Online", status: process.env.QBO_CLIENT_ID ? "ready" : "not_configured", detail: "Won jobs become invoice drafts in QBO. Activates with Intuit app credentials; sync engine ships with the credentials." },
+    { id: "booking", name: "Online Booking Page", status: ws.booking_enabled ? "connected" : "not_configured", detail: "Public page where customers book site visits — every booking lands as an owned lead with the visit scheduled." },
   ] });
 });
 const OPENAPI_SPEC: any = { openapi: "3.0.0", info: { title: "Workpile API", version: "1.0.0", description: "Two-way integration API for Workpile. Base URL https://workpile.io — Bearer API key from Settings → Integrations." }, servers: [{ url: "https://workpile.io" }], paths: {
@@ -825,8 +837,8 @@ app.post("/api/users", requireAuth, (req: any, res) => { if (!["OWNER", "ADMIN"]
 app.patch("/api/users/:id", requireAuth, (req: any, res) => { if (!["OWNER", "ADMIN"].includes(req.user.role)) return res.status(403).json({ error: { code: "owner_or_admin" } }); db.prepare("UPDATE users SET role=COALESCE(?,role), approval_limit=COALESCE(?,approval_limit), active=COALESCE(?,active) WHERE id=? AND workspace_id=?").run(req.body.role ?? null, req.body.approval_limit ?? null, req.body.active === undefined ? null : (req.body.active ? 1 : 0), req.params.id, req.user.workspace_id); res.json({ ok: true }); });
 
 // Workspace settings
-app.get("/api/settings", requireAuth, (req: any, res) => { const ws = db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.user.workspace_id); const counts = db.prepare("SELECT (SELECT COUNT(*) FROM leads WHERE workspace_id=?) leads, (SELECT COUNT(*) FROM users WHERE workspace_id=?) users, (SELECT COUNT(*) FROM price_book_items WHERE workspace_id=?) price_items").get(req.user.workspace_id, req.user.workspace_id, req.user.workspace_id); res.json({ workspace: ws, counts }); });
-app.patch("/api/settings", requireAuth, (req: any, res) => { if (req.user.role !== "OWNER") return res.status(403).json({ error: { code: "owner_only" } }); const b = req.body; db.prepare("UPDATE workspaces SET name=COALESCE(?,name), vertical=COALESCE(?,vertical), timezone=COALESCE(?,timezone), deposit_pct=COALESCE(?,deposit_pct), autonomy_level=COALESCE(?,autonomy_level), source_api_url=COALESCE(?,source_api_url), source_api_key=COALESCE(?,source_api_key), sync_enabled=COALESCE(?,sync_enabled), slack_webhook_url=COALESCE(?,slack_webhook_url), from_name=COALESCE(?,from_name), from_email=COALESCE(?,from_email), followup_enabled=COALESCE(?,followup_enabled), followup_steps=COALESCE(?,followup_steps), review_url=COALESCE(?,review_url), review_on_won=COALESCE(?,review_on_won) WHERE id=?").run(b.name ?? null, b.vertical ?? null, b.timezone ?? null, b.deposit_pct ?? null, b.autonomy_level ?? null, b.source_api_url ?? null, b.source_api_key ?? null, b.sync_enabled === undefined ? null : (b.sync_enabled ? 1 : 0), b.slack_webhook_url ?? null, b.from_name ?? null, b.from_email ?? null, b.followup_enabled === undefined ? null : (b.followup_enabled ? 1 : 0), b.followup_steps === undefined ? null : JSON.stringify(b.followup_steps), b.review_url ?? null, b.review_on_won === undefined ? null : (b.review_on_won ? 1 : 0), req.user.workspace_id); res.json(db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.user.workspace_id)); });
+app.get("/api/settings", requireAuth, (req: any, res) => { const ws: any = db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.user.workspace_id); if (ws) ws.booking_slug = ensureBookingSlug(ws); const counts = db.prepare("SELECT (SELECT COUNT(*) FROM leads WHERE workspace_id=?) leads, (SELECT COUNT(*) FROM users WHERE workspace_id=?) users, (SELECT COUNT(*) FROM price_book_items WHERE workspace_id=?) price_items").get(req.user.workspace_id, req.user.workspace_id, req.user.workspace_id); res.json({ workspace: ws, counts }); });
+app.patch("/api/settings", requireAuth, (req: any, res) => { if (req.user.role !== "OWNER") return res.status(403).json({ error: { code: "owner_only" } }); const b = req.body; db.prepare("UPDATE workspaces SET name=COALESCE(?,name), vertical=COALESCE(?,vertical), timezone=COALESCE(?,timezone), deposit_pct=COALESCE(?,deposit_pct), autonomy_level=COALESCE(?,autonomy_level), source_api_url=COALESCE(?,source_api_url), source_api_key=COALESCE(?,source_api_key), sync_enabled=COALESCE(?,sync_enabled), slack_webhook_url=COALESCE(?,slack_webhook_url), from_name=COALESCE(?,from_name), from_email=COALESCE(?,from_email), followup_enabled=COALESCE(?,followup_enabled), followup_steps=COALESCE(?,followup_steps), review_url=COALESCE(?,review_url), review_on_won=COALESCE(?,review_on_won), booking_enabled=COALESCE(?,booking_enabled) WHERE id=?").run(b.name ?? null, b.vertical ?? null, b.timezone ?? null, b.deposit_pct ?? null, b.autonomy_level ?? null, b.source_api_url ?? null, b.source_api_key ?? null, b.sync_enabled === undefined ? null : (b.sync_enabled ? 1 : 0), b.slack_webhook_url ?? null, b.from_name ?? null, b.from_email ?? null, b.followup_enabled === undefined ? null : (b.followup_enabled ? 1 : 0), b.followup_steps === undefined ? null : JSON.stringify(b.followup_steps), b.review_url ?? null, b.review_on_won === undefined ? null : (b.review_on_won ? 1 : 0), b.booking_enabled === undefined ? null : (b.booking_enabled ? 1 : 0), req.user.workspace_id); res.json(db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.user.workspace_id)); });
 
 // API keys management
 app.get("/api/api-keys", requireAuth, (req: any, res) => res.json(db.prepare("SELECT id,label,scopes,last_used_at,revoked_at FROM api_keys WHERE workspace_id=?").all(req.user.workspace_id)));
@@ -869,6 +881,30 @@ app.get("/api/reports/export", requireAuth, (req: any, res) => {
   res.type("text/csv").setHeader("Content-Disposition", `attachment; filename="workpile-${kind}.csv"`).send(csv);
 });
 
+// ---------- slice 12 (Tier 2): online booking ----------
+function ensureBookingSlug(ws: any): string {
+  if (ws.booking_slug) return ws.booking_slug;
+  const slug = String(ws.name || "business").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) + "-" + ws.id.slice(-4).toLowerCase();
+  db.prepare("UPDATE workspaces SET booking_slug=? WHERE id=?").run(slug, ws.id);
+  return slug;
+}
+app.get("/api/public/book/:slug", (req: any, res) => {
+  const ws = db.prepare("SELECT * FROM workspaces WHERE booking_slug=?").get(req.params.slug) as any;
+  if (!ws || !ws.booking_enabled) return res.status(404).json({ error: { code: "booking_not_available" } });
+  const services = db.prepare("SELECT name FROM services WHERE workspace_id=? AND active=1 ORDER BY name").all(ws.id);
+  res.json({ business: ws.name, services });
+});
+app.post("/api/public/book", async (req: any, res) => {
+  const ws = db.prepare("SELECT * FROM workspaces WHERE booking_slug=?").get(String(req.body.slug || "")) as any;
+  if (!ws || !ws.booking_enabled) return res.status(404).json({ error: { code: "booking_not_available" } });
+  const b = req.body;
+  if (!b.name || !(b.phone || b.email)) return res.status(422).json({ error: { code: "name_and_contact_required" } });
+  const r = createLead(ws.id, "booking-page", { contact: { name: b.name, phone: b.phone || "", email: b.email || "" }, service_requested: b.service || "", message: b.notes || "", location: b.location || "", source: "online-booking" });
+  let visit = null;
+  if (b.when) { const vid = uid("vis"); db.prepare("INSERT INTO site_visits (id,workspace_id,lead_id,assigned_to,scheduled_at,status,notes) VALUES (?,?,?,?,?,?,?)").run(vid, ws.id, r.lead.id, null, b.when, "scheduled", "Booked online by the customer"); visit = vid; }
+  notifyOwners(ws.id, "booking.new", "New online booking 📅", `${b.name} booked ${b.service || "a visit"}${b.when ? " for " + b.when : ""}`, r.lead.id);
+  res.status(201).json({ ok: true, lead_id: r.lead.id, visit_id: visit, duplicate: r.duplicate });
+});
 // ---------- slice 11 (Tier 1): bulk actions, two-way texting, push ----------
 const NEXT_STATE: Record<string, string> = { NEW: "TRIAGED", TRIAGED: "QUALIFYING", QUALIFYING: "QUALIFIED", QUALIFIED: "READY_FOR_APPROVAL", APPROVED: "PROPOSAL_DRAFTED", PROPOSAL_SENT: "IN_FOLLOW_UP" };
 app.post("/api/leads/bulk", requireAuth, (req: any, res) => {
