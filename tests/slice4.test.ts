@@ -21,13 +21,14 @@ before(async () => {
   dbm.db.prepare("INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)").run(wsId, "Launch Co", dbm.now());
 });
 
-test("billing: trial auto-created (30d, growth), status + usage shape correct", () => {
+test("billing: trial auto-created (30d, crew), status + usage shape correct", () => {
   const b = billing.billingStatus(wsId);
   assert.equal(b.subscription.status, "trialing");
-  assert.equal(b.plan.key, "growth"); assert.equal(b.plan.price, 599);
+  assert.equal(b.plan.key, "crew"); assert.equal(b.plan.annual_price, 79.99); assert.equal(b.plan.seats, 3);
   assert.ok(b.trial_days_left >= 29 && b.trial_days_left <= 30);
   assert.equal(b.access, "ok");
-  assert.equal(b.usage.leads_limit, 2000);
+  assert.equal(b.usage.leads_limit, 5000);
+  assert.equal(b.usage.seats_limit, 3);
 });
 
 test("billing: expired trial blocks ingestion but never approvals (access flag only gates ingestion)", () => {
@@ -40,16 +41,16 @@ test("billing: expired trial blocks ingestion but never approvals (access flag o
 });
 
 test("billing: checkout honestly reports not-configured without Stripe keys", async () => {
-  const r = await billing.createCheckout(wsId, "pro", "http://localhost");
+  const r = await billing.createCheckout(wsId, "crew", "http://localhost");
   assert.equal(r.configured, false);
   assert.ok(r.message.includes("not configured"));
 });
 
 test("billing events: checkout completed activates the right workspace + plan", () => {
-  const ok = billing.handleBillingEvent({ type: "checkout.session.completed", data: { object: { customer: "cus_1", subscription: "sub_1", metadata: { workspace_id: wsId, plan: "pro" } } } });
+  const ok = billing.handleBillingEvent({ type: "checkout.session.completed", data: { object: { customer: "cus_1", subscription: "sub_1", metadata: { workspace_id: wsId, plan: "team" } } } });
   assert.equal(ok, true);
   const b = billing.billingStatus(wsId);
-  assert.equal(b.subscription.status, "active"); assert.equal(b.plan.key, "pro"); assert.equal(b.plan.price, 999);
+  assert.equal(b.subscription.status, "active"); assert.equal(b.plan.key, "team"); assert.equal(b.plan.annual_price, 49.99);
   const failed = billing.handleBillingEvent({ type: "invoice.payment_failed", data: { object: { customer: "cus_1" } } });
   assert.equal(failed, true);
   assert.equal(billing.billingStatus(wsId).subscription.status, "past_due");

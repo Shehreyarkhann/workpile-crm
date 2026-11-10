@@ -10,7 +10,7 @@ import { getTemplate, proposalDocument, sanitizeHtml } from "./proptemplate.ts";
 import { ensureSignToken, getByToken, sign } from "./sign.ts";
 import { createDeposit, markPaid, verifyStripeSignature, handleStripeEvent, stripeMode } from "./payments.ts";
 import { getFlags, setFlag, workspaceHealth, runSynthetics } from "./admin.ts";
-import { billingStatus, createCheckout, handleBillingEvent, PLANS, ensureSubscription } from "./billing.ts";
+import { billingStatus, createCheckout, handleBillingEvent, PLANS, ensureSubscription, seatCheck } from "./billing.ts";
 import { cleanupPreview, cleanupApply, insights, insightsV2, reactivateStale, scoreLead, nextBestAction, runAutomationsFor, logAgentRun } from "./ai.ts";
 import { emitEvent, EVENTS } from "./integrations.ts";
 import { queueAndDeliver, notify, notifyOwners, emailConfigured, smsConfigured } from "./comms.ts";
@@ -1092,7 +1092,9 @@ app.post("/api/services", requireAuth, needPerm("can_settings"), (req: any, res)
 app.patch("/api/services/:id", requireAuth, needPerm("can_settings"), (req: any, res) => { db.prepare("UPDATE services SET name=COALESCE(?,name), active=COALESCE(?,active) WHERE id=? AND workspace_id=?").run(req.body.name ?? null, req.body.active === undefined ? null : (req.body.active ? 1 : 0), req.params.id, req.user.workspace_id); res.json({ ok: true }); });
 
 // Team CRUD
-app.post("/api/users", requireAuth, (req: any, res) => { if (!["OWNER", "ADMIN"].includes(req.user.role)) return res.status(403).json({ error: { code: "owner_or_admin" } }); const id = uid("usr"); db.prepare("INSERT INTO users (id,workspace_id,name,email,password_hash,role,approval_limit) VALUES (?,?,?,?,?,?,?)").run(id, req.user.workspace_id, req.body.name, req.body.email, hashPassword(req.body.password || "changeme123"), req.body.role || "LEAD_OWNER", req.body.approval_limit || 0); res.status(201).json({ id, name: req.body.name, email: req.body.email, role: req.body.role || "LEAD_OWNER" }); });
+app.post("/api/users", requireAuth, (req: any, res) => { if (!["OWNER", "ADMIN"].includes(req.user.role)) return res.status(403).json({ error: { code: "owner_or_admin" } });
+  const sc = seatCheck(req.user.workspace_id);
+  if (!sc.ok) return res.status(422).json({ error: { code: "seat_limit", message: `Your ${sc.plan} plan includes ${sc.limit} seat${sc.limit === 1 ? "" : "s"} and all ${sc.used} are in use. Upgrade the plan in Billing to add more people.` } }); const id = uid("usr"); db.prepare("INSERT INTO users (id,workspace_id,name,email,password_hash,role,approval_limit) VALUES (?,?,?,?,?,?,?)").run(id, req.user.workspace_id, req.body.name, req.body.email, hashPassword(req.body.password || "changeme123"), req.body.role || "LEAD_OWNER", req.body.approval_limit || 0); res.status(201).json({ id, name: req.body.name, email: req.body.email, role: req.body.role || "LEAD_OWNER" }); });
 app.patch("/api/users/:id", requireAuth, (req: any, res) => { if (!["OWNER", "ADMIN"].includes(req.user.role)) return res.status(403).json({ error: { code: "owner_or_admin" } }); db.prepare("UPDATE users SET role=COALESCE(?,role), approval_limit=COALESCE(?,approval_limit), active=COALESCE(?,active) WHERE id=? AND workspace_id=?").run(req.body.role ?? null, req.body.approval_limit ?? null, req.body.active === undefined ? null : (req.body.active ? 1 : 0), req.params.id, req.user.workspace_id); res.json({ ok: true }); });
 
 // Workspace settings

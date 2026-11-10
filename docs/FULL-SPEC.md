@@ -83,7 +83,7 @@ Generic CRMs (HubSpot, Salesforce, GoHighLevel, Jobber, ServiceTitan) store lead
 5. "Tell me every Monday where revenue is leaking and what service I should add next."
 
 ### 2.3 Market framing (for GTM/fundraising, verify before external use)
-US service SMBs number in the millions; the serviceable wedge is owner-operated field-service firms with 50+ leads/month. Pricing at $299–$999/mo positions below ServiceTitan/enterprise tools and above a raw CRM seat — justified only by recovered proposals, not seats. TAM/SAM figures must be sourced from current Census/IBISWorld data before any investor material ships; no unsourced numbers in this spec are to be quoted externally.
+US service SMBs number in the millions; the serviceable wedge is owner-operated field-service firms with 50+ leads/month. Pricing is per-seat (founder decision 2026-11-10): Solo 1 seat $29.99 list / $19.99/mo billed annually, Team 2 seats $69.99 / $49.99, Crew 3 seats $109.99 / $79.99, Enterprise custom — impulse-buy territory for owner-operated shops, justified by recovered proposals. TAM/SAM figures must be sourced from current Census/IBISWorld data before any investor material ships; no unsourced numbers in this spec are to be quoted externally.
 
 ### 2.4 Competitive positioning
 | Competitor class | Their strength | Our counter-position |
@@ -519,9 +519,11 @@ Design system: single component library, dark-on-light data-dense ops theme + hi
 
 ## 18. PRICING & PACKAGING
 
-| | Starter $299/mo | Growth $599/mo | Pro $999/mo |
+| | Solo — 1 seat | Team — 2 seats | Crew — 3 seats | Enterprise |
+|---|---|---|---|---|
+| Price | $29.99/mo list · **$19.99/mo billed annually** | $69.99/mo list · **$49.99/mo billed annually** | $109.99/mo list · **$79.99/mo billed annually** | Custom |
 |---|---|---|---|
-| Workspaces / seats | 1 / 5 | 1 / 15 | 3 / 30 |
+| Workspaces / seats | 1 / 1 | 1 / 2 | 1 / 3 | Custom / unlimited |
 | Leads / mo | 500 | 2,000 | Unlimited (fair use) |
 | Ingestion | API, form, CSV, 1 inbox | + Zapier, marketplace feeds | + Multi-inbox, custom sources |
 | Approval workflow | Single approver | Tiered routing + bulk | + Delegation, L3-ready |
