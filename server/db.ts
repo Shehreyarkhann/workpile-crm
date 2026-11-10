@@ -82,6 +82,9 @@ export function initSchema() {
   // additive columns for existing DBs (expand step of expand-migrate-contract)
   for (const stmt of [
     "ALTER TABLE users ADD COLUMN is_platform_admin INTEGER DEFAULT 0",
+    "ALTER TABLE notifications ADD COLUMN entity_type TEXT",
+    "ALTER TABLE notifications ADD COLUMN entity_id TEXT",
+    "ALTER TABLE workspaces ADD COLUMN logo_data TEXT",
     "ALTER TABLE workspaces ADD COLUMN deposit_pct REAL DEFAULT 25",
     "ALTER TABLE proposals ADD COLUMN sign_token TEXT",
     "ALTER TABLE workspaces ADD COLUMN trial_ends_at TEXT",

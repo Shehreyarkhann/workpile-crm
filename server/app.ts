@@ -19,7 +19,7 @@ import { rateFor, logTime, jobLabor, DEFAULT_CLASSES, resolveWorker, listWorkers
 import { ensureDay, chaseReport, todayStr } from "./fieldreports.ts";
 import { weeklyReport } from "./statusreport.ts";
 import { enrollFollowup, stopFollowups } from "./followups.ts";
-import { registerCrm, convertLeadToCustomer, applyAssignmentRules, onLeadCreated } from "./crm.ts";
+import { registerCrm, registerDocTemplates, convertLeadToCustomer, applyAssignmentRules, onLeadCreated } from "./crm.ts";
 
 import { providerStatus, authUrl, listConnections } from "./oauth.ts";
 
@@ -1008,11 +1008,18 @@ app.get("/sign/:token", (req, res) => {
   let opts: any[] = []; try { opts = JSON.parse(p.options || "[]"); } catch { opts = []; }
   const optionsHtml = opts.length ? `<h3>Choose your option</h3>` + opts.map((o: any, ix: number) => `<label style="display:block;border:1px solid #ddd;border-radius:10px;padding:12px;margin:8px 0"><input type="radio" name="option" value="${String(o.name).replaceAll('"', "")}" ${ix === 0 ? "checked" : ""} style="width:auto"> <strong>${o.name} — $${Number(o.total).toFixed(2)}</strong><table>${(o.line_items || []).map((i: any) => `<tr><td>${i.name}</td><td>${i.qty || 1}</td><td>$${i.unit_price}</td></tr>`).join("")}</table></label>`).join("") : "";
   const expired = p.expires_at && new Date(p.expires_at) < new Date() && !s.signed_at;
+  const doc = (() => { try { return proposalDocument(p.id); } catch { return null; } })();
+  const tplHtml = doc ? `${doc.template.logo ? `<img src="${doc.template.logo}" style="max-height:72px;max-width:260px">` : ""}` : "";
+  const introHtml = doc ? doc.template.intro_html : "";
+  const termsHtml = doc ? `<h3>Terms & Conditions</h3>${doc.template.terms_html}` : "";
+  const footHtml = doc ? `<p style="color:#666;font-size:13px;border-top:1px solid #ddd;padding-top:10px">${doc.template.footer}</p>` : "";
   res.type("html").send(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><title>Proposal — ${ws.name}</title>
   <style>body{font-family:sans-serif;max-width:640px;margin:24px auto;padding:0 16px}table{width:100%;border-collapse:collapse}td{border-bottom:1px solid #ddd;padding:6px}input{width:100%;padding:10px;margin:6px 0}button{background:#14532d;color:#fff;border:0;padding:12px 20px;border-radius:8px;width:100%}</style>
-  <h1>${ws.name}</h1><h2>Proposal — ${lead.service_requested}</h2><p>Prepared for ${contact.name} · ${lead.location || ""}</p>
+  ${tplHtml}<h1>${ws.name}</h1><h2>Proposal — ${lead.service_requested}</h2><p>Prepared for ${contact.name} · ${lead.location || ""}</p>
+  ${introHtml}
   ${expired ? `<p style="background:#fef3c7;padding:10px;border-radius:8px">⏰ This proposal expired on ${new Date(p.expires_at).toLocaleDateString()} — contact us and we'll re-issue it with the same scope.</p>` : ""}${p.expires_at && !s.signed_at && !expired ? `<p class="muted">Valid until ${new Date(p.expires_at).toLocaleDateString()}</p>` : ""}
   <p>${lead.notes || ""}</p>${opts.length ? "" : `<table>${items}</table><p><strong>Total: $${Number(p.total).toFixed(2)}</strong> · Payment status: ${p.payment_status || "—"}</p>`}
+  ${termsHtml}${footHtml}
   ${s.signed_at ? `<p>✅ Signed by ${s.signer_name} on ${new Date(s.signed_at).toLocaleString()}</p>` : `
   <form method="POST" action="/sign/${req.params.token}">
     ${optionsHtml}
@@ -1643,6 +1650,7 @@ app.put("/api/proposal-template", requireAuth, needPerm("can_settings"), (req: a
   db.prepare("UPDATE workspaces SET pt_company=?, pt_tagline=?, pt_contact=?, pt_address=?, pt_intro=?, pt_terms=?, pt_footer=? WHERE id=?")
     .run(String(b.company || "").slice(0, 200), String(b.tagline || "").slice(0, 200), String(b.contact_line || "").slice(0, 300), String(b.address || "").slice(0, 300),
       sanitizeHtml(String(b.intro_html || "")), sanitizeHtml(String(b.terms_html || "")), String(b.footer || "").slice(0, 500), req.user.workspace_id);
+  if (b.logo_data !== undefined) { const lg = b.logo_data === null ? null : String(b.logo_data); if (lg && (!/^data:image\/(png|jpe?g|gif|webp);base64,/i.test(lg) || lg.length > 900000)) return res.status(422).json({ error: { code: "bad_logo", message: "Logo must be an image under ~650KB" } }); db.prepare("UPDATE workspaces SET logo_data=? WHERE id=?").run(lg, req.user.workspace_id); }
   res.json(getTemplate(req.user.workspace_id));
 });
 app.get("/api/proposals/:id/document", requireAuth, (req: any, res) => {
@@ -1762,3 +1770,4 @@ app.get("/api/health", (_req, res) => res.json({ ok: true, service: "leadflow-os
 
 // ---------- v4: Salesforce-parity CRM layer (slices 37-46) ----------
 registerCrm(app, requireAuth);
+registerDocTemplates(app, requireAuth);

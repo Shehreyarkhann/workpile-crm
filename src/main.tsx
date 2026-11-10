@@ -107,7 +107,8 @@ function Leads({ initial, openLead, users, me }: any) {
   const [sel, setSel] = useState<Set<string>>(new Set()); const [bulkMsg, setBulkMsg] = useState("");
   const bulk = async (action: string, extra: any = {}) => { const r = await api("/api/leads/bulk", { method: "POST", body: { ids: [...sel], action, ...extra } }).catch((e: any) => ({ error: e.message })); if ((r as any).error) { setBulkMsg("Error: " + (r as any).error); return; } setBulkMsg(`Done: ${r.ok} updated, ${r.skipped} skipped${r.details?.length ? " — " + r.details.slice(0, 2).map((d: any) => d.reason).join("; ") : ""}`); setSel(new Set()); setTickFix(t => t + 1); };
   const [syncOpen, setSyncOpen] = useState(false);
-  const [mode, setMode] = useState<"table" | "board">("table");
+  const [mode, setMode] = useState<"table" | "board" | "dupes">(initial?.mode === "dupes" ? "dupes" : "table");
+  useEffect(() => { if (initial?.mode === "dupes") setMode("dupes"); }, [initial]);
   const [f, setF] = useState<any>(initial || {});
   const [data, setData] = useState<any>({ items: [], total: 0, page: 1, pages: 1 });
   const [board, setBoard] = useState<Record<string, any>>({});
@@ -127,7 +128,7 @@ function Leads({ initial, openLead, users, me }: any) {
       <div style={{ flex: 1, minWidth: 220 }}><input type="search" placeholder="Search name, phone, email, service, notes…" value={f.q || ""} onChange={e => setF({ ...f, q: e.target.value, page: 1 })} /></div>
       <select style={{ width: 180 }} value={f.sort || "recent"} onChange={e => setF({ ...f, sort: e.target.value })}><option value="recent">Newest first</option><option value="value">Highest value</option></select>
       <select style={{ width: 190 }} value={f.owner_id || ""} onChange={e => setF({ ...f, owner_id: e.target.value, page: 1 })}><option value="">All owners</option>{users.map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}</select>
-      <div className="tabs" style={{ border: 0, margin: 0 }}><button className={mode === "table" ? "on" : ""} onClick={() => setMode("table")}>Table</button><button className={mode === "board" ? "on" : ""} onClick={() => setMode("board")}>Board</button></div>
+      <div className="tabs" style={{ border: 0, margin: 0 }}><button className={mode === "table" ? "on" : ""} onClick={() => setMode("table")}>Table</button><button className={mode === "board" ? "on" : ""} onClick={() => setMode("board")}>Board</button><button className={mode === "dupes" ? "on" : ""} onClick={() => setMode("dupes")}>Duplicates</button></div>
     </div>
     <div className="chips">
       <span className="muted" style={{ alignSelf: "center", fontWeight: 700, fontSize: 12 }}>SAVED VIEWS:</span>
@@ -151,7 +152,7 @@ function Leads({ initial, openLead, users, me }: any) {
       <select style={{ width: 200 }} value={f.state || ""} onChange={e => setF({ ...f, state: e.target.value, bucket: "", page: 1 })}><option value="">Any exact state…</option>{STATES.map(s => <option key={s} value={s}>{s.replaceAll("_", " ")}</option>)}</select>
       {f.service && <button className="chip on" onClick={() => setF({ ...f, service: "" })}>Service: {f.service} ✕</button>}
     </div>
-    {mode === "table" ? (<div className="card" style={{ padding: 6 }}><table><thead><tr><th style={{ width: 30 }}><input type="checkbox" style={{ width: "auto" }} checked={data.items.length > 0 && data.items.every((l: any) => sel.has(l.id))} onChange={e => setSel(e.target.checked ? new Set(data.items.map((l: any) => l.id)) : new Set())} /></th><th>Contact</th><th>Service</th><th>AI Score</th><th>State</th><th>Value</th><th>Owner</th><th>Next step</th><th>Created</th></tr></thead><tbody>
+    {mode === "dupes" ? <DuplicatesView embedded /> : mode === "table" ? (<div className="card" style={{ padding: 6 }}><table><thead><tr><th style={{ width: 30 }}><input type="checkbox" style={{ width: "auto" }} checked={data.items.length > 0 && data.items.every((l: any) => sel.has(l.id))} onChange={e => setSel(e.target.checked ? new Set(data.items.map((l: any) => l.id)) : new Set())} /></th><th>Contact</th><th>Service</th><th>AI Score</th><th>State</th><th>Value</th><th>Owner</th><th>Next step</th><th>Created</th></tr></thead><tbody>
       {data.items.map((l: any) => <tr className="clickable" key={l.id} onClick={() => openLead(l.id)}><td onClick={e => e.stopPropagation()}><input type="checkbox" style={{ width: "auto" }} checked={sel.has(l.id)} onChange={() => { const n = new Set(sel); n.has(l.id) ? n.delete(l.id) : n.add(l.id); setSel(n); }} /></td><td><b>{l.contact_name}</b><br /><span className="muted">{l.contact_phone || l.contact_email || ""}</span></td><td>{l.service_requested}</td><td>{l.ai_score !== null && l.ai_score !== undefined ? <span className={`score ${JSON.parse(l.ai_flags || "{}").temperature || "cold"}`}>{l.ai_score}</span> : <span className="muted">—</span>}</td><td onClick={e => e.stopPropagation()}><select value={l.state} style={{ width: 118, padding: "3px 5px", fontSize: 12.5 }} onChange={async e => { const to = e.target.value; try { await api(`/api/leads/${l.id}/stage`, { method: "POST", body: { to } }); setData({ ...data, items: data.items.map((x: any) => x.id === l.id ? { ...x, state: to } : x) }); } catch (err: any) { alert(err.message === "won_needs_confirmation" || err.message === "reason_required" ? "That close needs the record — click the row to finish it with a reason/confirmation." : err.message); } }}>{STATES.map(st => <option key={st} value={st}>{st.replaceAll("_", " ")}</option>)}</select></td><td>{money(l.est_value)}</td><td onClick={e => e.stopPropagation()}><select value={l.owner_id || ""} style={{ width: 130, padding: "3px 5px", fontSize: 12.5 }} onChange={async e => { await api(`/api/leads/${l.id}`, { method: "PATCH", body: { owner_id: e.target.value || null } }); setData({ ...data, items: data.items.map((x: any) => x.id === l.id ? { ...x, owner_id: e.target.value, owner_name: users.find((u: any) => u.id === e.target.value)?.name } : x) }); }}><option value="">Unassigned</option>{users.map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}</select></td><td>{l.next_action || "—"}<br /><span className="muted">{dOnly(l.next_action_due_at)}</span></td><td>{dOnly(l.created_at)}</td></tr>)}
       {data.items.length === 0 && <tr><td colSpan={7} className="muted">No leads match these filters.</td></tr>}
     </tbody></table><Pager /></div>) : (
@@ -242,6 +243,8 @@ function LeadDetail({ id, users, priceBook, close, refresh }: any) {
   const [items, setItems] = useState<any[]>([]); const [check, setCheck] = useState<any>(null); const [tab, setTab] = useState("details");
   const [finalPick, setFinalPick] = useState<any>(null); // {to, reason, confirm}
   const [validDays, setValidDays] = useState(30); const [useOpts, setUseOpts] = useState(false); const [optB, setOptB] = useState<any[]>([]); const [optC, setOptC] = useState<any[]>([]);
+  const [docTpls, setDocTpls] = useState<any[]>([]); const [docTpl, setDocTpl] = useState("");
+  useEffect(() => { api("/api/doc-templates").then((l: any[]) => { setDocTpls(l); const d = l.find((t: any) => t.is_default) || l[0]; if (d) setDocTpl(d.id); }).catch(() => {}); }, []);
   const load = () => { api("/api/leads/" + id).then(r => { setD(r); setEdit({ ...r.lead }); }).catch(e => setMsg(e.message)); };
   useEffect(load, [id]);
   if (!d) return <div className="modalWrap"><div className="modal">Loading… {msg}</div></div>;
@@ -252,7 +255,7 @@ function LeadDetail({ id, users, priceBook, close, refresh }: any) {
   const transit = async (to: string, extra: any = {}) => { try { await api(`/api/leads/${id}/transition`, { method: "POST", body: { to_state: to, ...extra } }); setMsg("Moved ✓"); load(); refresh && refresh(); } catch (e: any) { setMsg(e.message); } };
   const stageTo = async (to: string, extra: any = {}) => { try { await api(`/api/leads/${id}/stage`, { method: "POST", body: { to, ...extra } }); setMsg(`Moved to ${to.replaceAll("_", " ")} ✓`); setFinalPick(null); load(); refresh && refresh(); } catch (e: any) { if (e.message === "reason_required") { setFinalPick({ to, reason: "", confirm: false }); setMsg(`${to.replaceAll("_", " ")} needs a reason — pick one below.`); } else if (e.message === "won_needs_confirmation") { setFinalPick({ to: "WON", reason: "", confirm: false }); setMsg("No signed proposal on this lead — confirm below if this is a verbal/legacy win."); } else setMsg(e.message); } };
   const applyFinal = async () => { if (!finalPick) return; const extra: any = {}; if (finalPick.reason) extra.lost_reason = finalPick.reason; if (finalPick.to === "WON" && finalPick.confirm) extra.confirm_no_proposal = true; await stageTo(finalPick.to, extra); };
-  const buildProposal = async () => { try { const clean = items.filter(i => i.price_book_item_id); if (!clean.length) return setMsg("Add at least one price-book line item"); const body: any = { line_items: clean.map(i => ({ price_book_item_id: i.price_book_item_id, qty: Number(i.qty) || 1 })), valid_days: validDays || undefined };
+  const buildProposal = async () => { try { const clean = items.filter(i => i.price_book_item_id); if (!clean.length) return setMsg("Add at least one price-book line item"); const body: any = { line_items: clean.map(i => ({ price_book_item_id: i.price_book_item_id, qty: Number(i.qty) || 1 })), valid_days: validDays || undefined, template_id: docTpl || undefined };
     if (useOpts) { const mk = (arr: any[]) => arr.filter(i => i.price_book_item_id).map(i => ({ price_book_item_id: i.price_book_item_id, qty: Number(i.qty) || 1 })); const b2 = mk(optB), c2 = mk(optC); if (!b2.length && !c2.length) return setMsg("Options need at least one priced option with line items"); body.options = [{ name: "Essential", line_items: body.line_items }, ...(b2.length ? [{ name: "Recommended", line_items: b2 }] : []), ...(c2.length ? [{ name: "Complete", line_items: c2 }] : [])]; }
     await api(`/api/leads/${id}/proposals`, { method: "POST", body }); setMsg(useOpts ? "Proposal drafted with options ✓ — the customer picks one on the sign page" : "Proposal drafted from price book ✓"); setItems([]); setOptB([]); setOptC([]); load(); } catch (e: any) { setMsg(e.message); } };
   const optEditor = (arr: any[], setArr: any, label: string) => <div style={{ border: "1px dashed #cbd5e1", borderRadius: 8, padding: 8, marginTop: 6 }}><b style={{ fontSize: 13 }}>{label}</b>{arr.map((it: any, i: number) => <div className="rowflex" key={i} style={{ marginTop: 4 }}><select style={{ flex: 2 }} value={it.price_book_item_id || ""} onChange={e => { const n = [...arr]; n[i] = { ...n[i], price_book_item_id: e.target.value }; setArr(n); }}><option value="">Choose item…</option>{priceBook.map((pb: any) => <option key={pb.id} value={pb.id}>{pb.name} — {money(pb.standard_price)}</option>)}</select><input style={{ width: 60 }} type="number" value={it.qty || 1} onChange={e => { const n = [...arr]; n[i] = { ...n[i], qty: e.target.value }; setArr(n); }} /><button className="btn ghost small" onClick={() => setArr(arr.filter((_: any, x: number) => x !== i))}>✕</button></div>)}<button className="btn ghost small" style={{ marginTop: 4 }} onClick={() => setArr([...arr, { qty: 1 }])}>+ Line</button></div>;
@@ -323,7 +326,7 @@ function LeadDetail({ id, users, priceBook, close, refresh }: any) {
         <label className="f">Build proposal — price book only</label>
         {items.map((it, i) => <div className="rowflex" key={i}><select style={{ flex: 2 }} value={it.price_book_item_id || ""} onChange={e => { const n = [...items]; n[i] = { ...n[i], price_book_item_id: e.target.value }; setItems(n); }}><option value="">Choose item…</option>{priceBook.map((pb: any) => <option key={pb.id} value={pb.id}>{pb.name} — {money(pb.standard_price)}</option>)}</select><input style={{ width: 70 }} type="number" value={it.qty || 1} onChange={e => { const n = [...items]; n[i] = { ...n[i], qty: e.target.value }; setItems(n); }} /><button className="btn ghost small" onClick={() => setItems(items.filter((_, x) => x !== i))}>✕</button></div>)}
         {useOpts && <div>{optEditor(optB, setOptB, "Option B — Recommended")}{optEditor(optC, setOptC, "Option C — Complete")}<p className="muted" style={{ fontSize: 12 }}>Option A “Essential” = the lines above. The customer picks one option when signing; the job is priced from their pick.</p></div>}
-        <div className="rowflex" style={{ marginTop: 8 }}><button className="btn ghost small" onClick={() => setItems([...items, { qty: 1 }])}>+ Line item</button><label className="muted" style={{ fontSize: 12.5 }}>Valid <input type="number" style={{ width: 60 }} value={validDays} onChange={e => setValidDays(Number(e.target.value) || 0)} /> days</label><label className="muted" style={{ fontSize: 12.5 }}><input type="checkbox" style={{ width: "auto" }} checked={useOpts} onChange={e => setUseOpts(e.target.checked)} /> Offer options (Good / Better / Best)</label><button className="btn small" onClick={buildProposal}>Draft proposal</button></div></div>
+        <div className="rowflex" style={{ marginTop: 8 }}><button className="btn ghost small" onClick={() => setItems([...items, { qty: 1 }])}>+ Line item</button><label className="muted" style={{ fontSize: 12.5 }}>Valid <input type="number" style={{ width: 60 }} value={validDays} onChange={e => setValidDays(Number(e.target.value) || 0)} /> days</label><label className="muted" style={{ fontSize: 12.5 }}><input type="checkbox" style={{ width: "auto" }} checked={useOpts} onChange={e => setUseOpts(e.target.checked)} /> Offer options (Good / Better / Best)</label>{docTpls.length > 0 && <label className="muted" style={{ fontSize: 12.5 }}>Template <select style={{ width: 190 }} value={docTpl} onChange={e => setDocTpl(e.target.value)}>{docTpls.map(t => <option key={t.id} value={t.id}>{t.name}{t.is_default ? " ⭐" : ""}</option>)}</select></label>}<button className="btn small" onClick={buildProposal}>Draft proposal</button></div></div>
       <div className="card"><h3>Documents & visits</h3>
         {d.documents.map((doc: any) => <div className="check" key={doc.id}><span className={`st ${doc.status === "received" ? "pass" : "fail"}`}>{doc.status === "received" ? "✓" : "✗"}</span><span style={{ flex: 1 }}>{doc.name}</span>{doc.status !== "received" && <button className="btn ghost small" onClick={async () => { await api(`/api/documents/${doc.id}`, { method: "PATCH", body: { status: "received" } }); load(); }}>Mark received</button>}</div>)}
         {d.site_visits.map((v: any) => <p key={v.id} className="muted" style={{ margin: "4px 0" }}>📍 Visit {dt(v.scheduled_at)} — {v.status}</p>)}
@@ -675,7 +678,7 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any)
     </tbody></table>
       <div className="rowflex" style={{ marginTop: 12 }}><input style={{ flex: 2 }} placeholder="New item name" value={nb.name} onChange={e => setNb({ ...nb, name: e.target.value })} /><input style={{ width: 90 }} placeholder="unit" value={nb.unit} onChange={e => setNb({ ...nb, unit: e.target.value })} /><input style={{ width: 120 }} type="number" placeholder="standard $" value={nb.standard_price} onChange={e => setNb({ ...nb, standard_price: e.target.value })} /><input style={{ width: 120 }} type="number" placeholder="floor $" value={nb.floor_price} onChange={e => setNb({ ...nb, floor_price: e.target.value })} /><button className="btn" onClick={async () => { await api("/api/price-book", { method: "POST", body: { ...nb, standard_price: Number(nb.standard_price) || 0, floor_price: Number(nb.floor_price) || 0 } }); setNb({ name: "", unit: "job", standard_price: "", floor_price: "" }); loadAll(); }}>Add item</button></div>
       <p className="muted">Proposals can only price from this book — the floor is the margin guardrail the Approval Gate enforces.</p></div>}
-    {tab === "templates" && canSettings && <div className="card"><ProposalTemplateEditor /><h3>Message templates</h3>{tpls.map(t => <div key={t.id} style={{ borderBottom: "1px solid #eef2f7", padding: "10px 0" }}><b>{t.name}</b> <span className="muted">· {t.kind} · v{t.version} · {t.active ? "active" : "inactive"}</span>{tplEdit?.id === t.id ? <><textarea rows={5} value={tplEdit.body} onChange={e => setTplEdit({ ...tplEdit, body: e.target.value })} /><span className="rowflex" style={{ marginTop: 6 }}><button className="btn small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "PATCH", body: { body: tplEdit.body } }); setTplEdit(null); loadAll(); }}>Save</button><button className="btn ghost small" onClick={() => setTplEdit(null)}>Cancel</button></span></> : <><p className="muted" style={{ whiteSpace: "pre-wrap" }}>{t.body}</p><button className="btn ghost small" onClick={() => setTplEdit({ id: t.id, body: t.body })}>Edit</button></>} <button className="btn ghost small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></div>)}
+    {tab === "templates" && canSettings && <div className="card"><DocTemplatesEditor /><h3>Message templates</h3>{tpls.map(t => <div key={t.id} style={{ borderBottom: "1px solid #eef2f7", padding: "10px 0" }}><b>{t.name}</b> <span className="muted">· {t.kind} · v{t.version} · {t.active ? "active" : "inactive"}</span>{tplEdit?.id === t.id ? <><textarea rows={5} value={tplEdit.body} onChange={e => setTplEdit({ ...tplEdit, body: e.target.value })} /><span className="rowflex" style={{ marginTop: 6 }}><button className="btn small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "PATCH", body: { body: tplEdit.body } }); setTplEdit(null); loadAll(); }}>Save</button><button className="btn ghost small" onClick={() => setTplEdit(null)}>Cancel</button></span></> : <><p className="muted" style={{ whiteSpace: "pre-wrap" }}>{t.body}</p><button className="btn ghost small" onClick={() => setTplEdit({ id: t.id, body: t.body })}>Edit</button></>} <button className="btn ghost small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></div>)}
       <div className="formgrid" style={{ marginTop: 12 }}><div><label className="f">New template name</label><input value={nt.name} onChange={e => setNt({ ...nt, name: e.target.value })} /></div><div className="full"><label className="f">Body (merge fields: {"{{contact_name}} {{service}} {{total}}"})</label><textarea rows={4} value={nt.body} onChange={e => setNt({ ...nt, body: e.target.value })} /></div></div>
       <button className="btn" style={{ marginTop: 10 }} onClick={async () => { await api("/api/templates", { method: "POST", body: nt }); setNt({ name: "", body: "" }); loadAll(); }}>Add template</button></div>}
     {tab === "services" && canSettings && <div className="card">{svcs.map(sv => <div className="check" key={sv.id}><span className={`st ${sv.active ? "pass" : "fail"}`}>{sv.active ? "✓" : "✗"}</span><span style={{ flex: 1 }}>{sv.name} {sv.is_catalog ? "" : "(not in catalog — Demand Gap territory)"}</span><button className="btn ghost small" onClick={async () => { await api(`/api/services/${sv.id}`, { method: "PATCH", body: { active: !sv.active } }); loadAll(); }}>{sv.active ? "Deactivate" : "Activate"}</button></div>)}
@@ -957,6 +960,8 @@ function RichText({ value, onChange, minH }: any) {
       <button type="button" className="btn ghost small" onClick={() => cmd("underline")}><u>U</u></button>
       <button type="button" className="btn ghost small" onClick={() => cmd("formatBlock", "h3")}>Heading</button>
       <button type="button" className="btn ghost small" onClick={() => cmd("insertUnorderedList")}>• List</button>
+      <button type="button" className="btn ghost small" onClick={() => { const u = prompt("Image URL (https://…)"); if (u) { cmd("insertHTML", `<img src="${u.replaceAll('"', "")}" style="max-width:100%">`); onChange(ref.current?.innerHTML || ""); } }}>🖼 URL</button>
+      <button type="button" className="btn ghost small" onClick={() => { const inp = document.createElement("input"); inp.type = "file"; inp.accept = "image/*"; inp.onchange = () => { const f = inp.files?.[0]; if (!f) return; const img = new Image(); img.onload = () => { const c = document.createElement("canvas"); const sc = Math.min(1, 900 / img.width); c.width = Math.round(img.width * sc); c.height = Math.round(img.height * sc); c.getContext("2d")?.drawImage(img, 0, 0, c.width, c.height); cmd("insertHTML", `<img src="${c.toDataURL("image/jpeg", 0.82)}" style="max-width:100%">`); onChange(ref.current?.innerHTML || ""); }; img.src = URL.createObjectURL(f); }; inp.click(); }}>🖼 Upload</button>
       <span className="muted" style={{ marginLeft: 6 }}>Insert:</span>
       {["{customer}", "{service}", "{total}", "{date}", "{ref}", "{business}", "{location}"].map(f => <button type="button" key={f} className="btn ghost small" onClick={() => insert(f)}>{f}</button>)}
     </div>
@@ -964,40 +969,62 @@ function RichText({ value, onChange, minH }: any) {
   </div>);
 }
 
-function ProposalTemplateEditor() {
-  const [t, setT] = useState<any>(null); const [saved, setSaved] = useState(""); const [showPrev, setShowPrev] = useState(false);
-  useEffect(() => { api("/api/proposal-template").then(setT).catch(() => {}); }, []);
-  if (!t) return <p className="muted">Loading proposal template…</p>;
-  const save = async () => { const r = await api("/api/proposal-template", { method: "PUT", body: t }); setT(r); setSaved("Proposal template saved ✓ — new printouts, DOCX exports, and sign pages use it immediately."); };
-  const sample = (x: string) => String(x || "").replaceAll("{customer}", "Angela Ruiz").replaceAll("{service}", "Mold remediation").replaceAll("{total}", "$4,800.00").replaceAll("{date}", "Nov 9, 2026").replaceAll("{ref}", "PROP-7K2QX9").replaceAll("{business}", t.company || "Your Company").replaceAll("{location}", "Bay Shore, NY");
-  return (<div style={{ borderBottom: "2px solid #eef2f7", paddingBottom: 16, marginBottom: 6 }}>
-    <h3 style={{ marginTop: 0 }}>📄 Proposal document template</h3>
-    <p className="muted">Every proposal prints, downloads (DOCX), and signs on this template: your company header on top, your words before and after the price-book table, your footer on every page. Set it once — every proposal in the flow uses it.</p>
-    {saved && <div className="ok">{saved}</div>}
-    <div className="formgrid">
-      <div><label className="f">Company name (header)</label><input value={t.company} onChange={e => setT({ ...t, company: e.target.value })} /></div>
-      <div><label className="f">Tagline</label><input value={t.tagline} onChange={e => setT({ ...t, tagline: e.target.value })} placeholder="Licensed · Insured · Since 1998" /></div>
-      <div><label className="f">Header contact line</label><input value={t.contact_line} onChange={e => setT({ ...t, contact_line: e.target.value })} placeholder="(516) 555-0100 · hello@company.com · company.com" /></div>
-      <div><label className="f">Header address line</label><input value={t.address} onChange={e => setT({ ...t, address: e.target.value })} placeholder="123 Main St, Bay Shore, NY 11706" /></div>
-      <div className="full"><label className="f">Intro — printed above the line items</label><RichText value={t.intro_html} onChange={(v: string) => setT({ ...t, intro_html: v })} /></div>
-      <div className="full"><label className="f">Terms & conditions — printed below the total</label><RichText value={t.terms_html} onChange={(v: string) => setT({ ...t, terms_html: v })} /></div>
-      <div className="full"><label className="f">Footer — bottom of every page</label><input value={t.footer} onChange={e => setT({ ...t, footer: e.target.value })} /></div>
+function DocTemplatesEditor() {
+  const [list, setList] = useState<any[]>([]); const [selId, setSelId] = useState(""); const [form, setForm] = useState<any>(null);
+  const [head, setHead] = useState<any>(null); const [msg, setMsg] = useState(""); const [showPrev, setShowPrev] = useState(false);
+  const load = async (keep?: string) => { const l = await api("/api/doc-templates").catch(() => []); setList(l); const pick = l.find((t: any) => t.id === (keep || selId)) || l.find((t: any) => t.is_default) || l[0]; if (pick) { setSelId(pick.id); setForm({ name: pick.name, intro_html: pick.intro_html, terms_html: pick.terms_html, footer: pick.footer, include_logo: !!pick.include_logo }); } };
+  useEffect(() => { load(); api("/api/proposal-template").then(setHead).catch(() => {}); }, []);
+  const sel = list.find(t => t.id === selId);
+  const sample = (h: string) => String(h || "").replaceAll("{customer}", "Angela Ruiz").replaceAll("{service}", "Mold remediation").replaceAll("{total}", "$4,800.00").replaceAll("{date}", "Nov 10, 2026").replaceAll("{ref}", "PROP-7K2QX9").replaceAll("{business}", head?.company || "Your Company").replaceAll("{location}", "Bay Shore, NY");
+  const pickFile = (cb: (d: string) => void, maxW = 480) => { const inp = document.createElement("input"); inp.type = "file"; inp.accept = "image/*"; inp.onchange = () => { const f = inp.files?.[0]; if (!f) return; const img = new Image(); img.onload = () => { const c = document.createElement("canvas"); const sc = Math.min(1, maxW / img.width); c.width = Math.round(img.width * sc); c.height = Math.round(img.height * sc); c.getContext("2d")?.drawImage(img, 0, 0, c.width, c.height); cb(c.toDataURL("image/png")); }; img.src = URL.createObjectURL(f); }; inp.click(); };
+  if (!form || !head) return <p className="muted">Loading templates…</p>;
+  return (<div>
+    <h3 style={{ marginTop: 0 }}>Proposal templates — a variety, not just one</h3>
+    <p className="muted">Every proposal picks a template when it's built — different words for a homeowner, a school district, or a government bid. The header (company, logo) is shared; intro, terms, and footer live on each template. Printouts, DOCX, and the customer's sign page all render the chosen template.</p>
+    {msg && <div className="ok">{msg}</div>}
+    <div className="card" style={{ background: "#f8fafc" }}><b>Company header & logo (shared by all templates)</b>
+      <div className="formgrid" style={{ marginTop: 8 }}>
+        <div><label className="f">Company name</label><input value={head.company || ""} onChange={e => setHead({ ...head, company: e.target.value })} /></div>
+        <div><label className="f">Tagline</label><input value={head.tagline || ""} onChange={e => setHead({ ...head, tagline: e.target.value })} /></div>
+        <div><label className="f">Contact line</label><input value={head.contact_line || ""} onChange={e => setHead({ ...head, contact_line: e.target.value })} /></div>
+        <div><label className="f">Address line</label><input value={head.address || ""} onChange={e => setHead({ ...head, address: e.target.value })} /></div>
+      </div>
+      <div className="rowflex" style={{ marginTop: 10 }}>{head.logo ? <img src={head.logo} alt="logo" style={{ maxHeight: 54, maxWidth: 200, border: "1px solid #e5e7eb", borderRadius: 6, padding: 4, background: "#fff" }} /> : <span className="muted">No logo yet</span>}
+        <button className="btn ghost small" onClick={() => pickFile(d => setHead({ ...head, logo: d }))}>{head.logo ? "Replace logo" : "Upload logo"}</button>
+        {head.logo && <button className="btn ghost small" onClick={() => setHead({ ...head, logo: null })}>Remove</button>}
+        <button className="btn small" onClick={async () => { const r = await api("/api/proposal-template", { method: "PUT", body: { company: head.company, tagline: head.tagline, contact_line: head.contact_line, address: head.address, intro_html: head.intro_html || "", terms_html: head.terms_html || "", footer: head.footer || "", logo_data: head.logo ?? null } }); setHead(r); setMsg("Header & logo saved ✓"); }}>Save header & logo</button></div>
     </div>
-    <div className="rowflex" style={{ marginTop: 10 }}><button className="btn" onClick={save}>Save proposal template</button><button className="btn ghost" onClick={() => setShowPrev(!showPrev)}>{showPrev ? "Hide preview" : "Preview with sample data"}</button>{t.customized ? <span className="st pass">customized</span> : <span className="st warn">using starter wording — make it yours</span>}</div>
+    <div className="rowflex" style={{ margin: "14px 0 8px" }}>
+      {list.map(t => <button key={t.id} className={`chip ${selId === t.id ? "on" : ""}`} onClick={() => { setSelId(t.id); setForm({ name: t.name, intro_html: t.intro_html, terms_html: t.terms_html, footer: t.footer, include_logo: !!t.include_logo }); }}>{t.name}{t.is_default ? " ⭐ default" : ""}</button>)}
+      <button className="btn ghost small" onClick={async () => { const t = await api("/api/doc-templates", { method: "POST", body: { name: "New template" } }); await load(t.id); setMsg("Template added — make it yours and save"); }}>+ New</button>
+      <button className="btn ghost small" onClick={async () => { const t = await api("/api/doc-templates", { method: "POST", body: { from_id: selId } }); await load(t.id); setMsg("Duplicated ✓"); }}>Duplicate</button>
+      {list.length > 1 && <button className="btn ghost small" onClick={async () => { if (!confirm(`Delete "${sel?.name}"? Proposals already built keep the template they were built with in their history.`)) return; await api("/api/doc-templates/" + selId, { method: "DELETE" }); setSelId(""); await load(""); setMsg("Deleted ✓"); }}>Delete</button>}
+    </div>
+    <div className="formgrid">
+      <div><label className="f">Template name</label><input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></div>
+      <div><label className="f">Logo on this template</label><label className="check" style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}><input type="checkbox" style={{ width: "auto" }} checked={!!form.include_logo} onChange={e => setForm({ ...form, include_logo: e.target.checked })} /> Print the company logo at the top</label></div>
+      <div className="full"><label className="f">Intro — above the line items</label><RichText value={form.intro_html} onChange={(v: string) => setForm({ ...form, intro_html: v })} /></div>
+      <div className="full"><label className="f">Terms & conditions — below the total</label><RichText value={form.terms_html} onChange={(v: string) => setForm({ ...form, terms_html: v })} /></div>
+      <div className="full"><label className="f">Footer</label><input value={form.footer} onChange={e => setForm({ ...form, footer: e.target.value })} /></div>
+    </div>
+    <div className="rowflex" style={{ marginTop: 10 }}>
+      <button className="btn" onClick={async () => { const t = await api("/api/doc-templates/" + selId, { method: "PATCH", body: form }); await load(t.id); setMsg("Template saved ✓ — pick it when building a proposal"); }}>Save template</button>
+      {!sel?.is_default && <button className="btn ghost" onClick={async () => { await api("/api/doc-templates/" + selId, { method: "PATCH", body: { is_default: true } }); await load(selId); setMsg("Set as the default ✓ — new proposals preselect it"); }}>⭐ Make default</button>}
+      <button className="btn ghost" onClick={() => setShowPrev(!showPrev)}>{showPrev ? "Hide preview" : "Preview with sample data"}</button>
+    </div>
     {showPrev && <div className="printdoc" style={{ marginTop: 14, border: "1px solid #dbe4ee" }}>
-      <div className="pd-head"><div className="pd-company">{t.company}</div>{t.tagline && <div className="pd-tag">{t.tagline}</div>}{t.contact_line && <div className="pd-meta">{t.contact_line}</div>}{t.address && <div className="pd-meta">{t.address}</div>}</div>
+      <div className="pd-head">{form.include_logo && head.logo && <img src={head.logo} alt="" style={{ maxHeight: 60, maxWidth: 220, marginBottom: 6 }} />}<div className="pd-company">{head.company}</div>{head.tagline && <div className="pd-tag">{head.tagline}</div>}{head.contact_line && <div className="pd-meta">{head.contact_line}</div>}{head.address && <div className="pd-meta">{head.address}</div>}</div>
       <h2>Proposal — Mold remediation · PROP-7K2QX9</h2>
-      <p className="pd-meta">Prepared for: Angela Ruiz · Bay Shore, NY · Nov 9, 2026</p>
-      <div dangerouslySetInnerHTML={{ __html: sample(t.intro_html) }} />
+      <p className="pd-meta">Prepared for: Angela Ruiz · Bay Shore, NY · Nov 10, 2026 · Template: {form.name}</p>
+      <div dangerouslySetInnerHTML={{ __html: sample(form.intro_html) }} />
       <table className="pd-table"><thead><tr><th>Item</th><th>Qty</th><th>Unit price</th><th>Amount</th></tr></thead><tbody><tr><td>Mold remediation — primary bath</td><td>1</td><td>$3,900.00</td><td>$3,900.00</td></tr><tr><td>HEPA air scrubber (per day)</td><td>3</td><td>$300.00</td><td>$900.00</td></tr></tbody></table>
       <p className="pd-total">Total: $4,800.00</p>
-      <h3>Terms & Conditions</h3><div dangerouslySetInnerHTML={{ __html: sample(t.terms_html) }} />
+      <h3>Terms & Conditions</h3><div dangerouslySetInnerHTML={{ __html: sample(form.terms_html) }} />
       <p className="pd-sign">Signature: ______________________________&nbsp;&nbsp;Name (print): ______________________________&nbsp;&nbsp;Date: ______________</p>
-      <div className="pd-foot">{sample(t.footer)}</div>
+      <div className="pd-foot">{sample(form.footer)}</div>
     </div>}
   </div>);
 }
-
 function PrintStatusReport() {
   const [r, setR] = useState<any>(null); const [ws, setWs] = useState<any>(null);
   useEffect(() => { const wk = new URLSearchParams(location.search).get("week") || ""; api("/api/status-report" + (wk ? "?week=" + wk : "")).then(setR).catch(() => {}); api("/api/settings").then(x => setWs(x.workspace)).catch(() => {}); }, []);
@@ -1031,8 +1058,8 @@ function PrintProposal({ id }: any) {
   const t = d.template;
   return (<div className="printdoc">
     <div className="noprint" style={{ marginBottom: 16 }}><button className="btn" onClick={() => window.print()}>🖨 Print / Save as PDF</button> <button className="btn ghost" onClick={() => window.close()}>Close</button></div>
-    <div className="pd-head"><div className="pd-company">{t.company}</div>{t.tagline && <div className="pd-tag">{t.tagline}</div>}{t.contact_line && <div className="pd-meta">{t.contact_line}</div>}{t.address && <div className="pd-meta">{t.address}</div>}</div>
-    <h2>Proposal — {d.lead.service_requested} · {d.ref}</h2>
+    <div className="pd-head">{t.logo && <img src={t.logo} alt="" style={{ maxHeight: 64, maxWidth: 240, marginBottom: 6 }} />}<div className="pd-company">{t.company}</div>{t.tagline && <div className="pd-tag">{t.tagline}</div>}{t.contact_line && <div className="pd-meta">{t.contact_line}</div>}{t.address && <div className="pd-meta">{t.address}</div>}</div>
+    <h2>Proposal — {d.lead.service_requested} · {d.ref}</h2>{t.name && <p className="pd-meta">Template: {t.name}</p>}
     <p className="pd-meta">Prepared for: {d.contact.name} ({d.contact.email || ""} {d.contact.phone || ""}) · Location: {d.lead.location || ""} · Date: {new Date(d.proposal.created_at).toLocaleDateString()} · Version {d.proposal.version}</p>
     <div dangerouslySetInnerHTML={{ __html: t.intro_html }} />
     {d.lead.notes && <><h3>Scope</h3><p style={{ whiteSpace: "pre-wrap" }}>{d.lead.notes}</p></>}
@@ -1162,13 +1189,13 @@ function CommandPalette({ close, go, openLead, newLead }: any) {
     { label: "Jobs", hint: "G then J", run: () => go({ view: "jobs" }) },
     { label: "Log time", hint: "T", run: () => (window as any).wpLogTime?.() },
     { label: "Customers", hint: "", run: () => go({ view: "customers" }) },
-    { label: "People", hint: "", run: () => go({ view: "people" }) },
+    { label: "People", hint: "", run: () => (window as any).wpGoTab?.("customers", "people") },
     { label: "Campaigns", hint: "", run: () => go({ view: "campaigns" }) },
-    { label: "Tasks", hint: "", run: () => go({ view: "tasks" }) },
-    { label: "Calendar", hint: "", run: () => go({ view: "calendar" }) },
-    { label: "Notes", hint: "", run: () => go({ view: "notes" }) },
-    { label: "Files & Documents", hint: "", run: () => go({ view: "files" }) },
-    { label: "Duplicates", hint: "", run: () => go({ view: "duplicates" }) },
+    { label: "Tasks", hint: "", run: () => (window as any).wpGoTab?.("planner", "tasks") },
+    { label: "Calendar", hint: "", run: () => (window as any).wpGoTab?.("planner", "calendar") },
+    { label: "Notes", hint: "", run: () => (window as any).wpGoTab?.("library", "notes") },
+    { label: "Files & Documents", hint: "", run: () => (window as any).wpGoTab?.("library", "files") },
+    { label: "Duplicates", hint: "", run: () => go({ view: "leads", leads: { mode: "dupes" } }) },
     { label: "My Day", hint: "G then M", run: () => go({ view: "myday" }) },
     { label: "Dashboard", hint: "G then D", run: () => go({ view: "dashboard" }) },
     { label: "Pulse — activity stream", hint: "G then P", run: () => go({ view: "pulse" }) },
@@ -1191,7 +1218,7 @@ function CommandPalette({ close, go, openLead, newLead }: any) {
   const items: any[] = [...(q ? [] : recents.map((l: any) => ({ label: `${l.contact_name || "Lead"} — ${l.service_requested || ""}`, sub: "Recent", run: () => openLead(l.id) }))), ...acts.map(a => ({ ...a, sub: "Go / do" })), ...leads.map((l: any) => ({ label: `${l.contact_name || "Lead"} — ${l.service_requested || ""}`, sub: "Lead · " + l.state, run: () => openLead(l.id) })),
     ...((gs?.jobs || []).map((j: any) => ({ label: `${j.contact_name || "Job"} — ${j.title}`, sub: "Job · " + j.sub, run: () => (window as any).wpOpenJob?.(j.id) }))),
     ...((gs?.accounts || []).map((a: any) => ({ label: a.title, sub: "Customer", run: () => (window as any).wpOpenAccount?.(a.id) }))),
-    ...((gs?.people || []).map((p: any) => ({ label: p.title, sub: "Person", run: () => go({ view: "people" }) }))),
+    ...((gs?.people || []).map((p: any) => ({ label: p.title, sub: "Person", run: () => (window as any).wpGoTab?.("customers", "people") }))),
     ...((gs?.campaigns || []).map((c: any) => ({ label: c.title, sub: "Campaign", run: () => go({ view: "campaigns" }) })))];
   useEffect(() => { setIdx(0); }, [q]);
   const pick = (it: any) => { if (it) { close(); it.run(); } };
@@ -1443,12 +1470,33 @@ function CustomFieldsSection({ objectType, entityId, custom, reload }: any) {
     </div><button className="btn ghost small" style={{ marginTop: 8 }} onClick={async () => { await api("/api/custom-values", { method: "POST", body: { object_type: objectType, entity_id: entityId, values: vals } }); setMsg("Custom fields saved ✓"); reload && reload(); }}>Save custom fields</button>{msg && <span className="muted" style={{ marginLeft: 8 }}>{msg}</span>}</div>);
 }
 
-function Customers({ openCustomer }: any) {
+function Planner({ openLead, tabSignal }: any) {
+  const [tab, setTab] = useState("tasks");
+  useEffect(() => { if (tabSignal?.view === "planner" && tabSignal.tab) setTab(tabSignal.tab); }, [tabSignal]);
+  return (<div><h2 className="pt">Planner</h2><p className="sub">Tasks and calendar together — what needs doing, and when. Click a day in the calendar to see its full agenda.</p>
+    <div className="tabs"><button className={tab === "tasks" ? "on" : ""} onClick={() => setTab("tasks")}>Tasks</button><button className={tab === "calendar" ? "on" : ""} onClick={() => setTab("calendar")}>Calendar</button></div>
+    {tab === "tasks" ? <TasksApp openLead={openLead} embedded /> : <CalendarView openLead={openLead} embedded />}
+  </div>);
+}
+
+function Library({ openLead, openJob, openCustomer, tabSignal }: any) {
+  const [tab, setTab] = useState("notes");
+  useEffect(() => { if (tabSignal?.view === "library" && tabSignal.tab) setTab(tabSignal.tab); }, [tabSignal]);
+  return (<div><h2 className="pt">Library</h2><p className="sub">Notes and files from every record, in one place.</p>
+    <div className="tabs"><button className={tab === "notes" ? "on" : ""} onClick={() => setTab("notes")}>Notes</button><button className={tab === "files" ? "on" : ""} onClick={() => setTab("files")}>Files & Documents</button></div>
+    {tab === "notes" ? <NotesApp openLead={openLead} openJob={openJob} openCustomer={openCustomer} embedded /> : <FilesApp openLead={openLead} openJob={openJob} embedded />}
+  </div>);
+}
+
+function Customers({ openCustomer, tabSignal }: any) {
+  const [ctab, setCtab] = useState("customers");
+  useEffect(() => { if (tabSignal?.view === "customers" && tabSignal.tab) setCtab(tabSignal.tab); }, [tabSignal]);
   const [rows, setRows] = useState<any[]>([]); const [q, setQ] = useState(""); const [form, setForm] = useState<any>({ name: "", phone: "", email: "" });
   const load = () => { api("/api/accounts").then(setRows).catch(() => {}); };
   useEffect(load, []);
   const list = rows.filter(a => !q || (a.name + a.email).toLowerCase().includes(q.toLowerCase()));
-  return (<div><h2 className="pt">Customers</h2><p className="sub">Every company you've won (or are building a relationship with) — leads convert into customers automatically when they sign. Lifetime value is real job value, not estimates.</p>
+  if (ctab === "people") return (<div><h2 className="pt">Customers & People</h2><div className="tabs"><button className="" onClick={() => setCtab("customers")}>Customers</button><button className="on" onClick={() => setCtab("people")}>People</button></div><People embedded /></div>);
+  return (<div><h2 className="pt">Customers & People</h2><div className="tabs"><button className="on" onClick={() => setCtab("customers")}>Customers</button><button className="" onClick={() => setCtab("people")}>People</button></div><p className="sub">Every company you've won (or are building a relationship with) — leads convert into customers automatically when they sign. Lifetime value is real job value, not estimates.</p>
     <div className="rowflex" style={{ marginBottom: 10 }}><input placeholder="Search customers…" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 300 }} /><span className="muted">{list.length} customers · {money(list.reduce((a, x) => a + (x.lifetime_value || 0), 0))} lifetime value</span></div>
     <div className="card" style={{ padding: 6 }}><table><thead><tr><th>Customer</th><th>People</th><th>Leads</th><th>Jobs</th><th>Lifetime value</th><th>Since</th></tr></thead><tbody>
       {list.map(a => <tr key={a.id} className="clickable" onClick={() => openCustomer(a.id)}><td><b>{a.name}</b><br /><span className="muted">{a.email || a.phone || ""}</span></td><td>{a.people_count}</td><td>{a.leads_count}</td><td>{a.jobs_count}</td><td><b>{money(a.lifetime_value)}</b></td><td>{dOnly(a.created_at)}</td></tr>)}
@@ -1481,12 +1529,12 @@ function CustomerDetail({ id, close, openLead, openJob }: any) {
   </div></div>);
 }
 
-function People() {
+function People({ embedded }: any) {
   const [rows, setRows] = useState<any[]>([]); const [accounts, setAccounts] = useState<any[]>([]); const [q, setQ] = useState(""); const [form, setForm] = useState<any>({ name: "", phone: "", email: "", title: "", account_id: "" });
   const load = () => { api("/api/people").then(setRows).catch(() => {}); api("/api/accounts").then(setAccounts).catch(() => {}); };
   useEffect(load, []);
   const list = rows.filter(p => !q || (p.name + p.email + (p.account_name || "")).toLowerCase().includes(q.toLowerCase()));
-  return (<div><h2 className="pt">People</h2><p className="sub">Every contact across customers and leads — the person behind the company.</p>
+  return (<div>{!embedded && <><h2 className="pt">People</h2><p className="sub">Every contact across customers and leads — the person behind the company.</p></>}
     <input placeholder="Search people…" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 300, marginBottom: 10 }} />
     <div className="card" style={{ padding: 6 }}><table><thead><tr><th>Name</th><th>Title</th><th>Customer</th><th>Phone</th><th>Email</th><th>Leads</th></tr></thead><tbody>
       {list.map(p => <tr key={p.id}><td><b>{p.name}</b>{p.is_customer ? " ⭐" : ""}</td><td>{p.title || "—"}</td><td>{p.account_name || <span className="muted">—</span>}</td><td>{p.phone || "—"}</td><td>{p.email || "—"}</td><td>{p.leads_count}</td></tr>)}
@@ -1518,11 +1566,11 @@ function Campaigns({ openLead }: any) {
   </div>);
 }
 
-function TasksApp({ openLead }: any) {
+function TasksApp({ openLead, embedded }: any) {
   const [f, setF] = useState("open"); const [rows, setRows] = useState<any[]>([]);
   const load = () => { api(`/api/tasks-all?filter=${f}`).then(setRows).catch(() => {}); };
   useEffect(load, [f]);
-  return (<div><h2 className="pt">Tasks</h2><p className="sub">Every open promise across every record — not buried inside leads.</p>
+  return (<div>{!embedded && <><h2 className="pt">Tasks</h2><p className="sub">Every open promise across every record — not buried inside leads.</p></>}
     <div className="rowflex" style={{ marginBottom: 10 }}>{[["mine", "Mine"], ["open", "All open"], ["overdue", "Overdue"], ["done", "Done"]].map(([k, l]) => <button key={k} className={`chip ${f === k ? "on" : ""}`} onClick={() => setF(k)}>{l}</button>)}</div>
     {rows.map(t => <div key={t.id} className="card" style={{ padding: "9px 14px", marginBottom: 7, display: "flex", gap: 10, alignItems: "center" }}><div style={{ flex: 1 }} className="clickable" onClick={() => t.lead_id && openLead(t.lead_id)}><b>{t.title}</b><br /><span className="muted">{t.contact_name || ""} — {t.service_requested || ""} · {t.assignee_name || "unassigned"} · due {dOnly(t.due_at)}{t.due_at && t.due_at < new Date().toISOString() && t.status === "open" ? " · ⚠ overdue" : ""}</span></div>
       {t.status === "open" && <button className="btn ghost small" onClick={async () => { await api(`/api/tasks/${t.id}/complete`, { method: "POST", body: {} }); load(); }}>✓ Done</button>}</div>)}
@@ -1530,27 +1578,42 @@ function TasksApp({ openLead }: any) {
   </div>);
 }
 
-function CalendarView({ openLead }: any) {
+function CalendarView({ openLead, embedded }: any) {
   const [cur, setCur] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
   const [evs, setEvs] = useState<any[]>([]);
-  useEffect(() => { const from = new Date(cur.getFullYear(), cur.getMonth(), 1).toISOString().slice(0, 10); const to = new Date(cur.getFullYear(), cur.getMonth() + 1, 0).toISOString().slice(0, 10); api(`/api/calendar?from=${from}&to=${to}`).then(setEvs).catch(() => {}); }, [cur]);
+  const [sel, setSel] = useState(() => new Date().toISOString().slice(0, 10));
+  const [kindF, setKindF] = useState("all");
+  const [showDone, setShowDone] = useState(true);
+  useEffect(() => { const from = new Date(cur.getFullYear(), cur.getMonth(), 1).toISOString().slice(0, 10); const to = new Date(cur.getFullYear(), cur.getMonth() + 1, 0).toISOString().slice(0, 10); api(`/api/calendar?from=${from}&to=${to}&done=1`).then(setEvs).catch(() => {}); }, [cur]);
   const y = cur.getFullYear(), m = cur.getMonth(); const first = new Date(y, m, 1).getDay(); const days = new Date(y, m + 1, 0).getDate();
   const cells: any[] = [...Array(first).fill(null), ...[...Array(days)].map((_, i) => i + 1)];
-  const byDay = (d: number) => evs.filter(e => e.date === `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`);
+  const dstr = (d: number) => `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  const KINDS: Record<string, [string, string]> = { task: ["✅", "Task"], task_done: ["☑️", "Task done"], callback: ["📞", "Callback"], schedule: ["👷", "Crew on site"], followup: ["🔁", "Follow-up"], visit: ["📍", "Site visit"] };
+  const visible = evs.filter(e => (showDone || e.kind !== "task_done") && (kindF === "all" || e.kind === kindF || (kindF === "task" && e.kind === "task_done")));
+  const byDay = (d: number) => visible.filter(e => e.date === dstr(d));
+  const dayList = visible.filter(e => e.date === sel).sort((a, b) => (KINDS[a.kind]?.[1] || "").localeCompare(KINDS[b.kind]?.[1] || ""));
   const todayStr = new Date().toISOString().slice(0, 10);
-  return (<div><h2 className="pt">Calendar</h2><p className="sub">Tasks, callbacks, crew schedule, follow-ups, and site visits — one calendar, like it should be.</p>
-    <div className="rowflex" style={{ marginBottom: 10 }}><button className="btn ghost small" onClick={() => setCur(new Date(y, m - 1, 1))}>← Prev</button><b style={{ fontSize: 16 }}>{cur.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</b><button className="btn ghost small" onClick={() => setCur(new Date(y, m + 1, 1))}>Next →</button><button className="btn ghost small" onClick={() => setCur(new Date(new Date().getFullYear(), new Date().getMonth(), 1))}>Today</button><span className="muted">{evs.length} events this month</span></div>
+  const counts = (k: string) => evs.filter(e => k === "all" || e.kind === k || (k === "task" && e.kind === "task_done")).length;
+  return (<div>{!embedded && <><h2 className="pt">Calendar</h2><p className="sub">Everything dated in the business — tasks, callbacks, crew schedule, follow-ups, site visits. <b>Click a day to see its full agenda</b>; open records from the agenda, never by accident.</p></>}
+    <div className="rowflex" style={{ marginBottom: 8 }}><button className="btn ghost small" onClick={() => setCur(new Date(y, m - 1, 1))}>← Prev</button><b style={{ fontSize: 16 }}>{cur.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</b><button className="btn ghost small" onClick={() => setCur(new Date(y, m + 1, 1))}>Next →</button><button className="btn ghost small" onClick={() => { const t = new Date(); setCur(new Date(t.getFullYear(), t.getMonth(), 1)); setSel(todayStr); }}>Today</button><span className="muted">{visible.length} items shown</span>
+      <label className="muted" style={{ fontSize: 12.5 }}><input type="checkbox" style={{ width: "auto" }} checked={showDone} onChange={e => setShowDone(e.target.checked)} /> Show completed</label></div>
+    <div className="rowflex" style={{ marginBottom: 10 }}>{[["all", "All"], ["task", "Tasks"], ["callback", "Callbacks"], ["schedule", "Crew"], ["followup", "Follow-ups"], ["visit", "Visits"]].map(([k, l]) => <button key={k} className={`chip ${kindF === k ? "on" : ""}`} onClick={() => setKindF(k)}>{l} ({counts(k)})</button>)}</div>
     <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 6 }}>{["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(d => <div key={d} className="muted" style={{ fontSize: 12, textAlign: "center" }}>{d}</div>)}
-      {cells.map((d, i) => <div key={i} style={{ minHeight: 92, background: d ? "#fff" : "transparent", border: d ? "1px solid #e5e7eb" : "none", borderRadius: 8, padding: 5, outline: d && `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}` === todayStr ? "2px solid #166534" : "none" }}>{d && <><b style={{ fontSize: 12 }}>{d}</b>{byDay(d).slice(0, 3).map(e => <div key={e.id} className="clickable" onClick={() => e.lead_id && openLead(e.lead_id)} style={{ fontSize: 11, background: "#f0fdf4", borderRadius: 5, padding: "2px 4px", marginTop: 3, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }} title={e.title + " — " + e.sub}>{e.title}</div>)}{byDay(d).length > 3 && <div className="muted" style={{ fontSize: 11 }}>+{byDay(d).length - 3} more</div>}</>}</div>)}
+      {cells.map((d, i) => <div key={i} onClick={() => d && setSel(dstr(d))} style={{ minHeight: 92, background: d ? (sel === dstr(d) ? "#f0fdf4" : "#fff") : "transparent", border: d ? "1px solid #e5e7eb" : "none", borderRadius: 8, padding: 5, cursor: d ? "pointer" : "default", outline: d && sel === dstr(d) ? "2px solid #166534" : d && dstr(d) === todayStr ? "2px solid #94a3b8" : "none" }}>{d && <><b style={{ fontSize: 12 }}>{d}{dstr(d) === todayStr ? " · today" : ""}</b>{byDay(d).slice(0, 3).map(e => <div key={e.id} style={{ fontSize: 11, background: e.kind === "task_done" ? "#f1f5f9" : "#f0fdf4", color: e.kind === "task_done" ? "#64748b" : "inherit", textDecoration: e.kind === "task_done" ? "line-through" : "none", borderRadius: 5, padding: "2px 4px", marginTop: 3, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }} title={e.title + " — " + e.sub}>{KINDS[e.kind]?.[0] || "•"} {e.title}</div>)}{byDay(d).length > 3 && <div className="muted" style={{ fontSize: 11 }}>+{byDay(d).length - 3} more — click the day</div>}</>}</div>)}
+    </div>
+    <div className="card" style={{ marginTop: 14 }}><h3 style={{ marginTop: 0 }}>📋 Agenda — {new Date(sel + "T12:00:00").toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })} ({dayList.length})</h3>
+      {dayList.map(e => <div key={e.id} style={{ display: "flex", gap: 10, alignItems: "center", padding: "8px 0", borderBottom: "1px solid #eef2f7" }}><span style={{ fontSize: 17 }}>{KINDS[e.kind]?.[0] || "•"}</span><div style={{ flex: 1, minWidth: 0 }}><b style={{ textDecoration: e.kind === "task_done" ? "line-through" : "none" }}>{e.title}</b> <span className="tinyBadge">{KINDS[e.kind]?.[1] || e.kind}</span><br /><span className="muted">{e.sub}</span></div>
+        {e.kind === "task" && <button className="btn ghost small" onClick={async () => { await api(`/api/tasks/${e.id.slice(4)}/complete`, { method: "POST", body: {} }); const from = new Date(cur.getFullYear(), cur.getMonth(), 1).toISOString().slice(0, 10); const to = new Date(cur.getFullYear(), cur.getMonth() + 1, 0).toISOString().slice(0, 10); api(`/api/calendar?from=${from}&to=${to}&done=1`).then(setEvs).catch(() => {}); }}>✓ Done</button>}
+        {e.lead_id && <button className="btn small" onClick={() => openLead(e.lead_id)}>Open record →</button>}</div>)}
+      {dayList.length === 0 && <p className="muted">Nothing scheduled this day{kindF !== "all" ? " for this filter" : ""}. Click any other day to see its agenda.</p>}
     </div></div>);
 }
-
-function NotesApp({ openLead, openJob, openCustomer }: any) {
+function NotesApp({ openLead, openJob, openCustomer, embedded }: any) {
   const [rows, setRows] = useState<any[]>([]);
   const load = () => { api("/api/notes").then(setRows).catch(() => {}); };
   useEffect(load, []);
   const open = (n: any) => { if (!n.entity_id) return; if (n.entity_type === "lead") openLead(n.entity_id); else if (n.entity_type === "job") openJob(n.entity_id); else if (n.entity_type === "account") openCustomer(n.entity_id); };
-  return (<div><h2 className="pt">Notes</h2><p className="sub">Every note on every record, in one place.</p>
+  return (<div>{!embedded && <><h2 className="pt">Notes</h2><p className="sub">Every note on every record, in one place.</p></>}
     {rows.map(n => <div key={n.id} className="card" style={{ padding: "10px 14px", marginBottom: 8 }}><div className="rowflex" style={{ justifyContent: "space-between" }}><b>{n.title || "Note"}</b><span className="muted" style={{ fontSize: 12 }}>{n.user_name || ""} · {dt(n.created_at)}</span></div>
       <p style={{ margin: "4px 0", whiteSpace: "pre-wrap" }}>{n.body}</p>
       {n.entity_id && <button className="btn ghost small" onClick={() => open(n)}>Open: {n.entity_label}</button>}
@@ -1559,11 +1622,11 @@ function NotesApp({ openLead, openJob, openCustomer }: any) {
   </div>);
 }
 
-function FilesApp({ openLead, openJob }: any) {
+function FilesApp({ openLead, openJob, embedded }: any) {
   const [rows, setRows] = useState<any[]>([]); const [f, setF] = useState("all");
   useEffect(() => { api("/api/files").then(setRows).catch(() => {}); }, []);
   const list = rows.filter(x => f === "all" || x.status === f);
-  return (<div><h2 className="pt">Files & Documents</h2><p className="sub">Paperwork across every lead and job — what's in, what's missing, in one list.</p>
+  return (<div>{!embedded && <><h2 className="pt">Files & Documents</h2><p className="sub">Paperwork across every lead and job — what's in, what's missing, in one list.</p></>}
     <div className="rowflex" style={{ marginBottom: 10 }}>{[["all", "All"], ["missing", "Missing"], ["received", "Received"]].map(([k, l]) => <button key={k} className={`chip ${f === k ? "on" : ""}`} onClick={() => setF(k)}>{l} ({k === "all" ? rows.length : rows.filter(x => x.status === k).length})</button>)}</div>
     <div className="card" style={{ padding: 6 }}><table><thead><tr><th>Document</th><th>For</th><th>Kind</th><th>Status</th><th></th></tr></thead><tbody>
       {list.map(x => <tr key={x.id + x.kind}><td><b>{x.name}</b>{x.required ? " (required)" : ""}</td><td>{x.contact_name || ""} — {x.service_requested || ""}</td><td>{x.kind}</td><td><span className={`st ${x.status === "received" ? "pass" : "fail"}`}>{x.status}</span></td><td>{x.job_id ? <button className="btn ghost small" onClick={() => openJob(x.job_id)}>Open job</button> : x.lead_id ? <button className="btn ghost small" onClick={() => openLead(x.lead_id)}>Open lead</button> : null}</td></tr>)}
@@ -1571,11 +1634,11 @@ function FilesApp({ openLead, openJob }: any) {
     </tbody></table></div></div>);
 }
 
-function DuplicatesView() {
+function DuplicatesView({ embedded }: any) {
   const [groups, setGroups] = useState<any[]>([]); const [msg, setMsg] = useState("");
   const load = () => { api("/api/duplicates").then(setGroups).catch(() => {}); };
   useEffect(load, []);
-  return (<div><h2 className="pt">Duplicates</h2><p className="sub">Same phone or email on more than one lead. Merge keeps the oldest record as the survivor and moves everything — tasks, proposals, documents, time, history — onto it. The duplicate closes as DUPLICATE and disappears from lists (Salesforce-style).</p>
+  return (<div>{!embedded && <><h2 className="pt">Duplicates</h2><p className="sub">Same phone or email on more than one lead. Merge keeps the oldest record as the survivor and moves everything — tasks, proposals, documents, time, history — onto it. The duplicate closes as DUPLICATE and disappears from lists (Salesforce-style).</p></>}
     {msg && <div className="ok">{msg}</div>}
     {groups.map(g => <div className="card" key={g.key} style={{ marginBottom: 10 }}><b>{g.count} leads share {g.key}</b>
       {g.leads.map((l: any, i: number) => <div key={l.id} className="rowflex" style={{ padding: "6px 0", borderBottom: "1px solid #eef2f7" }}><span style={{ flex: 1 }}><b>{l.contact_name}</b> — {l.service_requested} · {money(l.est_value)} · <Badge s={l.state} /> · since {dOnly(l.created_at)}{i === 0 ? " · ⭐ survivor (oldest)" : ""}</span>
@@ -1660,11 +1723,11 @@ const [sb, setSb] = useState(() => localStorage.getItem("wp_sb") || "open"); con
   const [notifs, setNotifs] = useState<any[]>([]); const [unread, setUnread] = useState(0); const [bellOpen, setBellOpen] = useState(false); const [verifyMsg, setVerifyMsg] = useState("");
 const [pending, setPending] = useState(0); const [creating, setCreating] = useState(false); const [leadId, setLeadId] = useState<string | null>(null); const [tick, setTick] = useState(0);
   const [palOpen, setPalOpen] = useState(false); const [helpOpen, setHelpOpen] = useState(false); const [jobOpen, setJobOpen] = useState<string | null>(null); const [ltOpen, setLtOpen] = useState(false); const [custOpen, setCustOpen] = useState<string | null>(null);
-  const [appMode, setAppMode] = useState(() => localStorage.getItem("wp_app") || "all"); const [favs, setFavs] = useState<any[]>([]);
+  const [appMode, setAppMode] = useState(() => localStorage.getItem("wp_app") || "all"); const [favs, setFavs] = useState<any[]>([]); const [tabSignal, setTabSignal] = useState<any>(null);
   const [theme, setTheme] = useState(() => localStorage.getItem("wp_theme") || "light");
   useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem("wp_theme", theme); }, [theme]);
   useEffect(() => { if (user && "serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {}); }, [user?.id]);
-  useEffect(() => { (window as any).wpLogTime = () => setLtOpen(true); (window as any).wpOpenJob = (id: string) => setJobOpen(id); (window as any).wpOpenAccount = (id: string) => setCustOpen(id); }, []);
+  useEffect(() => { (window as any).wpLogTime = () => setLtOpen(true); (window as any).wpOpenJob = (id: string) => setJobOpen(id); (window as any).wpOpenAccount = (id: string) => setCustOpen(id); (window as any).wpGoTab = (view: string, tab: string) => { setTabSignal({ view, tab, n: Date.now() }); go({ view }); }; }, []);
   useEffect(() => { localStorage.setItem("wp_app", appMode); }, [appMode]);
   useEffect(() => { if (user) api("/api/favorites").then(setFavs).catch(() => {}); }, [user, tick]);
   const openLead = (id: string) => { setLeadId(id); try { const r = JSON.parse(localStorage.getItem("wp_recent") || "[]").filter((x: string) => x !== id); r.unshift(id); localStorage.setItem("wp_recent", JSON.stringify(r.slice(0, 6))); } catch {} };
@@ -1688,7 +1751,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
   useEffect(() => { if (user) { api("/api/users").then(setUsers).catch(() => {}); api("/api/price-book").then(setPriceBook).catch(() => {}); api("/api/approvals").then(r => setPending(r.length)).catch(() => {}); } }, [user, tick]);
   if (!user) return <Landing onAuth={(u: any) => { setUser(u); }} />;
   const go = (n: Nav) => setNav(n);
-  const APPS: Record<string, string[]> = { sales: ["queue", "myday", "dashboard", "pulse", "leads", "jobs", "customers", "people", "campaigns", "tasks", "calendar", "notes", "files", "reports", "approvals", "ai"], ops: ["queue", "jobs", "ops", "tasks", "calendar", "leads", "files", "notes", "handoffs", "imports", "demand", "duplicates"], marketing: ["dashboard", "campaigns", "leads", "customers", "people", "imports", "demand", "reports"] };
+  const APPS: Record<string, string[]> = { sales: ["queue", "myday", "dashboard", "pulse", "leads", "jobs", "customers", "campaigns", "planner", "library", "reports", "approvals", "ai"], ops: ["queue", "jobs", "ops", "planner", "leads", "library", "handoffs", "imports", "demand"], marketing: ["dashboard", "campaigns", "leads", "customers", "imports", "demand", "reports", "library"] };
   const inApp = (v: string) => appMode === "all" || (APPS[appMode] || []).includes(v) || ["settings", "billing", "admin"].includes(v);
   const NavB = ({ v, children, cnt, short }: any) => !inApp(v) ? null : <button className={nav.view === v ? "on" : ""} title={children} onClick={() => { go({ view: v }); setMOpen(false); }}><span className="nshort">{short}</span><span className="nlab">{children}</span>{cnt ? <span className="cnt">{cnt}</span> : null}</button>;
   const toggleSb = () => { const next = sb === "rail" ? "open" : "rail"; setSb(next); localStorage.setItem("wp_sb", next); };
@@ -1700,7 +1763,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
         <option value="__new">+ New workspace…</option></select>
       <select className="wsSwitch" value={appMode} onChange={e => setAppMode(e.target.value)} title="App — Salesforce-style tab sets"><option value="all">App: All modules</option><option value="sales">App: Sales</option><option value="ops">App: Operations</option><option value="marketing">App: Marketing</option></select>
       {favs.length > 0 && <div style={{ padding: "4px 2px" }}><div className="muted" style={{ fontSize: 11, letterSpacing: 0.4 }}>⭐ FAVORITES</div>{favs.slice(0, 6).map(f => <button key={f.id} className="favItem" style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: 0, padding: "4px 6px", cursor: "pointer", fontSize: 13 }} onClick={() => { if (f.entity_type === "lead") openLead(f.entity_id); else if (f.entity_type === "job") setJobOpen(f.entity_id); else if (f.entity_type === "account") setCustOpen(f.entity_id); }}>{f.label}</button>)}</div>}
-      <NavB v="queue" short="WQ">Work Queue</NavB><NavB v="myday" short="MY">My Day</NavB><NavB v="dashboard" short="DA">Dashboard</NavB><NavB v="pulse" short="PU">Pulse</NavB><NavB v="leads" short="LE">Leads</NavB><NavB v="jobs" short="JO">Jobs</NavB><NavB v="customers" short="CU">Customers</NavB><NavB v="people" short="PE">People</NavB><NavB v="campaigns" short="CA">Campaigns</NavB><NavB v="tasks" short="TA">Tasks</NavB><NavB v="calendar" short="CL">Calendar</NavB><NavB v="notes" short="NO">Notes</NavB><NavB v="files" short="FI">Files</NavB><NavB v="duplicates" short="DU">Duplicates</NavB><NavB v="reports" short="RE">Reports</NavB><NavB v="approvals" short="AP" cnt={pending || undefined}>Approvals</NavB><NavB v="ai" short="AI">AI Assistant</NavB><NavB v="imports" short="IM">Import CSV</NavB><NavB v="demand" short="DG">Demand Gap</NavB><NavB v="handoffs" short="HA">Handoffs</NavB><NavB v="ops" short="OP">Ops Console</NavB><NavB v="settings" short="SE">Settings</NavB>{(!user?.permissions || user.permissions.can_billing) && <NavB v="billing" short="BI">Billing</NavB>}
+      <NavB v="queue" short="WQ">Work Queue</NavB><NavB v="myday" short="MY">My Day</NavB><NavB v="dashboard" short="DA">Dashboard</NavB><NavB v="pulse" short="PU">Pulse</NavB><NavB v="leads" short="LE">Leads</NavB><NavB v="jobs" short="JO">Jobs</NavB><NavB v="customers" short="CU">Customers</NavB><NavB v="campaigns" short="CA">Campaigns</NavB><NavB v="planner" short="PL">Planner</NavB><NavB v="library" short="LI">Library</NavB><NavB v="reports" short="RE">Reports</NavB><NavB v="approvals" short="AP" cnt={pending || undefined}>Approvals</NavB><NavB v="ai" short="AI">AI Assistant</NavB><NavB v="imports" short="IM">Import CSV</NavB><NavB v="demand" short="DG">Demand Gap</NavB><NavB v="handoffs" short="HA">Handoffs</NavB><NavB v="ops" short="OP">Ops Console</NavB><NavB v="settings" short="SE">Settings</NavB>{(!user?.permissions || user.permissions.can_billing) && <NavB v="billing" short="BI">Billing</NavB>}
       {user.is_platform_admin ? <NavB v="admin" short="AD">Platform Admin</NavB> : null}
       <div className="sideFoot"><button title="Sign out" onClick={async () => { await fetch("/api/auth/logout", { method: "POST" }).catch(() => {}); setUser(null); }}><span className="nshort">⏻</span><span className="nlab">Sign out</span></button></div>
     </aside>
@@ -1710,20 +1773,20 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
         {bellOpen && <div className="bellPanel"><div className="rowflex" style={{ justifyContent: "space-between" }}><b>Notifications</b><button className="btn ghost small" onClick={async () => { await api("/api/notifications/read-all", { method: "POST", body: {} }); setUnread(0); setNotifs(notifs.map(n => ({ ...n, read_at: n.read_at || "now" }))); }}>Mark all read</button></div>
         <button className="btn ghost small" style={{ margin: "6px 0" }} onClick={async () => { const k = await api("/api/push/key").catch(() => null); if (!k?.configured) { alert("Phone push activates when the server has VAPID keys configured — the in-app bell works today."); return; } const perm = await Notification.requestPermission(); if (perm !== "granted") return; const reg = await navigator.serviceWorker.ready; const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: Uint8Array.from(atob(k.public_key.replaceAll("-", "+").replaceAll("_", "/")), c => c.charCodeAt(0)) as any }); await api("/api/push/subscribe", { method: "POST", body: { subscription: sub } }); alert("Phone alerts on for this device ✓"); }}>📱 Enable phone alerts</button>
         {notifs.length === 0 && <p className="muted">Nothing yet \u2014 approvals, signatures, deposits, and new leads land here.</p>}
-        {notifs.map(n => <div key={n.id} className="bellItem" style={n.read_at ? {} : { background: "#f0f9f1" }} onClick={async () => { await api(`/api/notifications/${n.id}/read`, { method: "POST", body: {} }); setUnread(u => Math.max(0, u - (n.read_at ? 0 : 1))); if (n.lead_id) { openLead(n.lead_id); setBellOpen(false); } }}><b>{n.title}</b><br /><span className="muted">{n.body}</span><br /><span className="muted" style={{ fontSize: 11.5 }}>{dt(n.created_at)}</span></div>)}</div>}</div>
+        {notifs.map(n => <div key={n.id} className="bellItem" style={n.read_at ? {} : { background: "#f0f9f1" }} onClick={async () => { await api(`/api/notifications/${n.id}/read`, { method: "POST", body: {} }).catch(() => {}); setUnread(u => Math.max(0, u - (n.read_at ? 0 : 1))); setNotifs(ns => ns.map(x => x.id === n.id ? { ...x, read_at: x.read_at || "now" } : x)); const et = n.entity_type || (n.lead_id ? "lead" : null); const eid = n.entity_id || n.lead_id; setBellOpen(false); if (et === "lead" && eid) openLead(eid); else if (et === "job" && eid) setJobOpen(eid); else if (et === "account" && eid) setCustOpen(eid); else if (n.lead_id) openLead(n.lead_id); }}><b>{n.title}</b><br /><span className="muted">{n.body}</span><br /><span className="muted" style={{ fontSize: 11.5 }}>{dt(n.created_at)} · {(n.entity_type || (n.lead_id ? "lead" : "")) ? "tap to open →" : ""}</span></div>)}</div>}</div>
         <button className="btn ghost" title="Toggle dark mode" onClick={() => setTheme(t => t === "dark" ? "light" : "dark")}>{theme === "dark" ? "☀️" : "🌙"}</button>
         <button className="btn ghost" title="Log time (T)" onClick={() => setLtOpen(true)}>⏱ Log time</button><button className="btn" onClick={() => setCreating(true)}>+ New Lead</button></div>
       {user && user.email_verified === 0 && <div className="verifyBar">✉️ Verify your email to secure your account and enable password recovery. <button className="btn ghost small" onClick={async () => { const r = await api("/api/auth/resend-verify", { method: "POST", body: {} }).catch((e: any) => ({ error: e.message })); setVerifyMsg(r.verify_url ? "Test mode \u2014 verify here: " + r.verify_url : r.error ? r.error : "Verification email sent \u2014 check your inbox."); }}>Resend verification</button>{verifyMsg && <span style={{ marginLeft: 8 }}>{verifyMsg}</span>}</div>}
       <EB>
       {nav.view === "queue" && <WorkQueue openLead={openLead} openJob={(id: string) => setJobOpen(id)} go={go} />}
       {nav.view === "jobs" && <JobsBoard openJob={(id: string) => setJobOpen(id)} />}
-      {nav.view === "customers" && <Customers openCustomer={(id: string) => setCustOpen(id)} />}
-      {nav.view === "people" && <People />}
+      {nav.view === "customers" && <Customers openCustomer={(id: string) => setCustOpen(id)} tabSignal={tabSignal} />}
+      {(nav.view === "people") && <Customers openCustomer={(id: string) => setCustOpen(id)} tabSignal={{ view: "customers", tab: "people", n: 1 }} />}
       {nav.view === "campaigns" && <Campaigns openLead={openLead} />}
-      {nav.view === "tasks" && <TasksApp openLead={openLead} />}
-      {nav.view === "calendar" && <CalendarView openLead={openLead} />}
-      {nav.view === "notes" && <NotesApp openLead={openLead} openJob={(id: string) => setJobOpen(id)} openCustomer={(id: string) => setCustOpen(id)} />}
-      {nav.view === "files" && <FilesApp openLead={openLead} openJob={(id: string) => setJobOpen(id)} />}
+      {nav.view === "planner" && <Planner openLead={openLead} tabSignal={tabSignal} />}
+      {(nav.view === "tasks" || nav.view === "calendar") && <Planner openLead={openLead} tabSignal={{ view: "planner", tab: nav.view === "tasks" ? "tasks" : "calendar", n: 1 }} />}
+      {nav.view === "library" && <Library openLead={openLead} openJob={(id: string) => setJobOpen(id)} openCustomer={(id: string) => setCustOpen(id)} tabSignal={tabSignal} />}
+      {(nav.view === "notes" || nav.view === "files") && <Library openLead={openLead} openJob={(id: string) => setJobOpen(id)} openCustomer={(id: string) => setCustOpen(id)} tabSignal={{ view: "library", tab: nav.view, n: 1 }} />}
       {nav.view === "duplicates" && <DuplicatesView />}
       {nav.view === "myday" && <MyDay user={user} openLead={openLead} go={go} />}
       {nav.view === "dashboard" && <Dashboard go={go} openLead={openLead} />}

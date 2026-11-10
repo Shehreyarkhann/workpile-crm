@@ -3,7 +3,7 @@
 // Proposals render from it three ways: print/PDF page, DOCX, and the sign page data.
 import { db } from "./db.ts";
 
-const ALLOWED = new Set(["p", "br", "b", "strong", "i", "em", "u", "h3", "h4", "ul", "ol", "li", "div", "span"]);
+const ALLOWED = new Set(["p", "br", "b", "strong", "i", "em", "u", "h3", "h4", "ul", "ol", "li", "div", "span", "img"]);
 export function sanitizeHtml(html: string): string {
   if (!html) return "";
   let out = String(html).replace(/<(script|style|iframe|object|embed|form|input|button)[\s\S]*?<\/\1>/gi, "");
@@ -12,7 +12,8 @@ export function sanitizeHtml(html: string): string {
     if (!ALLOWED.has(t)) return "";
     if (m.startsWith("</")) return `</${t}>`;
     if (t === "br") return "<br>";
-    return `<${t}>`; // all attributes stripped — no handlers, no styles, no links
+    if (t === "img") { const m = attrs.match(/src\s*=\s*"([^"]+)"/i) || attrs.match(/src\s*=\s*'([^']+)'/i); const src = m ? m[1] : ""; if (/^data:image\/(png|jpe?g|gif|webp);base64,/i.test(src) || /^https:\/\//i.test(src)) return `<img src="${src}" style="max-width:100%;height:auto" alt="">`; return ""; }
+    return `<${t}>`; // all other attributes stripped — no handlers, no styles, no links
   });
   return out.slice(0, 20000);
 }
@@ -26,9 +27,9 @@ export function htmlToParagraphs(html: string): string[] {
   return text.split("\n").map(x => x.trim()).filter(Boolean);
 }
 
-const DEFAULT_INTRO = "<p>Dear {customer},</p><p>Thank you for the opportunity to propose on your {service} project. Based on our site assessment, the scope below covers everything needed to complete the work safely, to code, and with minimal disruption. Every line is priced from our standard price book — no surprises after signing.</p>";
-const DEFAULT_TERMS = "<p>Proposal valid for 14 days from the date above. A deposit is due on signing; the balance is due on completion unless a payment plan is agreed in writing. Scope changes are handled by written change order, priced from the same price book and approved before work proceeds. All work is performed by licensed, insured personnel.</p>";
-const DEFAULT_FOOTER = "Thank you for considering {business}. Questions? Reply to this proposal or call us — we're happy to walk through any line.";
+export const DEFAULT_INTRO = "<p>Dear {customer},</p><p>Thank you for the opportunity to propose on your {service} project. Based on our site assessment, the scope below covers everything needed to complete the work safely, to code, and with minimal disruption. Every line is priced from our standard price book — no surprises after signing.</p>";
+export const DEFAULT_TERMS = "<p>Proposal valid for 14 days from the date above. A deposit is due on signing; the balance is due on completion unless a payment plan is agreed in writing. Scope changes are handled by written change order, priced from the same price book and approved before work proceeds. All work is performed by licensed, insured personnel.</p>";
+export const DEFAULT_FOOTER = "Thank you for considering {business}. Questions? Reply to this proposal or call us — we're happy to walk through any line.";
 
 export function getTemplate(wsId: string) {
   const w = db.prepare("SELECT * FROM workspaces WHERE id=?").get(wsId) as any;
@@ -40,6 +41,7 @@ export function getTemplate(wsId: string) {
     intro_html: w.pt_intro || DEFAULT_INTRO,
     terms_html: w.pt_terms || DEFAULT_TERMS,
     footer: (w.pt_footer || DEFAULT_FOOTER),
+    logo: w.logo_data || null,
     customized: !!(w.pt_company || w.pt_intro || w.pt_terms || w.pt_footer),
   };
 }
@@ -56,7 +58,9 @@ export function proposalDocument(proposalId: string) {
   const lead = db.prepare("SELECT * FROM leads WHERE id=?").get(p.lead_id) as any;
   const contact = db.prepare("SELECT * FROM contacts WHERE id=?").get(lead?.contact_id) as any;
   const ws = db.prepare("SELECT * FROM workspaces WHERE id=?").get(p.workspace_id) as any;
-  const tpl = getTemplate(p.workspace_id);
+  let tpl = getTemplate(p.workspace_id);
+  let docName: string | null = null;
+  if (p.template_id) { try { const dt = db.prepare("SELECT * FROM doc_templates WHERE id=? AND workspace_id=?").get(p.template_id, p.workspace_id) as any; if (dt) { tpl = { ...tpl, intro_html: dt.intro_html || tpl.intro_html, terms_html: dt.terms_html || tpl.terms_html, footer: dt.footer || tpl.footer, logo: dt.include_logo ? (tpl.logo || null) : null }; docName = dt.name; } } catch { /* doc templates not initialized yet */ } }
   const ref = "PROP-" + String(p.id).replace(/[^a-z0-9]/gi, "").slice(-6).toUpperCase();
   const ctx: Record<string, string> = {
     customer: contact?.name || "", business: tpl.company, service: lead?.service_requested || "",
@@ -71,6 +75,8 @@ export function proposalDocument(proposalId: string) {
     contact: { name: contact?.name, email: contact?.email, phone: contact?.phone },
     workspace_name: ws?.name,
     template: {
+      name: docName,
+      logo: tpl.logo || null,
       company: tpl.company, tagline: tpl.tagline, contact_line: tpl.contact_line, address: tpl.address, footer: mergeFields(tpl.footer, ctx),
       intro_html: sanitizeHtml(mergeFields(tpl.intro_html, ctx)),
       terms_html: sanitizeHtml(mergeFields(tpl.terms_html, ctx)),
