@@ -7,6 +7,7 @@ import { db, now } from "./db.ts";
 import { outcomePayload } from "./app.ts";
 import { processEventDeliveries } from "./integrations.ts";
 import { processFollowups } from "./followups.ts";
+import { processAutomations } from "./ai.ts";
 
 export const MAX_ATTEMPTS = 5;
 export function signPayload(secret: string, body: string): string {
@@ -54,6 +55,6 @@ export function replayDelivery(deliveryId: string): boolean {
 let timer: any = null;
 export function startWorker(intervalMs = 15000) {
   if (timer) return;
-  timer = setInterval(() => { processDeliveries().catch(() => {}); processEventDeliveries().catch(() => {}); processFollowups(process.env.BASE_URL || "").catch(() => {}); }, intervalMs);
+  timer = setInterval(() => { processDeliveries().catch(() => {}); processEventDeliveries().catch(() => {}); processFollowups(process.env.BASE_URL || "").catch(() => {}); try { processAutomations(); } catch {} }, intervalMs);
   timer.unref?.();
 }

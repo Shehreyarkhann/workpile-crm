@@ -10,7 +10,7 @@ import { ensureSignToken, getByToken, sign } from "./sign.ts";
 import { createDeposit, markPaid, verifyStripeSignature, handleStripeEvent, stripeMode } from "./payments.ts";
 import { getFlags, setFlag, workspaceHealth, runSynthetics } from "./admin.ts";
 import { billingStatus, createCheckout, handleBillingEvent, PLANS, ensureSubscription } from "./billing.ts";
-import { cleanupPreview, cleanupApply, insights, reactivateStale, scoreLead } from "./ai.ts";
+import { cleanupPreview, cleanupApply, insights, insightsV2, reactivateStale, scoreLead, nextBestAction, runAutomationsFor, logAgentRun } from "./ai.ts";
 import { emitEvent, EVENTS } from "./integrations.ts";
 import { queueAndDeliver, notify, notifyOwners, emailConfigured, smsConfigured } from "./comms.ts";
 import { enrollFollowup, stopFollowups } from "./followups.ts";
@@ -662,7 +662,6 @@ app.post("/api/sync/run", requireAuth, async (req: any, res) => {
   db.prepare("INSERT INTO imports (id,workspace_id,filename,mapping,totals,status,created_at) VALUES (?,?,?,?,?,?,?)").run(uid("imp"), ws.id, "api-sync", "{}", JSON.stringify({ created, dupes: duplicates }), "committed", now());
   res.json(stats);
 });
-app.get("/api/ai/insights", requireAuth, (req: any, res) => res.json(insights(req.user.workspace_id)));
 app.post("/api/ai/cleanup/preview", requireAuth, (req: any, res) => res.json(cleanupPreview(req.user.workspace_id)));
 app.post("/api/ai/cleanup/apply", requireAuth, (req: any, res) => res.json(cleanupApply(req.user.workspace_id, req.user.id, req.body.actions || [])));
 app.post("/api/ai/reactivate", requireAuth, (req: any, res) => res.json(reactivateStale(req.user.workspace_id, req.user.id)));
@@ -935,6 +934,50 @@ app.post("/v1/missed-call", requireApiKey(["leads:write"]), async (req: any, res
   logEvent(ws, lead.id, "missed-call", "speed_to_lead", null, null, { created, status: (msg as any).status });
   notifyOwners(ws, "call.missed", "Missed call — text-back sent ⚡", `${phone} called; an instant text-back went out and the lead is in the pile.`, lead.id);
   res.status(created ? 201 : 200).json({ lead_id: lead.id, created, text_back_status: (msg as any).status });
+});
+// ---------- slice 16: AI v2 — suggestions, actions, automations, activity ----------
+app.get("/api/ai/insights", requireAuth, (req: any, res) => res.json(insightsV2(req.user.workspace_id)));
+app.get("/api/ai/suggest/:leadId", requireAuth, (req: any, res) => {
+  const l = db.prepare("SELECT l.*, c.name contact_name, c.phone contact_phone, c.email contact_email FROM leads l LEFT JOIN contacts c ON c.id=l.contact_id WHERE l.id=? AND l.workspace_id=?").get(req.params.leadId, req.user.workspace_id) as any;
+  if (!l) return res.status(404).json({ error: { code: "not_found" } });
+  const prop = db.prepare("SELECT sent_at, created_at FROM proposals WHERE lead_id=? AND status='sent' ORDER BY version DESC LIMIT 1").get(l.id) as any;
+  const sentDays = prop ? Math.floor((Date.now() - new Date(prop.sent_at || prop.created_at).getTime()) / 86400000) : undefined;
+  const sc = scoreLead(l);
+  res.json({ score: sc.score, temperature: sc.temperature, flags: sc.flags, suggestion: nextBestAction(l, sentDays) });
+});
+app.post("/api/ai/autofix-next-steps", requireAuth, (req: any, res) => {
+  const ws = req.user.workspace_id;
+  const rows = db.prepare("SELECT * FROM leads WHERE workspace_id=? AND next_action_due_at IS NULL AND state NOT IN ('WON','LOST','NO_RESPONSE','UNSERVICEABLE','JUNK','DUPLICATE')").all(ws) as any[];
+  const defaults: Record<string, string> = { NEW: "First contact", TRIAGED: "Qualify the request", QUALIFYING: "Qualify the request", QUALIFIED: "Book the site visit", READY_FOR_APPROVAL: "Submit for approval", APPROVED: "Draft the proposal", PROPOSAL_DRAFTED: "Send the proposal", PROPOSAL_SENT: "Proposal follow-up", IN_FOLLOW_UP: "Follow up", ON_HOLD: "Check the hold reason" };
+  let fixed = 0;
+  for (const l of rows) { db.prepare("UPDATE leads SET next_action=?, next_action_due_at=?, updated_at=? WHERE id=?").run(defaults[l.state] || "Follow up", new Date(Date.now() + 86400000).toISOString(), now(), l.id); logEvent(ws, l.id, req.user.id, "ai_autofix_next_step", null, null, {}); fixed++; }
+  res.json({ fixed });
+});
+app.post("/api/ai/nudge", requireAuth, async (req: any, res) => {
+  const ws = req.user.workspace_id;
+  const l = db.prepare("SELECT l.*, c.name contact_name, c.phone contact_phone, c.email contact_email FROM leads l LEFT JOIN contacts c ON c.id=l.contact_id WHERE l.id=? AND l.workspace_id=?").get(req.body.lead_id, ws) as any;
+  if (!l) return res.status(404).json({ error: { code: "not_found" } });
+  const w = db.prepare("SELECT * FROM workspaces WHERE id=?").get(ws) as any;
+  const prop = db.prepare("SELECT * FROM proposals WHERE lead_id=? ORDER BY version DESC LIMIT 1").get(l.id) as any;
+  let steps: any[] = []; try { steps = JSON.parse(w.followup_steps || "[]"); } catch { steps = []; }
+  const tpl = (steps[0]?.body) || "Hi {name}, just floating your proposal from {business} back to the top of your inbox — total {total}. Review & sign here: {link}";
+  const link = prop ? `${process.env.BASE_URL || ""}/sign/${ensureSignToken(prop.id)}` : "";
+  const body = tpl.replaceAll("{name}", (l.contact_name || "there").split(" ")[0]).replaceAll("{business}", w.name || "").replaceAll("{total}", prop ? "$" + Number(prop.total || 0).toLocaleString() : "").replaceAll("{link}", link);
+  const channel = l.contact_email ? "email" : "sms";
+  const msg: any = await queueAndDeliver(ws, { lead_id: l.id, channel, to: channel === "email" ? l.contact_email : l.contact_phone, subject: channel === "email" ? `Your proposal from ${w.name}` : undefined, body });
+  logAgentRun(ws, "nudge", l.id, { channel, status: msg.status });
+  res.json({ sent: true, channel, status: msg.status });
+});
+app.get("/api/ai/automations", requireAuth, (req: any, res) => { const w = db.prepare("SELECT auto_assign, auto_dedupe, auto_reactivate, auto_score, last_automation_at FROM workspaces WHERE id=?").get(req.user.workspace_id) as any; res.json(w); });
+app.post("/api/ai/automations", requireAuth, needPerm("can_settings"), (req: any, res) => {
+  const fields = ["auto_assign", "auto_dedupe", "auto_reactivate", "auto_score"];
+  for (const f of fields) if (req.body[f] !== undefined) db.prepare(`UPDATE workspaces SET ${f}=? WHERE id=?`).run(req.body[f] ? 1 : 0, req.user.workspace_id);
+  res.json(db.prepare("SELECT auto_assign, auto_dedupe, auto_reactivate, auto_score, last_automation_at FROM workspaces WHERE id=?").get(req.user.workspace_id));
+});
+app.post("/api/ai/automations/run", requireAuth, (req: any, res) => res.json({ result: runAutomationsFor(req.user.workspace_id) }));
+app.get("/api/ai/runs", requireAuth, (req: any, res) => {
+  const runs = db.prepare("SELECT * FROM agent_runs WHERE workspace_id=? ORDER BY created_at DESC LIMIT 20").all(req.user.workspace_id);
+  res.json(runs);
 });
 // ---------- slice 12 (Tier 2): online booking ----------
 function ensureBookingSlug(ws: any): string {

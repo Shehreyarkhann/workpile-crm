@@ -158,7 +158,8 @@ function MessagesPanel({ lead }: any) {
 
 function LeadDetail({ id, users, priceBook, close, refresh }: any) {
   const [d, setD] = useState<any>(null); const [edit, setEdit] = useState<any>(null); const [msg, setMsg] = useState("");
-  const [act, setAct] = useState<any>({ type: "call", body: "", outcome: "" });
+  const [act, setAct] = useState<any>({ type: "call", body: "", outcome: "" }); const [sug, setSug] = useState<any>(null);
+  useEffect(() => { api("/api/ai/suggest/" + id).then(setSug).catch(() => {}); }, [id, d?.lead?.state]);
   const [items, setItems] = useState<any[]>([]); const [check, setCheck] = useState<any>(null); const [tab, setTab] = useState("details");
   const load = () => { api("/api/leads/" + id).then(r => { setD(r); setEdit({ ...r.lead }); }).catch(e => setMsg(e.message)); };
   useEffect(load, [id]);
@@ -177,6 +178,10 @@ function LeadDetail({ id, users, priceBook, close, refresh }: any) {
       : <div className="pathFinal" style={{ background: "#fee2e2", color: "#991b1b" }}>Final state: {l.state.replaceAll("_", " ")}{l.lost_reason ? " · " + l.lost_reason : ""}</div>}
     <p className="muted" style={{ fontSize: 12, margin: "2px 0 6px" }}>Path — click a stage to move (the Completeness Gate still applies: nothing reaches approval incomplete).</p>
     {msg && <div className={msg.includes("✓") ? "ok" : "err"}>{msg}</div>}
+    {sug && <div className="card" style={{ margin: "10px 0", padding: "10px 14px", display: "flex", gap: 12, alignItems: "center", background: "linear-gradient(90deg,#f0fdf4,#ffffff)" }}><span style={{ fontSize: 20 }}>{sug.temperature === "hot" ? "🔥" : sug.temperature === "warm" ? "🌤️" : "❄️"}</span><div style={{ flex: 1 }}><b>AI · {sug.score}/100 ({sug.temperature}) — {sug.suggestion.label}</b><br /><span className="muted">{sug.suggestion.detail}</span>{(sug.flags || []).length > 0 && <span className="muted"> · flags: {sug.flags.join(", ").replaceAll("_", " ")}</span>}</div>
+      {sug.suggestion.kind === "nudge" && <button className="btn small" onClick={async () => { const r = await api("/api/ai/nudge", { method: "POST", body: { lead_id: id } }); setMsg(`Nudge sent by ${r.channel} (${String(r.status).replaceAll("_", " ")}) ✓`); }}>Nudge now</button>}
+      {sug.suggestion.kind === "fix_step" && <button className="btn small" onClick={async () => { await api("/api/leads/" + id, { method: "PATCH", body: { next_action: "Follow up", next_action_due_at: new Date(Date.now() + 86400000).toISOString() } }); setMsg("Next step set for tomorrow ✓"); load(); }}>Set for tomorrow</button>}
+    </div>}
     <div className="tabs"><button className={tab === "details" ? "on" : ""} onClick={() => setTab("details")}>Details</button><button className={tab === "activity" ? "on" : ""} onClick={() => setTab("activity")}>Activity & Tasks</button><button className={tab === "proposals" ? "on" : ""} onClick={() => setTab("proposals")}>Proposals & Files ({d.proposals.length})</button><button className={tab === "messages" ? "on" : ""} onClick={() => setTab("messages")}>Messages</button></div>
     {tab === "details" && <div>
       <div className="formgrid">
@@ -607,14 +612,35 @@ function Landing({ onAuth }: any) {
 function AIAssistant({ go }: any) {
   const [ins, setIns] = useState<any[]>([]); const [prev, setPrev] = useState<any>(null); const [acts, setActs] = useState<any>({ dedupe: true, spam: true, score: true, assign: false });
   const [result, setResult] = useState<any>(null); const [msg, setMsg] = useState("");
-  useEffect(() => { api("/api/ai/insights").then(setIns).catch(() => {}); }, []);
+  const [auto, setAuto] = useState<any>(null); const [runs, setRuns] = useState<any[]>([]);
+  const loadIns = () => { api("/api/ai/insights").then(setIns).catch(() => {}); api("/api/ai/runs").then(setRuns).catch(() => {}); };
+  useEffect(() => { loadIns(); api("/api/ai/automations").then(setAuto).catch(() => {}); }, []);
   const scan = async () => { setPrev(await api("/api/ai/cleanup/preview", { method: "POST", body: {} })); setResult(null); };
-  const apply = async () => { const chosen = Object.entries(acts).filter(([, v]) => v).map(([k]) => k); const r = await api("/api/ai/cleanup/apply", { method: "POST", body: { actions: chosen } }); setResult(r); setPrev(null); api("/api/ai/insights").then(setIns).catch(() => {}); };
-  return (<div><h2 className="pt">AI Assistant</h2><p className="sub">Agents do the chasing, sorting, and scoring — nothing customer-facing ever sends without your approval. Every action here is preview first, apply second.</p>
+  const apply = async () => { const chosen = Object.entries(acts).filter(([, v]) => v).map(([k]) => k); const r = await api("/api/ai/cleanup/apply", { method: "POST", body: { actions: chosen } }); setResult(r); setPrev(null); loadIns(); };
+  const actFor = (i: any) => {
+    if (i.kind === "cleanup") return <button className="btn ghost small" onClick={scan}>Run cleanup scan</button>;
+    if (i.kind === "assign") return <button className="btn ghost small" onClick={async () => { const r = await api("/api/ai/cleanup/apply", { method: "POST", body: { actions: ["assign"] } }); setMsg(`Auto-assigned ${r.assigned} leads round-robin ✓`); loadIns(); }}>Auto-assign now</button>;
+    if (i.kind === "stale") return <button className="btn ghost small" onClick={async () => { const r = await api("/api/ai/reactivate", { method: "POST", body: {} }); setMsg(`Reactivation tasks created: ${r.tasks_created} ✓`); }}>Create tasks</button>;
+    if (i.kind === "hot") return <button className="btn ghost small" onClick={() => go({ view: "leads", leads: { sort: "value" } })}>View leads</button>;
+    if (i.kind === "nextstep") return <button className="btn ghost small" onClick={async () => { const r = await api("/api/ai/autofix-next-steps", { method: "POST", body: {} }); setMsg(`Next steps auto-scheduled on ${r.fixed} leads ✓`); loadIns(); }}>Auto-schedule next steps</button>;
+    if (i.kind === "approvals") return <button className="btn ghost small" onClick={() => go({ view: "approvals" })}>Review approvals</button>;
+    if (i.kind === "cold") return <button className="btn ghost small" onClick={async () => { const r = await api("/api/ai/nudge", { method: "POST", body: { lead_id: i.lead_id } }); setMsg(`Nudge sent by ${r.channel} (${String(r.status).replaceAll("_", " ")}) ✓`); }}>Nudge the oldest now</button>;
+    return null;
+  };
+  const setAutoKey = async (k: string, v: boolean) => { const r = await api("/api/ai/automations", { method: "POST", body: { [k]: v } }); setAuto(r); };
+  const agentLabel: Record<string, string> = { triage: "🔍 Triage", automation: "🤖 Auto-pilot", nudge: "📨 Nudge", packet_check: "🛂 Packet check" };
+  return (<div><h2 className="pt">AI Assistant</h2><p className="sub">Agents do the chasing, sorting, and scoring — nothing customer-facing ever sends without your approval. Every action here is preview first, apply second; auto-pilot actions are logged below.</p>
     {msg && <div className="ok">{msg}</div>}
     <div className="card"><h3>Insights — what needs you today</h3>
-      {ins.map((i: any, k: number) => <div className="insight" key={k}><div className="ic">{i.icon}</div><div style={{ flex: 1 }}><b>{i.title}</b><p>{i.detail}</p></div>{i.kind === "stale" && <button className="btn ghost small" onClick={async () => { const r = await api("/api/ai/reactivate", { method: "POST", body: {} }); setMsg(`Reactivation tasks created: ${r.tasks_created} ✓`); }}>Create tasks</button>}{i.kind === "hot" && <button className="btn ghost small" onClick={() => go({ view: "leads", leads: { sort: "value" } })}>View leads</button>}</div>)}
-      {ins.length === 0 && <p className="muted">All clear — no duplicates, no unassigned leads, nothing stale. The AI is watching.</p>}</div>
+      {ins.map((i: any, k: number) => <div className="insight" key={k}><div className="ic">{i.icon}</div><div style={{ flex: 1 }}><b>{i.title}</b><p>{i.detail}</p></div>{actFor(i)}</div>)}
+      {ins.length === 0 && <p className="muted">All clear — no duplicates, no unassigned leads, nothing stale, nothing going cold. The AI is watching.</p>}</div>
+    <div className="card"><h3>Auto-pilot — runs every few hours, even while you sleep</h3>
+      {!auto && <p className="muted">Loading…</p>}
+      {auto && <div>
+        {[["auto_score", "Keep every lead scored", "Hot / warm / cold stays current as leads age and change."], ["auto_assign", "Auto-assign unassigned leads", "Round-robin to lead owners the moment a lead sits unowned."], ["auto_dedupe", "Auto-archive duplicates", "Exact phone/email matches and same-week name+service repeats — original kept, merge recorded."], ["auto_reactivate", "Auto-create reactivation tasks", "Any open lead untouched for 14+ days gets a call task for its owner."]].map(([k, lab, hint]) => <label className="check" key={k} style={{ display: "flex", gap: 8, padding: "7px 0", borderBottom: "1px solid #eef2f7" }}><input type="checkbox" style={{ width: "auto", marginTop: 2 }} checked={!!auto[k]} onChange={e => setAutoKey(k, e.target.checked)} /><span><b>{lab}</b><br /><span className="muted">{hint}</span></span></label>)}
+        <div className="rowflex" style={{ marginTop: 10 }}><button className="btn ghost small" onClick={async () => { const r = await api("/api/ai/automations/run", { method: "POST", body: {} }); setMsg("Auto-pilot ran ✓ — " + JSON.stringify(r.result)); loadIns(); api("/api/ai/automations").then(setAuto).catch(() => {}); }}>Run auto-pilot now</button><span className="muted">{auto.last_automation_at ? "Last ran " + dt(auto.last_automation_at) : "Has not run yet"}</span></div>
+      </div>}
+    </div>
     <div className="card"><h3>AI Cleanup — duplicates, spam, scoring, assignment</h3>
       {!prev && !result && <button className="btn" onClick={scan}>Run cleanup scan</button>}
       {prev && <div><p><b>{prev.duplicate_count}</b> duplicates · <b>{prev.spam_count}</b> spam/invalid · <b>{prev.unassigned_count}</b> unassigned · <b>{prev.unscored_count}</b> unscored — of {num(prev.total_leads)} leads</p>
@@ -624,7 +650,10 @@ function AIAssistant({ go }: any) {
         <div className="rowflex"><button className="btn" onClick={apply}>Apply cleanup</button><button className="btn ghost" onClick={() => setPrev(null)}>Cancel</button></div></div>}
       {result && <div className="ok">Cleanup applied ✓ — {result.archived_duplicates} duplicates archived · {result.marked_spam} spam marked · {result.scored} leads scored · {result.assigned} auto-assigned. <button className="btn ghost small" onClick={scan}>Scan again</button></div>}
     </div>
-    <div className="card"><h3>How the agents work</h3><p className="muted" style={{ lineHeight: 1.6 }}>Triage classifies every incoming lead (service, urgency, value band, spam) the second it lands. Scoring ranks the pile so humans call hot leads first. Cleanup keeps the data honest. The Completeness Gate is the bouncer: no packet reaches an approver missing contact, scope, visit, PM, or price-book pricing. Agents never invent prices and never send anything customer-facing — that line is enforced in code, not policy.</p></div>
+    <div className="card"><h3>Recent agent activity</h3>
+      {runs.map((r: any) => <p key={r.id} style={{ margin: "6px 0", borderBottom: "1px solid #eef2f7", paddingBottom: 6 }}><b>{agentLabel[r.agent] || r.agent}</b> <span className="muted">· {dt(r.created_at)}</span><br /><span className="muted">{String(r.output || "").slice(0, 220)}</span></p>)}
+      {runs.length === 0 && <p className="muted">No agent runs logged yet — triage, nudges, and auto-pilot runs will appear here.</p>}</div>
+    <div className="card"><h3>How the agents work</h3><p className="muted" style={{ lineHeight: 1.6 }}>Triage classifies every incoming lead (service, urgency, value band, spam) the second it lands. Scoring ranks the pile so humans call hot leads first, and every lead record carries a plain-English next-best-action from the same engine. Cleanup keeps the data honest. Auto-pilot repeats the safe chores on a timer. The Completeness Gate is the bouncer: no packet reaches an approver missing contact, scope, visit, PM, or price-book pricing. Agents never invent prices and never send anything customer-facing on their own — that line is enforced in code, not policy.</p></div>
   </div>);
 }
 
