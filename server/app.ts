@@ -315,7 +315,13 @@ app.get("/api/leads/:id", requireAuth, (req: any, res) => {
   const visits = db.prepare("SELECT * FROM site_visits WHERE lead_id=?").all(l.id);
   const activities = db.prepare("SELECT a.*, u.name user_name FROM activities a LEFT JOIN users u ON u.id=a.user_id WHERE a.lead_id=? ORDER BY a.created_at DESC").all(l.id);
   const approvals = db.prepare("SELECT * FROM approvals WHERE lead_id=? ORDER BY submitted_at DESC").all(l.id);
-  res.json({ lead: leadView(l), events, tasks, proposals, documents: docs, site_visits: visits, activities, approvals });
+  const jobsOfLead = db.prepare("SELECT id FROM jobs WHERE lead_id=? ORDER BY created_at DESC").all(l.id) as any[];
+  const sp = (proposals as any[]).filter((p: any) => p.sent_at).sort((a: any, b: any) => String(b.sent_at).localeCompare(String(a.sent_at)))[0];
+  const sentDays = sp ? Math.floor((Date.now() - new Date(sp.sent_at).getTime()) / 86400000) : undefined;
+  let next_step: any = nextBestAction({ ...leadView(l) }, sentDays);
+  if (l.state === "WON") next_step = jobsOfLead.length ? { kind: "job", label: "Open the job — delivery is the work now", detail: "Sold. The job carries scheduling, crew, paperwork and invoicing; this lead's part is done." } : { kind: "job", label: "Create the job from this win", detail: "Won but no job exists yet — create it so delivery, scheduling and invoicing have a home." };
+  if (["LOST", "NO_RESPONSE", "UNSERVICEABLE", "JUNK", "DUPLICATE"].includes(l.state)) next_step = { kind: "closed", label: "This lead is closed", detail: "The timeline below is the record. If it comes back, move it from the stage path and it re-enters the queue." };
+  res.json({ lead: leadView(l), events, tasks, proposals, documents: docs, site_visits: visits, activities, approvals, next_step, job_id: jobsOfLead[0]?.id || null });
 });
 app.post("/api/leads/:id/transition", requireAuth, (req: any, res) => { // v2 route name, v3 engine.
   // This compat/system route forces (internal flows, automations, older clients);
@@ -470,7 +476,21 @@ app.post("/api/tasks/:id/snooze", requireAuth, (req: any, res) => { const until 
 app.post("/api/tasks/:id/escalate", requireAuth, (req: any, res) => { db.prepare("UPDATE tasks SET escalation_level=COALESCE(escalation_level,0)+1 WHERE id=? AND workspace_id=?").run(req.params.id, req.user.workspace_id); res.json({ ok: true }); });
 
 // metrics / brief / demand
-app.get("/api/metrics", requireAuth, (req: any, res) => res.json(metrics(req.user.workspace_id)));
+app.get("/api/onboarding", requireAuth, (req: any, res: any) => {
+    const w = req.user.workspace_id; const wrow = db.prepare("SELECT name, vertical FROM workspaces WHERE id=?").get(w) as any; const c = (sql: string) => (db.prepare(sql).get(w) as any).c;
+    const svc = c("SELECT COUNT(*) c FROM services WHERE workspace_id=?") + c("SELECT COUNT(*) c FROM price_book_items WHERE workspace_id=?");
+    const steps = [
+      { key: "profile", label: "Name your business + pick your trade", hint: "Vertical packs pre-load your services and fields.", done: !!(wrow?.name && wrow?.vertical), view: "settings" },
+      { key: "services", label: "Add your services & prices", hint: "Proposals price themselves from your price book.", done: svc > 0, view: "settings" },
+      { key: "team", label: "Invite your team", hint: "Owners approve; the crew works the queue.", done: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1, view: "settings" },
+      { key: "first_lead", label: "Bring in your first lead", hint: "Import the backlog, paste a CSV, or add one by hand.", done: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, view: "leads" },
+      { key: "first_proposal", label: "Build your first proposal", hint: "From a lead — no re-typing; prices come from the book.", done: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, view: "leads" },
+      { key: "first_send", label: "Send it for signature", hint: "Approval first when policy asks; the customer signs by link.", done: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=? AND sent_at IS NOT NULL") > 0, view: "queue" },
+      { key: "first_won", label: "Win it → it becomes a job", hint: "Signed proposals convert to scheduled, tracked jobs.", done: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, view: "jobs" },
+    ];
+    res.json({ steps, done_count: steps.filter(x => x.done).length, total: steps.length, complete: steps.every(x => x.done) });
+  });
+  app.get("/api/metrics", requireAuth, (req: any, res) => res.json(metrics(req.user.workspace_id)));
 app.get("/api/brief", requireAuth, (req: any, res) => res.json(morningBrief(req.user.workspace_id)));
 app.get("/api/demand-gap", requireAuth, (req: any, res) => { const leads = db.prepare("SELECT * FROM leads WHERE workspace_id=?").all(req.user.workspace_id) as any[]; const catalog = (db.prepare("SELECT name FROM services WHERE workspace_id=? AND is_catalog=1").all(req.user.workspace_id) as any[]).map(r => r.name); res.json(demandGap(leads, catalog)); });
 app.get("/api/demand-gap/leads", requireAuth, (req: any, res) => { const leads = db.prepare("SELECT * FROM leads WHERE workspace_id=?").all(req.user.workspace_id) as any[]; const catalog = (db.prepare("SELECT name FROM services WHERE workspace_id=? AND is_catalog=1").all(req.user.workspace_id) as any[]).map(r => r.name); let pool = demandPool(leads, catalog).filter(l => (l.service_requested || "") === String(req.query.service || "")); if (scopeOwn(req.user)) pool = pool.filter(l => mine(req.user, l)); res.json(pool.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).slice(0, 500).map(leadView)); });
@@ -722,7 +742,8 @@ app.get("/api/jobs/:id", requireAuth, (req: any, res) => {
   const documents = db.prepare("SELECT * FROM documents WHERE job_id=? OR lead_id=?").all(j.id, j.lead_id);
   const reports = db.prepare("SELECT f.*, COALESCE(w.name,u.name) manager FROM field_reports f LEFT JOIN workers w ON w.id=f.worker_id LEFT JOIN users u ON u.id=f.manager_id WHERE f.lead_id=? ORDER BY f.report_date DESC LIMIT 20").all(j.lead_id);
   const changeOrders = db.prepare("SELECT * FROM change_orders WHERE job_id=? OR lead_id=? ORDER BY created_at DESC").all(j.id, j.lead_id);
-  res.json({ job: jobView(j), labor, schedule, documents, field_reports: reports, change_orders: changeOrders });
+  const origin = db.prepare("SELECT l.id lead_id, l.service_requested, l.state lead_state, p.id proposal_id, p.total proposal_total, p.status proposal_status FROM leads l LEFT JOIN proposals p ON p.lead_id=l.id AND p.status='signed' WHERE l.id=?").get(j.lead_id) as any;
+  res.json({ job: jobView(j), labor, schedule, documents, field_reports: reports, change_orders: changeOrders, origin: origin || { lead_id: j.lead_id } });
 });
 app.post("/api/jobs/:id/stage", requireAuth, (req: any, res) => {
   const j = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
@@ -1200,7 +1221,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v13", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
+app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v14", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {
   const target = db.prepare("SELECT * FROM users WHERE id=?").get(String(req.body?.user_id || "")) as any;

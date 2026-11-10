@@ -128,7 +128,11 @@ export function registerCrm(app: any, requireAuth: any, needPerm: any = null) {
     const leads = db.prepare("SELECT l.*, c.name contact_name FROM leads l LEFT JOIN contacts c ON c.id=l.contact_id WHERE l.account_id=? ORDER BY l.created_at DESC").all(a.id);
     const jobs = db.prepare("SELECT j.*, l.service_requested, c.name contact_name FROM jobs j JOIN leads l ON l.id=j.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE l.account_id=? ORDER BY j.created_at DESC").all(a.id);
     const lifetime = (jobs as any[]).reduce((s, j) => s + (j.value || 0), 0);
-    res.json({ account: { ...a, custom: J(a.custom, {}) }, contacts, leads, jobs, lifetime_value: lifetime });
+    const proposals360 = db.prepare("SELECT p.*, l.service_requested FROM proposals p JOIN leads l ON l.id=p.lead_id WHERE l.account_id=? ORDER BY p.created_at DESC").all(a.id);
+    const payments360 = db.prepare("SELECT pay.* FROM payments pay JOIN proposals p ON p.id=pay.proposal_id JOIN leads l ON l.id=p.lead_id WHERE l.account_id=? ORDER BY pay.created_at DESC").all(a.id);
+    const docs360 = db.prepare("SELECT d.* FROM documents d WHERE d.workspace_id=? AND (d.lead_id IN (SELECT id FROM leads WHERE account_id=?) OR d.job_id IN (SELECT j.id FROM jobs j JOIN leads l ON l.id=j.lead_id WHERE l.account_id=?)) ORDER BY d.name LIMIT 50").all(a.workspace_id, a.id, a.id);
+    const collected360 = (payments360 as any[]).filter(p => p.status === "paid").reduce((sm, p) => sm + (p.amount || 0), 0); const refunded360 = (payments360 as any[]).filter(p => p.status === "refunded").reduce((sm, p) => sm + (p.amount || 0), 0);
+    res.json({ account: { ...a, custom: J(a.custom, {}) }, contacts, leads, jobs, lifetime_value: lifetime, proposals: proposals360, payments: payments360, documents: docs360, money360: { collected: collected360, refunded: refunded360, proposals_value: (proposals360 as any[]).reduce((sm, p) => sm + (p.total || 0), 0) } });
   });
   app.patch("/api/accounts/:id", requireAuth, (req: any, res: any) => { const b = req.body || {}; const F = ["name", "phone", "email", "address", "website", "industry", "notes"]; const sets = F.filter(f => b[f] !== undefined); if (!sets.length) return err(res, 422, "nothing to update");
     db.prepare(`UPDATE accounts SET ${sets.map(f => f + "=?").join(",")}, updated_at=? WHERE id=? AND workspace_id=?`).run(...sets.map(f => b[f]), now(), req.params.id, ws(req)); res.json({ ok: true }); });

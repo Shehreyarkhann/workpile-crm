@@ -90,3 +90,13 @@
 7. **Tranche 7 (v13) — Close-out:** ✅ SHIPPED — suppression list + send-door enforcement · merge snapshots + reversal · waiting-on-customer view + cold/waiting split · doc expiration queue · refunds · site-visit readiness · canonical state labels · period comparisons · schedule overload warnings · offline field queue · timeline actor badges · help surface · isolation suite extension · NFR targets (docs/NFR.md). 155/155 tests. **Every matrix row is now closed except founder/host items (LAUNCH.md) and two named residuals: malware scanning for uploads (needs a scanner service) and p95 instrumentation/restore drill (tied to the PG cutover).**
 
 *Matrix v1.0 — Nov 10, 2026. Update this file with each tranche; a row is closed only when its gap is verified in production, not when code merges.*
+
+## UX phase (v14) — from the founder's ChatGPT UX review (Nov 10)
+| Brief demand | Change | Evidence |
+|---|---|---|
+| §1 one journey, no dead ends | Server-computed Next step on every lead + a Next-step action bar whose button performs the step (messages/proposals/tasks/details/job) | tests/ux.test.ts; screenshots-v21/02 |
+| §2C/§4 Customer 360 | Account detail aggregates proposals, payments, documents + proposed/collected/refunded totals; rendered in CustomerDetail | tests/ux.test.ts; screenshots-v21/04 |
+| §3 onboarding = first outcome | GET /api/onboarding (7 data-detected steps) + Home activation checklist w/ progress + deep links; hides when complete | tests/ux.test.ts; screenshots-v21/01 |
+| §4 connectivity | Job breadcrumb Lead → signed Proposal → Job (GET /api/jobs/:id origin) | tests/ux.test.ts; screenshots-v21/03 |
+| §5 acceptance | One toast pattern; Esc closes modals; focus-visible; UX-ACCEPTANCE.md w/ 5 moderated test scenarios | docs/UX-ACCEPTANCE.md, docs/UX-BLUEPRINT.md |
+Remaining by design: moderated testing with unfamiliar users (first cohort = the G.C. pilot team from Nov 16); formal component library deferred (§25).

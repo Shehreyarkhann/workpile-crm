@@ -94,6 +94,18 @@ function FinancesStrip({ f }: any) {
     </div>
   </div>);
 }
+function OnboardingCard({ go }: any) {
+  const [ob, setOb] = useState<any>(null); const [hide, setHide] = useState(localStorage.getItem("wp_ob_hide") === "1");
+  useEffect(() => { api("/api/onboarding").then(setOb).catch(() => {}); }, []);
+  if (!ob || ob.complete || hide) return null;
+  const next = ob.steps.find((x: any) => !x.done);
+  return (<div className="card" style={{ borderLeft: "4px solid #0b6e3f", marginBottom: 12 }}>
+    <div className="rowflex" style={{ justifyContent: "space-between" }}><b>🚀 Get set up — {ob.done_count} of {ob.total} done</b><button className="btn ghost small" onClick={() => { localStorage.setItem("wp_ob_hide", "1"); setHide(true); }}>Dismiss</button></div>
+    <div style={{ height: 8, background: "#e2e8f0", borderRadius: 6, margin: "8px 0" }}><div style={{ height: 8, width: Math.round(ob.done_count / ob.total * 100) + "%", background: "#0b6e3f", borderRadius: 6 }} /></div>
+    {ob.steps.map((x: any) => <div key={x.key} className="rowflex" style={{ padding: "5px 0", opacity: x.done ? .65 : 1 }}><span>{x.done ? "✅" : "⬜"}</span><div style={{ flex: 1 }}><b style={{ fontSize: 13.5 }}>{x.label}</b> <span className="muted" style={{ fontSize: 12 }}>— {x.hint}</span></div>{!x.done && next && x.key === next.key && <button className="btn small" onClick={() => go({ view: x.view })}>Do it →</button>}</div>)}
+    <p className="muted" style={{ fontSize: 12, margin: "6px 0 0" }}>Built around one thing: your first sent proposal. Everything else can wait.</p></div>);
+}
+
 function HomeDash({ go, openLead, m, d }: any) {
   const [home, setHome] = useState<any>(null); const [ins, setIns] = useState<any[]>([]);
   const [runOpen, setRunOpen] = useState(false); const [toasts, setToasts] = useState<any[]>([]); const [actRange, setActRange] = useState(30);
@@ -110,6 +122,7 @@ function HomeDash({ go, openLead, m, d }: any) {
   const byDay = new Map<string, any[]>(); for (const u of home.upcoming) { if (!byDay.has(u.date)) byDay.set(u.date, []); byDay.get(u.date)!.push(u); }
   const STC: Record<string, string> = { NEW: "info", WORKING: "warn", QUALIFIED: "info", PROPOSAL: "warn", SENT: "info", FOLLOWUP: "warn", WON: "pass", LOST: "fail", NO_RESPONSE: "warn", CLOSED: "info", JUNK: "fail" };
   return (<div>
+      <OnboardingCard go={go} />
     <div className="homeGrid">
       <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
         <div className="statRow">
@@ -391,7 +404,7 @@ function CrewTime({ lead, users, reloadLead }: any) {
   </div>);
 }
 
-function LeadDetail({ id, users, priceBook, close, refresh }: any) {
+function LeadDetail({ id, users, priceBook, close, refresh, openJob }: any) {
   const [d, setD] = useState<any>(null); const [edit, setEdit] = useState<any>(null); const [msg, setMsg] = useState("");
   const [act, setAct] = useState<any>({ type: "call", body: "", outcome: "" }); const [sug, setSug] = useState<any>(null);
   useEffect(() => { api("/api/ai/suggest/" + id).then(setSug).catch(() => {}); }, [id, d?.lead?.state]);
@@ -402,13 +415,14 @@ function LeadDetail({ id, users, priceBook, close, refresh }: any) {
   useEffect(() => { api("/api/doc-templates").then((l: any[]) => { setDocTpls(l); const d = l.find((t: any) => t.is_default) || l[0]; if (d) setDocTpl(d.id); }).catch(() => {}); }, []);
   const load = () => { api("/api/leads/" + id).then(r => { setD(r); setEdit({ ...r.lead }); }).catch(e => setMsg(e.message)); };
   useEffect(load, [id]);
+  useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key === "Escape") close(); }; window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, []);
   if (!d) return <div className="modalWrap"><div className="modal">Loading… {msg}</div></div>;
   const l = d.lead;
   const PATH = ["NEW", "WORKING", "QUALIFIED", "PROPOSAL", "SENT", "FOLLOWUP", "WON"];
   const pathIdx = PATH.indexOf(l.state);
   const save = async () => { try { await api("/api/leads/" + id, { method: "PATCH", body: { service_requested: edit.service_requested, est_value: Number(edit.est_value) || 0, urgency: edit.urgency, owner_id: edit.owner_id, pm_id: edit.pm_id || null, approver_id: edit.approver_id || null, next_action: edit.next_action, notes: edit.notes, location: edit.location, contact: { name: edit.contact_name, phone: edit.contact_phone, email: edit.contact_email } } }); setMsg("Saved ✓"); load(); refresh && refresh(); } catch (e: any) { setMsg(e.message); } };
   const transit = async (to: string, extra: any = {}) => { try { await api(`/api/leads/${id}/transition`, { method: "POST", body: { to_state: to, ...extra } }); setMsg("Moved ✓"); load(); refresh && refresh(); } catch (e: any) { setMsg(e.message); } };
-  const stageTo = async (to: string, extra: any = {}) => { try { await api(`/api/leads/${id}/stage`, { method: "POST", body: { to, ...extra } }); setMsg(`Moved to ${to.replaceAll("_", " ")} ✓`); setFinalPick(null); load(); refresh && refresh(); } catch (e: any) { if (e.message === "reason_required") { setFinalPick({ to, reason: "", confirm: false }); setMsg(`${to.replaceAll("_", " ")} needs a reason — pick one below.`); } else if (e.message === "won_needs_confirmation") { setFinalPick({ to: "WON", reason: "", confirm: false }); setMsg("No signed proposal on this lead — confirm below if this is a verbal/legacy win."); } else setMsg(e.message); } };
+  const stageTo = async (to: string, extra: any = {}) => { try { await api(`/api/leads/${id}/stage`, { method: "POST", body: { to, ...extra } }); setMsg(`Moved to ${to.replaceAll("_", " ")} ✓`); toast(`Moved to ${to.replaceAll("_", " ")} ✓`); setFinalPick(null); load(); refresh && refresh(); } catch (e: any) { if (e.message === "reason_required") { setFinalPick({ to, reason: "", confirm: false }); setMsg(`${to.replaceAll("_", " ")} needs a reason — pick one below.`); } else if (e.message === "won_needs_confirmation") { setFinalPick({ to: "WON", reason: "", confirm: false }); setMsg("No signed proposal on this lead — confirm below if this is a verbal/legacy win."); } else setMsg(e.message); } };
   const applyFinal = async () => { if (!finalPick) return; const extra: any = {}; if (finalPick.reason) extra.lost_reason = finalPick.reason; if (finalPick.to === "WON" && finalPick.confirm) extra.confirm_no_proposal = true; await stageTo(finalPick.to, extra); };
   const buildProposal = async () => { try { const clean = items.filter(i => i.price_book_item_id); if (!clean.length) return setMsg("Add at least one price-book line item"); const body: any = { line_items: clean.map(i => ({ price_book_item_id: i.price_book_item_id, qty: Number(i.qty) || 1, unit_price: i.unit_price !== undefined && i.unit_price !== "" ? Number(i.unit_price) : undefined, override_reason: overrideReason || undefined })), valid_days: validDays || undefined, template_id: docTpl || undefined, override_reason: overrideReason || undefined };
     if (useOpts) { const mk = (arr: any[]) => arr.filter(i => i.price_book_item_id).map(i => ({ price_book_item_id: i.price_book_item_id, qty: Number(i.qty) || 1 })); const b2 = mk(optB), c2 = mk(optC); if (!b2.length && !c2.length) return setMsg("Options need at least one priced option with line items"); body.options = [{ name: "Essential", line_items: body.line_items }, ...(b2.length ? [{ name: "Recommended", line_items: b2 }] : []), ...(c2.length ? [{ name: "Complete", line_items: c2 }] : [])]; }
@@ -433,6 +447,16 @@ function LeadDetail({ id, users, priceBook, close, refresh }: any) {
       {sug.suggestion.kind === "nudge" && <button className="btn small" onClick={async () => { const r = await api("/api/ai/nudge", { method: "POST", body: { lead_id: id } }); setMsg(`Nudge sent by ${r.channel} (${String(r.status).replaceAll("_", " ")}) ✓`); }}>Nudge now</button>}
       {sug.suggestion.kind === "fix_step" && <button className="btn small" onClick={async () => { await api("/api/leads/" + id, { method: "PATCH", body: { next_action: "Follow up", next_action_due_at: new Date(Date.now() + 86400000).toISOString() } }); setMsg("Next step set for tomorrow ✓"); load(); }}>Set for tomorrow</button>}
     </div>}
+    {d.next_step && d.next_step.kind !== "closed" && <div className="nextbar"><div style={{ flex: 1 }}><b>▶ Next step: {d.next_step.label}</b><br /><span style={{ opacity: .85, fontSize: 12.5 }}>{d.next_step.detail}</span></div>
+      {(() => { const k = d.next_step.kind; const goTab = (t: string, label: string) => <button className="btn small" style={{ background: "#fff", color: "#14532d" }} onClick={() => setTab(t)}>{label}</button>;
+        if (k === "approve") return goTab("proposals", "Review & send →");
+        if (k === "fix_step") return goTab("activity", "Open tasks →");
+        if (k === "assign") return goTab("details", "Assign owner →");
+        if (k === "job") return <button className="btn small" style={{ background: "#fff", color: "#14532d" }} onClick={async () => { if (d.job_id && openJob) { openJob(d.job_id); } else { const r = await api("/api/jobs", { method: "POST", body: { lead_id: id } }).catch((e: any) => ({ error: e.message })); if (r.error) setMsg(r.error); else { toast("Job created ✓"); if (r.id && openJob) openJob(r.id); else load(); } } }}>{d.job_id ? "Open the job →" : "Create the job →"}</button>;
+        if (["call", "nudge", "reactivate", "work"].includes(k)) return goTab("messages", "Open messages →");
+        return null; })()}
+    </div>}
+    {d.next_step && d.next_step.kind === "closed" && <div className="card" style={{ margin: "10px 0", padding: "10px 14px", background: "#f8fafc" }}><b>🔒 {d.next_step.label}</b> <span className="muted">{d.next_step.detail}</span></div>}
     <div className="tabs"><button className={tab === "details" ? "on" : ""} onClick={() => setTab("details")}>Details</button><button className={tab === "activity" ? "on" : ""} onClick={() => setTab("activity")}>Activity & Tasks</button><button className={tab === "proposals" ? "on" : ""} onClick={() => setTab("proposals")}>Proposals & Files ({d.proposals.length})</button><button className={tab === "messages" ? "on" : ""} onClick={() => setTab("messages")}>Messages</button><button className={tab === "crew" ? "on" : ""} onClick={() => setTab("crew")}>Crew & Time</button><button className={tab === "feed" ? "on" : ""} onClick={() => setTab("feed")}>Feed & Notes</button></div>
     {tab === "feed" && <div><FeedPanel type="lead" id={id} /><div style={{ marginTop: 16 }}><NotesPanel type="lead" id={id} /></div></div>}
     {tab === "details" && <div>
@@ -1577,17 +1601,19 @@ function JobsBoard({ openJob }: any) {
   </div>);
 }
 
-function JobDetail({ id, users, priceBook, close, refresh }: any) {
+function JobDetail({ id, users, priceBook, close, refresh, openLead }: any) {
   const [d, setD] = useState<any>(null); const [tab, setTab] = useState("overview"); const [msg, setMsg] = useState("");
   const [co, setCo] = useState<any>({ delta_scope: "", delta_total: "" }); const [sched, setSched] = useState<any>({ worker_name: "", work_date: new Date().toISOString().slice(0, 10), note: "" });
   const load = () => { api("/api/jobs/" + id).then(setD).catch(e => setMsg(e.message)); };
   useEffect(load, [id]);
+  useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key === "Escape") close(); }; window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, []);
   if (!d) return <div className="modalWrap"><div className="modal">Loading job… {msg}</div></div>;
   const j = d.job;
-  const stageTo = async (st: string) => { await api(`/api/jobs/${id}/stage`, { method: "POST", body: { to: st } }); load(); refresh && refresh(); };
+  const stageTo = async (st: string) => { await api(`/api/jobs/${id}/stage`, { method: "POST", body: { to: st } }); toast(`Job moved to ${st.replaceAll("_", " ")} ✓`); load(); refresh && refresh(); };
   return (<div className="modalWrap"><div className="modal">
     <div className="rowflex" style={{ justifyContent: "space-between" }}><h3 style={{ margin: 0 }}>{j.service_requested} — {j.contact_name}</h3><button className="btn ghost small" onClick={close}>✕ Close</button></div>
     <p className="muted" style={{ margin: "6px 0" }}>{j.contact_phone || ""} {j.contact_email ? "· " + j.contact_email : ""} · {j.location || ""} · job value <b style={{ color: "#14532d" }}>{money(j.value)}</b> · labor {money(j.labor_cost)} ({j.labor_pct ?? 0}% of value)</p>
+    {d.origin && <div className="crumbs"><span className="clickable" onClick={() => openLead && openLead(d.origin.lead_id)}>🎯 Lead: {d.origin.service_requested || "originating lead"}</span>{d.origin.proposal_id ? <span>→ 📄 Proposal {money(d.origin.proposal_total)} · {d.origin.proposal_status}</span> : <span className="muted">→ no signed proposal (manual / legacy win)</span>}<span>→ 🔧 This job</span></div>}
     <div className="path">{JOB_STAGES.filter(st => st !== "ON_HOLD" && st !== "CANCELLED").map(st => <div key={st} className={`stage ${st === j.stage ? "cur" : ""}`} onClick={() => stageTo(st)}>{st.replaceAll("_", " ")}</div>)}</div>
     <p className="muted" style={{ fontSize: 12 }}>Click any stage — jobs move both ways. Current: <b>{j.stage.replaceAll("_", " ")}</b></p>
     {msg && <div className="ok">{msg}</div>}
@@ -1781,6 +1807,7 @@ function CustomerDetail({ id, close, openLead, openJob }: any) {
   const [d, setD] = useState<any>(null);
   const load = () => { api("/api/accounts/" + id).then(setD).catch(() => {}); };
   useEffect(load, [id]);
+  useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key === "Escape") close(); }; window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, []);
   if (!d) return <div className="modalWrap"><div className="modal">Loading customer…</div></div>;
   const a = d.account;
   return (<div className="modalWrap"><div className="modal">
@@ -1795,6 +1822,15 @@ function CustomerDetail({ id, close, openLead, openJob }: any) {
     {d.jobs.length === 0 && <p className="muted">No jobs yet.</p>}
     <h4>Lead history ({d.leads.length})</h4>
     {d.leads.map((l: any) => <p key={l.id} style={{ margin: "4px 0" }} className="clickable" onClick={() => openLead(l.id)}>🎯 <b>{l.service_requested}</b> — {money(l.est_value)} · <Badge s={l.state} /></p>)}
+    <h4>Proposals ({(d.proposals || []).length}) · {money((d.money360 || {}).proposals_value || 0)} proposed</h4>
+    {(d.proposals || []).map((p: any) => <p key={p.id} style={{ margin: "4px 0" }}>📄 <b>{p.service_requested}</b> — {money(p.total)} · <span className="tinyBadge">{p.status}</span>{p.sent_at ? " · sent " + dOnly(p.sent_at) : ""}{p.signed_at ? " · ✍️ signed " + dOnly(p.signed_at) : ""}</p>)}
+    {(d.proposals || []).length === 0 && <p className="muted">No proposals yet.</p>}
+    <h4>Payments · {money((d.money360 || {}).collected || 0)} collected{(d.money360 || {}).refunded ? " · " + money(d.money360.refunded) + " refunded" : ""}</h4>
+    {(d.payments || []).map((p: any) => <p key={p.id} style={{ margin: "4px 0" }}>{p.kind === "refund" ? "↩️" : "💳"} {money(p.amount)} · {p.kind} · <span className="tinyBadge">{p.status}</span> · {dOnly(p.created_at)}</p>)}
+    {(d.payments || []).length === 0 && <p className="muted">No payments recorded.</p>}
+    <h4>Documents ({(d.documents || []).length})</h4>
+    {(d.documents || []).map((doc: any) => <p key={doc.id} style={{ margin: "4px 0" }}>📎 {doc.name} · <span className="tinyBadge">{doc.status}</span>{doc.expires_at ? " · expires " + dOnly(doc.expires_at) : ""}</p>)}
+    {(d.documents || []).length === 0 && <p className="muted">No documents on file.</p>}
     <div style={{ marginTop: 14 }}><FeedPanel type="account" id={id} /></div>
     <CustomFieldsSection objectType="account" entityId={id} custom={a.custom} reload={load} />
   </div></div>);
@@ -1999,6 +2035,14 @@ function AssignmentRulesTab({ users }: any) {
 }
 
 
+// ---- Toasts: one feedback pattern everywhere (UX acceptance: Feedback) ----
+function toast(msg: string) { window.dispatchEvent(new CustomEvent("wp-toast", { detail: msg })); }
+function ToastHost() {
+  const [items, setItems] = useState<any[]>([]);
+  useEffect(() => { const h = (e: any) => { const id = Math.random().toString(36).slice(2); setItems(x => [...x, { id, msg: e.detail }]); setTimeout(() => setItems(x => x.filter(t => t.id !== id)), 4200); }; window.addEventListener("wp-toast", h); return () => window.removeEventListener("wp-toast", h); }, []);
+  return <div className="toastHost">{items.map(t => <div key={t.id} className="toast">{t.msg}</div>)}</div>;
+}
+
 function App() {
   const [user, setUser] = useState<any>(null); const [login, setLogin] = useState({ email: "", password: "" }); const [err, setErr] = useState("");
   const [nav, setNav] = useState<Nav>({ view: "queue" }); const [users, setUsers] = useState<any[]>([]); const [priceBook, setPriceBook] = useState<any[]>([]);
@@ -2042,6 +2086,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
   return (<div>
     {user.impersonation && <div style={{ background: "#991b1b", color: "#fff", padding: "8px 16px", display: "flex", gap: 12, alignItems: "center", fontSize: 13.5 }}><span>🕵 <b>Impersonation</b> — viewing as {user.name} ({user.workspace_name}). Started by {user.impersonation.by_name}; ends {dt(user.impersonation.expires_at)}. Everything done in this window is audited.</span><span style={{ flex: 1 }} /><button className="btn small" style={{ background: "#fff", color: "#991b1b", fontWeight: 700 }} onClick={async () => { await api("/api/auth/impersonation/exit", { method: "POST", body: {} }); location.reload(); }}>Exit impersonation</button></div>}
     <div className="layout">
+      <ToastHost />
     {mOpen && <div className="scrim" onClick={() => setMOpen(false)} />}
     <aside className={`side ${sb === "rail" ? "rail" : ""} ${mOpen ? "mOpen" : ""}`}><div className="sideHead"><Logo /><button className="collapseBtn" title={sb === "rail" ? "Expand sidebar" : "Collapse sidebar"} onClick={toggleSb}>{sb === "rail" ? "»" : "«"}</button></div><div className="who">{user.name} · {user.role}</div>
       <select className="wsSwitch" value={user.workspace_id} onChange={async e => { if (e.target.value === "__new") { const name = prompt("New business / workspace name"); if (name) { await api("/api/workspaces", { method: "POST", body: { name } }); location.reload(); } return; } await api("/api/workspaces/switch", { method: "POST", body: { workspace_id: e.target.value } }); location.reload(); }}>
@@ -2094,13 +2139,13 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       {nav.view === "billing" && <Billing />}
       {nav.view === "admin" && <Admin />}
       </EB>
-      {jobOpen && <JobDetail id={jobOpen} users={users} priceBook={priceBook} close={() => setJobOpen(null)} refresh={() => setTick(t => t + 1)} />}
+      {jobOpen && <JobDetail id={jobOpen} users={users} priceBook={priceBook} close={() => setJobOpen(null)} refresh={() => setTick(t => t + 1)} openLead={(lid: string) => { setJobOpen(null); setLeadId(lid); }} />}
       {custOpen && <CustomerDetail id={custOpen} close={() => setCustOpen(null)} openLead={openLead} openJob={(id: string) => setJobOpen(id)} />}
       {ltOpen && <LogTimeModal close={() => setLtOpen(false)} done={() => setTick(t => t + 1)} />}
       {creating && <CreateLead users={users} done={(id: any) => { setCreating(false); setTick(t => t + 1); if (id) openLead(id); }} />}
       {palOpen && <CommandPalette close={() => setPalOpen(false)} go={go} openLead={openLead} newLead={() => setCreating(true)} />}
       {helpOpen && <div className="modalWrap" onClick={() => setHelpOpen(false)}><div className="card" style={{ maxWidth: 430, margin: "10vh auto" }} onClick={e => e.stopPropagation()}><h3 style={{ marginTop: 0 }}>Keyboard shortcuts</h3><table><tbody>{[["⌘K or /", "Command palette — search + jump"], ["N", "New lead"], ["G then M / D / P / L / A / R / S / B", "Go to My Day / Dashboard / Pulse / Leads / Approvals / Reports / Settings / Billing"], ["?", "This help"], ["Esc", "Close dialogs"]].map(([k, v]) => <tr key={k}><td style={{ whiteSpace: "nowrap" }}><span className="kbd">{k}</span></td><td>{v}</td></tr>)}</tbody></table></div></div>}
-      {leadId && <LeadDetail id={leadId} users={users} priceBook={priceBook} close={() => setLeadId(null)} refresh={() => setTick(t => t + 1)} />}
+      {leadId && <LeadDetail id={leadId} users={users} priceBook={priceBook} close={() => setLeadId(null)} refresh={() => setTick(t => t + 1)} openJob={(jid: string) => { setLeadId(null); setJobOpen(jid); }} />}
     </main></div></div>);
 }
 function BookingPage({ slug }: any) {
