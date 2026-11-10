@@ -14,7 +14,7 @@ export function weeklyReport(ws: string, week?: string) {
   const finals = db.prepare(`SELECT o.outcome, COUNT(*) c, COALESCE(SUM(l.est_value),0) v FROM outcome_deliveries o LEFT JOIN leads l ON l.id=o.lead_id WHERE o.workspace_id=? AND date(o.created_at)>=? AND date(o.created_at)<=? GROUP BY o.outcome`).all(ws, from, to) as any[];
   const fin = (o: string) => finals.find(f => f.outcome === o) || { c: 0, v: 0 };
   const proposals = one(`SELECT COUNT(*) c, COALESCE(SUM(total),0) v FROM proposals WHERE workspace_id=? AND date(created_at)>=? AND date(created_at)<=?`, ws, from, to);
-  const decided = one(`SELECT COUNT(*) c, SUM(CASE WHEN decision='APPROVED' THEN 1 ELSE 0 END) a FROM approvals WHERE workspace_id=? AND decided_at IS NOT NULL AND date(decided_at)>=? AND date(decided_at)<=?`, ws, from, to);
+  const decided = one(`SELECT COUNT(*) c, SUM(CASE WHEN decision='approved' THEN 1 ELSE 0 END) a FROM approvals WHERE workspace_id=? AND decided_at IS NOT NULL AND date(decided_at)>=? AND date(decided_at)<=?`, ws, from, to);
   const pendingApprovals = one(`SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NULL`, ws).c;
   const backlog = one(`SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state IN ('NEW','TRIAGED','QUALIFYING')`, ws).c;
   const backlogValue = one(`SELECT COALESCE(SUM(est_value),0) v FROM leads WHERE workspace_id=? AND state IN ('NEW','TRIAGED','QUALIFYING','QUALIFIED','READY_FOR_APPROVAL')`, ws).v;
@@ -31,8 +31,8 @@ export function weeklyReport(ws: string, week?: string) {
   const r = {
     week_of: from, week_to: to,
     new_leads: newLeads,
-    won: { count: fin("WON").c, value: fin("WON").v }, lost: { count: fin("LOST").c },
-    no_response: fin("NO_RESPONSE").c,
+    won: { count: fin("won").c, value: fin("won").v }, lost: { count: fin("lost").c },
+    no_response: fin("no_response").c,
     proposals: { count: proposals.c, value: proposals.v },
     approvals: { decided: decided.c || 0, approved: decided.a || 0, rate: pct(decided.a || 0, decided.c || 0), pending: pendingApprovals },
     backlog: { open: backlog, pipeline_value: backlogValue },

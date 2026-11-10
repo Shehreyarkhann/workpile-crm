@@ -8,7 +8,7 @@
     "dev:client": "vite",
     "build": "vite build",
     "start": "NODE_ENV=production node server/index.ts",
-    "test": "node --test tests/core.test.ts tests/slice2.test.ts tests/slice3.test.ts tests/slice4.test.ts tests/slice5.test.ts tests/slice6.test.ts tests/slice7.test.ts tests/slice8.test.ts tests/slice9.test.ts tests/slice10.test.ts tests/slice11.test.ts tests/slice12.test.ts tests/slice13.test.ts tests/slice14.test.ts tests/slice15.test.ts tests/slice16.test.ts tests/slice17.test.ts tests/slice18.test.ts tests/slice19.test.ts tests/slice20.test.ts tests/slice21.test.ts tests/slice22.test.ts tests/slice24.test.ts tests/slice25.test.ts tests/slice26.test.ts",
+    "test": "node --test tests/core.test.ts tests/slice2.test.ts tests/slice3.test.ts tests/slice4.test.ts tests/slice5.test.ts tests/slice6.test.ts tests/slice7.test.ts tests/slice8.test.ts tests/slice9.test.ts tests/slice10.test.ts tests/slice11.test.ts tests/slice12.test.ts tests/slice13.test.ts tests/slice14.test.ts tests/slice15.test.ts tests/slice16.test.ts tests/slice17.test.ts tests/slice18.test.ts tests/slice19.test.ts tests/slice20.test.ts tests/slice21.test.ts tests/slice22.test.ts tests/slice24.test.ts tests/slice25.test.ts tests/slice26.test.ts tests/slice27.test.ts",
     "smoke": "node tests/smoke.mjs"
   },
   "dependencies": {
