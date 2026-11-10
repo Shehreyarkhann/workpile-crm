@@ -25,7 +25,7 @@ before(async () => {
   // a lead this week + a WON final delivery + a proposal + labor + field report + timesheet week state
   const lead = await J("/api/leads", { method: "POST", body: { contact: { name: "Rep Cust", phone: "+15165550333", email: "rc@t24.co" }, service_requested: "Phase I ESA", est_value: 12000 } }, { Cookie: cookie });
   const leadId = lead.j.lead.id;
-  dbm.db.prepare("INSERT INTO outcome_deliveries (id,workspace_id,lead_id,outcome,last_status,created_at) VALUES (?,?,?,?,?,?)").run(uid("od"), ws, leadId, "WON", "delivered", now());
+  dbm.db.prepare("INSERT INTO outcome_deliveries (id,workspace_id,lead_id,outcome,last_status,created_at) VALUES (?,?,?,?,?,?)").run(uid("od"), ws, leadId, "won", "delivered", now()); // production writes lowercase outcomes (OUTCOME_OF) — slice 27 regression
   dbm.db.prepare("INSERT INTO proposals (id,workspace_id,lead_id,status,total,created_at) VALUES (?,?,?,?,?,?)").run(uid("prop"), ws, leadId, "sent", 12000, now());
   dbm.db.prepare("INSERT INTO time_entries (id,workspace_id,lead_id,user_id,entry_date,hours,rate,amount,created_at) VALUES (?,?,?,?,?,?,?,?,?)").run(uid("time"), ws, leadId, pm, new Date().toISOString().slice(0, 10), 6, 100, 600, now());
   await J("/api/field-reports", {}, { Cookie: cookie }); // ensures today's row
