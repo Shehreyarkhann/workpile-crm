@@ -39,19 +39,21 @@ try {
   // assign PM first (gate requires it)
   const detail = await J(`/api/leads/${leadId}`, { headers: H });
   await T("TRIAGED"); await T("QUALIFYING"); await T("QUALIFIED", { pm_id: pmId });
-  const gateFail = await J(`/api/leads/${leadId}/transition`, { method: "POST", headers: H, body: { to_state: "READY_FOR_APPROVAL" } });
-  if (gateFail.status !== 422) throw new Error("completeness gate should block without proposal, got " + gateFail.status);
+  // v3: no gate wall — readiness is a checklist. Moving on works; the checklist reports what's missing.
+  const chk = await J(`/api/leads/${leadId}/packet-check`, { method: "POST", headers: H, body: {} });
+  if (chk.j.complete) throw new Error("readiness should report incomplete without a proposal");
+  await J("/api/settings", { method: "PATCH", headers: H, body: { approval_policy: "always" } }); // v3 approvals are policy-driven
   const pb = await J("/api/price-book", { headers: H });
   // proposal can only be created pre-approval in real flow via builder; create draft directly through API while QUALIFIED:
   const prop = await J(`/api/leads/${leadId}/proposals`, { method: "POST", headers: H, body: { line_items: [{ price_book_item_id: pb.j[0].id, qty: 1 }, { price_book_item_id: pb.j[1].id, qty: 2 }] } });
   if (prop.status !== 201) throw new Error("proposal failed " + JSON.stringify(prop.j));
-  await T("READY_FOR_APPROVAL");
+  await T("READY_FOR_APPROVAL"); // v3: lands in PROPOSAL stage; policy routes it to an approver
   const appr = await J("/api/approvals", { headers: H });
   if (!appr.j.length) throw new Error("approval inbox empty");
   const dec = await J(`/api/approvals/${appr.j[0].id}/decide`, { method: "POST", headers: H, body: { decision: "approved" } });
   if (dec.status !== 200) throw new Error("approve failed " + JSON.stringify(dec.j));
   let d = await J(`/api/leads/${leadId}`, { headers: H });
-  if (d.j.lead.state !== "APPROVED") throw new Error("expected APPROVED, got " + d.j.lead.state);
+  if (d.j.lead.state !== "PROPOSAL") throw new Error("expected PROPOSAL (v3 stage), got " + d.j.lead.state);
   await T("PROPOSAL_DRAFTED"); await T("PROPOSAL_SENT"); await T("WON");
   // outcome pull + ack (§14.5)
   const outcomes = await J("/v1/outcomes", { headers: { Authorization: `Bearer ${KEY}` } });
@@ -61,5 +63,5 @@ try {
   if (ack.status !== 200) throw new Error("ack failed");
   const metrics = await J("/api/metrics", { headers: H });
   if (metrics.j.first_pass_approval_rate !== 100) throw new Error("FPAR should be 100, got " + metrics.j.first_pass_approval_rate);
-  console.log("SMOKE PASS — journey: API create (idempotent+dedupe) → gate blocked → proposal → approval (FPAR 100%) → won → outcome delivered + acked");
+  console.log("SMOKE PASS — journey: API create (idempotent+dedupe) → readiness checked → proposal → approval (FPAR 100%) → won → outcome delivered + acked");
 } finally { if (server) server.kill(); }

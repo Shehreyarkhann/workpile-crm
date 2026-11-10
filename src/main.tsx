@@ -13,8 +13,11 @@ export const num = (n: any) => Number(n || 0).toLocaleString();
 export const dt = (s: any) => s ? new Date(s).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "—";
 export const dOnly = (s: any) => s ? new Date(s).toLocaleDateString() : "—";
 export const Badge = ({ s }: any) => <span className={`badge b-${s}`}>{String(s || "").replaceAll("_", " ")}</span>;
-export const STATES = ["NEW", "TRIAGED", "QUALIFYING", "QUALIFIED", "READY_FOR_APPROVAL", "APPROVED", "PROPOSAL_DRAFTED", "PROPOSAL_SENT", "IN_FOLLOW_UP", "WON", "LOST", "NO_RESPONSE", "UNSERVICEABLE", "ON_HOLD", "JUNK", "DUPLICATE"];
-export const BUCKETS: [string, string][] = [["new", "New"], ["working", "Working"], ["approver", "Waiting on Approver"], ["proposal", "Proposal Out"], ["won", "Won"], ["closed", "Closed"]];
+export const STATES = ["NEW", "WORKING", "QUALIFIED", "PROPOSAL", "SENT", "FOLLOWUP", "WON", "LOST", "NO_RESPONSE", "UNSERVICEABLE", "JUNK", "DUPLICATE"];
+export const FINALS = ["WON", "LOST", "NO_RESPONSE", "UNSERVICEABLE", "JUNK", "DUPLICATE"];
+export const JOB_STAGES = ["SCHEDULED", "IN_PROGRESS", "FIELD_DONE", "PAPERWORK", "INVOICED", "PAID", "CLOSED", "ON_HOLD"];
+export const BUCKETS: [string, string][] = [["new", "New"], ["working", "Working"], ["proposal", "Proposal"], ["won", "Won"], ["closed", "Closed"]];
+export const BOARD_STAGES: [string, string][] = [["NEW", "New"], ["WORKING", "Working"], ["QUALIFIED", "Qualified"], ["PROPOSAL", "Proposal"], ["SENT", "Sent"], ["FOLLOWUP", "Follow-up"], ["WON", "Won"], ["CLOSED", "Closed"]];
 type Nav = { view: string; leads?: any; leadId?: string };
 
 function GettingStarted({ go }: any) {
@@ -110,7 +113,11 @@ function Leads({ initial, openLead, users, me }: any) {
   const [tickFix, setTickFix] = useState(0);
   const load = () => { const qs = new URLSearchParams({ paged: "1", page: String(f.page || 1), page_size: "50", sort: f.sort || "recent" }); for (const k of ["state", "bucket", "q", "service", "owner_id", "overdue", "min_value", "unassigned"]) if (f[k]) qs.set(k, f[k]); api("/api/leads?" + qs).then(setData).catch(() => {}); };
   useEffect(load, [JSON.stringify(f), tickFix]);
-  useEffect(() => { if (mode === "board") { const o: any = {}; Promise.all(BUCKETS.map(([b]) => api(`/api/leads?paged=1&bucket=${b}&page=1&page_size=25`).then(r => { o[b] = r; }))).then(() => setBoard({ ...o })); } }, [mode]);
+  const [bstats, setBstats] = useState<any>(null); const [dragId, setDragId] = useState("");
+  const loadBoard = () => { const o: any = {}; Promise.all(BOARD_STAGES.map(([st]) => api(st === "CLOSED" ? `/api/leads?paged=1&bucket=closed&page=1&page_size=25` : `/api/leads?paged=1&state=${st}&page=1&page_size=25`).then(r => { o[st] = r; }))).then(() => setBoard({ ...o })); api("/api/board-stats").then(setBstats).catch(() => {}); };
+  useEffect(() => { if (mode === "board") loadBoard(); }, [mode, tickFix]);
+  const dropStage = async (st: string) => { if (!dragId || st === "CLOSED") return; try { await api(`/api/leads/${dragId}/stage`, { method: "POST", body: { to: st } }); } catch (e: any) { if (e.message === "won_needs_confirmation" && confirm("No signed proposal on this lead. Mark WON as a verbal/legacy win and create the job?")) { await api(`/api/leads/${dragId}/stage`, { method: "POST", body: { to: st, confirm_no_proposal: true } }).catch(() => {}); } else if (e.message === "reason_required") { const r = prompt("Reason for closing (price, timing, competitor, unresponsive…):"); if (r) await api(`/api/leads/${dragId}/stage`, { method: "POST", body: { to: "LOST", lost_reason: r } }).catch(() => {}); } }
+    setDragId(""); loadBoard(); setTickFix(t => t + 1); };
   const Pager = () => <div className="pager"><span>{num(data.total)} leads · page {data.page} of {num(data.pages)}</span><button className="btn ghost small" disabled={data.page <= 1} onClick={() => setF({ ...f, page: data.page - 1 })}>← Prev</button><button className="btn ghost small" disabled={data.page >= data.pages} onClick={() => setF({ ...f, page: data.page + 1 })}>Next →</button></div>;
   return (<div>
     <h2 className="pt">Leads <button className="btn" style={{ float: "right" }} onClick={() => setSyncOpen(true)}>⇅ Sync leads</button></h2><p className="sub">Search, filter, sort — built for thousands of records. Click any row to open the full record.</p>
@@ -147,10 +154,12 @@ function Leads({ initial, openLead, users, me }: any) {
       {data.items.map((l: any) => <tr className="clickable" key={l.id} onClick={() => openLead(l.id)}><td onClick={e => e.stopPropagation()}><input type="checkbox" style={{ width: "auto" }} checked={sel.has(l.id)} onChange={() => { const n = new Set(sel); n.has(l.id) ? n.delete(l.id) : n.add(l.id); setSel(n); }} /></td><td><b>{l.contact_name}</b><br /><span className="muted">{l.contact_phone || l.contact_email || ""}</span></td><td>{l.service_requested}</td><td>{l.ai_score !== null && l.ai_score !== undefined ? <span className={`score ${JSON.parse(l.ai_flags || "{}").temperature || "cold"}`}>{l.ai_score}</span> : <span className="muted">—</span>}</td><td><Badge s={l.state} /></td><td>{money(l.est_value)}</td><td>{l.owner_name || "—"}</td><td>{l.next_action || "—"}<br /><span className="muted">{dOnly(l.next_action_due_at)}</span></td><td>{dOnly(l.created_at)}</td></tr>)}
       {data.items.length === 0 && <tr><td colSpan={7} className="muted">No leads match these filters.</td></tr>}
     </tbody></table><Pager /></div>) : (
-      <div className="kanban">{BUCKETS.map(([b, lab]) => <div className="kcol" key={b}><h4>{lab}<span>{num(board[b]?.total ?? 0)}</span></h4>
-        {(board[b]?.items || []).map((l: any) => <div className="kcard" key={l.id} onClick={() => openLead(l.id)}><b>{l.service_requested}</b><span className="m">{l.contact_name} · {money(l.est_value)}<br />{l.state.replaceAll("_", " ")} · next {dOnly(l.next_action_due_at)}</span></div>)}
-        {(board[b]?.total || 0) > 25 && <p className="muted" style={{ fontSize: 12 }}>+ {num(board[b].total - 25)} more — use Table view to page through all</p>}
-      </div>)}</div>)}
+      <div className="kanban">{BOARD_STAGES.map(([st, lab]) => { const bs = bstats?.stages?.[st]; return <div className="kcol" key={st} onDragOver={e => e.preventDefault()} onDrop={() => dropStage(st)} style={st === "CLOSED" ? { opacity: 0.85 } : {}}><h4>{lab}<span>{num(board[st]?.total ?? 0)}</span></h4>
+        {bs && st !== "CLOSED" && <p className="muted" style={{ fontSize: 11.5, margin: "0 0 6px" }}>{money(bs.value)} · median {bs.median_age_days}d{bs.rotting ? ` · ⚠ ${bs.rotting} rotting` : ""}</p>}
+        {(board[st]?.items || []).map((l: any) => <div className="kcard" key={l.id} draggable onDragStart={() => setDragId(l.id)} onClick={() => openLead(l.id)} style={l.hold_flag ? { borderLeft: "4px solid #b45309" } : {}}><b>{l.service_requested}</b><span className="m">{l.contact_name} · {money(l.est_value)}<br />{l.hold_flag ? "⏸ on hold · " : ""}next {dOnly(l.next_action_due_at)}{!l.next_action_due_at ? " · ⚠ no next step" : ""}</span></div>)}
+        {(board[st]?.total || 0) > 25 && <p className="muted" style={{ fontSize: 12 }}>+ {num(board[st].total - 25)} more — use Table view to page through all</p>}
+      </div>; })}</div>)}
+    {mode === "board" && <p className="muted" style={{ fontSize: 12.5 }}>Drag cards between stages — backward, forward, skip: all allowed. Dropping on Won asks for confirmation when there's no signed proposal; Closed is display-only (close from the record, with a reason).</p>}
   </div>);
 }
 
@@ -178,15 +187,16 @@ function MessagesPanel({ lead }: any) {
 
 function CrewTime({ lead, users, reloadLead }: any) {
   const [lab, setLab] = useState<any>(null); const [msg, setMsg] = useState("");
-  const [form, setForm] = useState<any>({ user_id: "", entry_date: new Date().toISOString().slice(0, 10), hours: "", note: "" });
-  const [addUser, setAddUser] = useState("");
+  const [form, setForm] = useState<any>({ worker_name: "", entry_date: new Date().toISOString().slice(0, 10), hours: "", note: "" });
+  const [addUser, setAddUser] = useState(""); const [roster, setRoster] = useState<any[]>([]);
+  useEffect(() => { api("/api/workers").then(setRoster).catch(() => {}); }, []);
   const load = () => { api("/api/leads/" + lead.id + "/labor").then(setLab).catch(() => {}); };
   useEffect(load, [lead.id]);
   if (!lab) return <p className="muted">Loading crew & time…</p>;
   const sector = lead.sector || "private";
   const setLeadField = async (patch: any, ok: string) => { await api("/api/leads/" + lead.id, { method: "PATCH", body: patch }); setMsg(ok); reloadLead && reloadLead(); };
-  const logTime = async () => { if (!form.user_id || !(Number(form.hours) > 0)) return setMsg("Pick a worker and hours first"); const r = await api(`/api/leads/${lead.id}/time`, { method: "POST", body: { user_id: form.user_id, entry_date: form.entry_date, hours: Number(form.hours), note: form.note } }); setMsg(r.rated ? `Logged at ${money(r.entry.rate)}/hr (${r.entry.class_name}, ${sector} rate) ✓` : "Logged — but this worker has NO rate class, so it costed $0. Assign classes in Settings → Labor & Rates."); setForm({ ...form, hours: "", note: "" }); load(); };
-  const crewIds = new Set(lab.crew.map((c: any) => c.user_id));
+  const logTime = async () => { if (!form.worker_name.trim() || !(Number(form.hours) > 0)) return setMsg("Type a worker name and hours first — a name is all a worker needs, no account required."); const r = await api(`/api/leads/${lead.id}/time`, { method: "POST", body: { worker_name: form.worker_name.trim(), entry_date: form.entry_date, hours: Number(form.hours), note: form.note } }); setMsg(r.rated ? `Logged ${r.entry.hours}h for ${r.worker.name} at ${money(r.entry.rate)}/hr (${r.entry.class_name}, ${sector} rate) ✓` : `Logged for ${r.worker.name} — but they have NO rate class, so it costed $0. Set their class in Settings → Workers.`); setForm({ ...form, hours: "", note: "" }); load(); };
+  const crewIds = new Set(lab.crew.map((c: any) => c.worker_id || c.user_id));
   const margin = lead.est_value > 0 ? Math.round((lab.cost / lead.est_value) * 100) : null;
   return (<div>
     <div className="grid2">
@@ -207,11 +217,11 @@ function CrewTime({ lead, users, reloadLead }: any) {
     </div>
     {msg && <div className="ok" style={{ marginTop: 10 }}>{msg}</div>}
     <h4>Crew</h4>
-    <div className="chipRow">{lab.crew.map((c: any) => <span key={c.id} className="chip on">{c.name} · {c.class_name || "no class"}<button className="btn ghost small" style={{ marginLeft: 6, padding: "0 6px" }} onClick={async () => { const r = await api(`/api/leads/${lead.id}/crew/${c.user_id}`, { method: "DELETE" }); setLab(r); }}>✕</button></span>)}{lab.crew.length === 0 && <span className="muted">No crew yet — add workers, or just log time and they're added automatically.</span>}</div>
-    <div className="rowflex" style={{ marginTop: 8 }}><select value={addUser} onChange={e => setAddUser(e.target.value)}><option value="">Add a worker…</option>{users.filter((u: any) => !crewIds.has(u.id)).map((u: any) => <option key={u.id} value={u.id}>{u.name} ({u.role})</option>)}</select><button className="btn ghost small" disabled={!addUser} onClick={async () => { const r = await api(`/api/leads/${lead.id}/crew`, { method: "POST", body: { user_id: addUser } }); setLab(r); setAddUser(""); }}>Add to crew</button></div>
+    <div className="chipRow">{lab.crew.map((c: any) => <span key={c.id} className="chip on">{c.name} · {c.class_name || "no class"}<button className="btn ghost small" style={{ marginLeft: 6, padding: "0 6px" }} onClick={async () => { const r = await api(`/api/leads/${lead.id}/crew/${c.worker_id || c.user_id}`, { method: "DELETE" }); setLab(r); }}>✕</button></span>)}{lab.crew.length === 0 && <span className="muted">No crew yet — type a name below, or just log time and they're added automatically.</span>}</div>
+    <div className="rowflex" style={{ marginTop: 8 }}><input list="rosterNames" placeholder="Add a worker by name…" value={addUser} onChange={e => setAddUser(e.target.value)} style={{ minWidth: 220 }} /><button className="btn ghost small" disabled={!addUser.trim()} onClick={async () => { const r = await api(`/api/leads/${lead.id}/crew`, { method: "POST", body: { worker_name: addUser.trim() } }); setLab(r); setAddUser(""); }}>Add to crew</button><span className="muted">Workers are a roster — names only, no logins, no seats used.</span></div>
     <h4>Log time against this job</h4>
     <div className="rowflex">
-      <select value={form.user_id} onChange={e => setForm({ ...form, user_id: e.target.value })}><option value="">Worker…</option>{[...lab.crew.map((c: any) => ({ id: c.user_id, name: c.name })), ...users.filter((u: any) => !crewIds.has(u.id)).map((u: any) => ({ id: u.id, name: u.name }))].map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}</select>
+      <input list="rosterNames" placeholder="Worker name — type a new one to add them" value={form.worker_name} onChange={e => setForm({ ...form, worker_name: e.target.value })} style={{ minWidth: 240 }} /><datalist id="rosterNames">{roster.filter((w: any) => w.active).map((w: any) => <option key={w.id} value={w.name}>{w.class_name || "no class"}{w.linked_user_id ? " · team" : ""}</option>)}</datalist>
       <input type="date" value={form.entry_date} onChange={e => setForm({ ...form, entry_date: e.target.value })} />
       <input type="number" min="0" step="0.25" placeholder="Hours" style={{ width: 90 }} value={form.hours} onChange={e => setForm({ ...form, hours: e.target.value })} />
       <input placeholder="Note (phase, task…)" value={form.note} onChange={e => setForm({ ...form, note: e.target.value })} style={{ flex: 1 }} />
@@ -229,22 +239,33 @@ function LeadDetail({ id, users, priceBook, close, refresh }: any) {
   const [act, setAct] = useState<any>({ type: "call", body: "", outcome: "" }); const [sug, setSug] = useState<any>(null);
   useEffect(() => { api("/api/ai/suggest/" + id).then(setSug).catch(() => {}); }, [id, d?.lead?.state]);
   const [items, setItems] = useState<any[]>([]); const [check, setCheck] = useState<any>(null); const [tab, setTab] = useState("details");
+  const [finalPick, setFinalPick] = useState<any>(null); // {to, reason, confirm}
+  const [validDays, setValidDays] = useState(30); const [useOpts, setUseOpts] = useState(false); const [optB, setOptB] = useState<any[]>([]); const [optC, setOptC] = useState<any[]>([]);
   const load = () => { api("/api/leads/" + id).then(r => { setD(r); setEdit({ ...r.lead }); }).catch(e => setMsg(e.message)); };
   useEffect(load, [id]);
   if (!d) return <div className="modalWrap"><div className="modal">Loading… {msg}</div></div>;
   const l = d.lead;
-  const PATH = ["NEW", "TRIAGED", "QUALIFYING", "QUALIFIED", "READY_FOR_APPROVAL", "APPROVED", "PROPOSAL_SENT", "WON"];
+  const PATH = ["NEW", "WORKING", "QUALIFIED", "PROPOSAL", "SENT", "FOLLOWUP", "WON"];
   const pathIdx = PATH.indexOf(l.state);
   const save = async () => { try { await api("/api/leads/" + id, { method: "PATCH", body: { service_requested: edit.service_requested, est_value: Number(edit.est_value) || 0, urgency: edit.urgency, owner_id: edit.owner_id, pm_id: edit.pm_id || null, approver_id: edit.approver_id || null, next_action: edit.next_action, notes: edit.notes, location: edit.location, contact: { name: edit.contact_name, phone: edit.contact_phone, email: edit.contact_email } } }); setMsg("Saved ✓"); load(); refresh && refresh(); } catch (e: any) { setMsg(e.message); } };
-  const transit = async (to: string, extra: any = {}) => { try { const r = await api(`/api/leads/${id}/transition`, { method: "POST", body: { to_state: to, ...extra } }); if (r.error) setMsg(r.error); if (r.missing) setMsg("Gate blocked — missing: " + r.missing.join(", ")); setMsg(m => m || "Moved ✓"); load(); refresh && refresh(); } catch (e: any) { setMsg(e.message); } };
-  const buildProposal = async () => { try { const clean = items.filter(i => i.price_book_item_id); if (!clean.length) return setMsg("Add at least one price-book line item"); await api(`/api/leads/${id}/proposals`, { method: "POST", body: { line_items: clean.map(i => ({ price_book_item_id: i.price_book_item_id, qty: Number(i.qty) || 1 })) } }); setMsg("Proposal drafted from price book ✓"); setItems([]); load(); } catch (e: any) { setMsg(e.message); } };
+  const transit = async (to: string, extra: any = {}) => { try { await api(`/api/leads/${id}/transition`, { method: "POST", body: { to_state: to, ...extra } }); setMsg("Moved ✓"); load(); refresh && refresh(); } catch (e: any) { setMsg(e.message); } };
+  const stageTo = async (to: string, extra: any = {}) => { try { await api(`/api/leads/${id}/stage`, { method: "POST", body: { to, ...extra } }); setMsg(`Moved to ${to.replaceAll("_", " ")} ✓`); setFinalPick(null); load(); refresh && refresh(); } catch (e: any) { if (e.message === "reason_required") { setFinalPick({ to, reason: "", confirm: false }); setMsg(`${to.replaceAll("_", " ")} needs a reason — pick one below.`); } else if (e.message === "won_needs_confirmation") { setFinalPick({ to: "WON", reason: "", confirm: false }); setMsg("No signed proposal on this lead — confirm below if this is a verbal/legacy win."); } else setMsg(e.message); } };
+  const applyFinal = async () => { if (!finalPick) return; const extra: any = {}; if (finalPick.reason) extra.lost_reason = finalPick.reason; if (finalPick.to === "WON" && finalPick.confirm) extra.confirm_no_proposal = true; await stageTo(finalPick.to, extra); };
+  const buildProposal = async () => { try { const clean = items.filter(i => i.price_book_item_id); if (!clean.length) return setMsg("Add at least one price-book line item"); const body: any = { line_items: clean.map(i => ({ price_book_item_id: i.price_book_item_id, qty: Number(i.qty) || 1 })), valid_days: validDays || undefined };
+    if (useOpts) { const mk = (arr: any[]) => arr.filter(i => i.price_book_item_id).map(i => ({ price_book_item_id: i.price_book_item_id, qty: Number(i.qty) || 1 })); const b2 = mk(optB), c2 = mk(optC); if (!b2.length && !c2.length) return setMsg("Options need at least one priced option with line items"); body.options = [{ name: "Essential", line_items: body.line_items }, ...(b2.length ? [{ name: "Recommended", line_items: b2 }] : []), ...(c2.length ? [{ name: "Complete", line_items: c2 }] : [])]; }
+    await api(`/api/leads/${id}/proposals`, { method: "POST", body }); setMsg(useOpts ? "Proposal drafted with options ✓ — the customer picks one on the sign page" : "Proposal drafted from price book ✓"); setItems([]); setOptB([]); setOptC([]); load(); } catch (e: any) { setMsg(e.message); } };
+  const optEditor = (arr: any[], setArr: any, label: string) => <div style={{ border: "1px dashed #cbd5e1", borderRadius: 8, padding: 8, marginTop: 6 }}><b style={{ fontSize: 13 }}>{label}</b>{arr.map((it: any, i: number) => <div className="rowflex" key={i} style={{ marginTop: 4 }}><select style={{ flex: 2 }} value={it.price_book_item_id || ""} onChange={e => { const n = [...arr]; n[i] = { ...n[i], price_book_item_id: e.target.value }; setArr(n); }}><option value="">Choose item…</option>{priceBook.map((pb: any) => <option key={pb.id} value={pb.id}>{pb.name} — {money(pb.standard_price)}</option>)}</select><input style={{ width: 60 }} type="number" value={it.qty || 1} onChange={e => { const n = [...arr]; n[i] = { ...n[i], qty: e.target.value }; setArr(n); }} /><button className="btn ghost small" onClick={() => setArr(arr.filter((_: any, x: number) => x !== i))}>✕</button></div>)}<button className="btn ghost small" style={{ marginTop: 4 }} onClick={() => setArr([...arr, { qty: 1 }])}>+ Line</button></div>;
   return (<div className="modalWrap"><div className="modal">
     <div className="rowflex" style={{ justifyContent: "space-between" }}><h3 style={{ margin: 0 }}>{l.service_requested} — {l.contact_name}</h3><button className="btn ghost small" onClick={close}>✕ Close</button></div>
     <p className="muted" style={{ margin: "6px 0" }}>{l.contact_phone || ""} {l.contact_email ? "· " + l.contact_email : ""} · {l.location || ""} · created {dt(l.created_at)}</p>
     <div className="rowflex"><Badge s={l.state} /><b>{money(l.est_value)}</b><span className="muted">Owner: {l.owner_name || "—"} · PM: {l.pm_id ? "assigned" : "none"} · Next: {l.next_action || "—"} ({dOnly(l.next_action_due_at)})</span></div>
-    {pathIdx >= 0 ? <div className="path">{PATH.map((st, i) => <div key={st} className={`stage ${i < pathIdx ? "done" : i === pathIdx ? "cur" : ""}`} title={st} onClick={() => { if (st !== l.state) transit(st); }}>{st.replaceAll("_", " ")}</div>)}</div>
-      : <div className="pathFinal" style={{ background: "#fee2e2", color: "#991b1b" }}>Final state: {l.state.replaceAll("_", " ")}{l.lost_reason ? " · " + l.lost_reason : ""}</div>}
-    <p className="muted" style={{ fontSize: 12, margin: "2px 0 6px" }}>Path — click a stage to move (the Completeness Gate still applies: nothing reaches approval incomplete).</p>
+    {pathIdx >= 0 ? <div className="path">{PATH.map((st, i) => <div key={st} className={`stage ${i < pathIdx ? "done" : i === pathIdx ? "cur" : ""}`} title={st} onClick={() => { if (st === l.state) return; if (st === "WON") setFinalPick({ to: "WON", reason: "", confirm: false }); else stageTo(st); }}>{st.replaceAll("_", " ")}</div>)}</div>
+      : <div className="pathFinal" style={{ background: "#fee2e2", color: "#991b1b" }}>Closed: {l.state.replaceAll("_", " ")}{l.lost_reason ? " · " + l.lost_reason : ""} <button className="btn small" style={{ marginLeft: 10 }} onClick={async () => { await api(`/api/leads/${id}/reopen`, { method: "POST", body: {} }); setMsg("Reopened ✓ — the outcome record was superseded, not deleted"); load(); refresh && refresh(); }}>↩ Reopen this lead</button></div>}
+    <p className="muted" style={{ fontSize: 12, margin: "2px 0 6px" }}>Stages move freely — forward, back, skip. Nothing here is a dead end; every move is on the timeline. {l.hold_flag ? <span className="st fail">⏸ On hold: {l.hold_reason || ""}{l.hold_until ? " until " + dOnly(l.hold_until) : ""} <button className="btn ghost small" onClick={async () => { await api(`/api/leads/${id}/hold`, { method: "POST", body: { clear: true } }); load(); }}>Clear hold</button></span> : <button className="btn ghost small" onClick={async () => { const reason = prompt("Hold reason (e.g. waiting on site access)"); if (reason === null) return; const until = prompt("Wake date (YYYY-MM-DD, blank = none)") || undefined; await api(`/api/leads/${id}/hold`, { method: "POST", body: { reason, until } }); load(); }}>⏸ Put on hold</button>}</p>
+    {finalPick && <div className="card" style={{ margin: "8px 0", borderLeft: "4px solid #b45309" }}><b>Close as {finalPick.to.replaceAll("_", " ")}</b>
+      {(finalPick.to === "LOST" || finalPick.to === "NO_RESPONSE") && <div style={{ marginTop: 8 }}><label className="f">Reason — this is what the loss data learns from</label><select value={finalPick.reason} onChange={e => setFinalPick({ ...finalPick, reason: e.target.value })}><option value="">Pick a reason…</option>{["price", "timing", "competitor", "no_budget", "unresponsive", "went_diy", "not_a_fit", "other"].map(r => <option key={r} value={r}>{r.replaceAll("_", " ")}</option>)}</select></div>}
+      {finalPick.to === "WON" && <label className="check" style={{ marginTop: 8 }}><input type="checkbox" style={{ width: "auto" }} checked={finalPick.confirm} onChange={e => setFinalPick({ ...finalPick, confirm: e.target.checked })} /><span>No signed proposal — this is a verbal / legacy win, create the job anyway</span></label>}
+      <div className="rowflex" style={{ marginTop: 10 }}><button className="btn small" disabled={(finalPick.to === "LOST" || finalPick.to === "NO_RESPONSE") && !finalPick.reason} onClick={applyFinal}>Confirm — close as {finalPick.to.replaceAll("_", " ")}</button><button className="btn ghost small" onClick={() => setFinalPick(null)}>Cancel</button></div></div>}
     {msg && <div className={msg.includes("✓") ? "ok" : "err"}>{msg}</div>}
     {sug && <div className="card" style={{ margin: "10px 0", padding: "10px 14px", display: "flex", gap: 12, alignItems: "center", background: "linear-gradient(90deg,#f0fdf4,#ffffff)" }}><span style={{ fontSize: 20 }}>{sug.temperature === "hot" ? "🔥" : sug.temperature === "warm" ? "🌤️" : "❄️"}</span><div style={{ flex: 1 }}><b>AI · {sug.score}/100 ({sug.temperature}) — {sug.suggestion.label}</b><br /><span className="muted">{sug.suggestion.detail}</span>{(sug.flags || []).length > 0 && <span className="muted"> · flags: {sug.flags.join(", ").replaceAll("_", " ")}</span>}</div>
       {sug.suggestion.kind === "nudge" && <button className="btn small" onClick={async () => { const r = await api("/api/ai/nudge", { method: "POST", body: { lead_id: id } }); setMsg(`Nudge sent by ${r.channel} (${String(r.status).replaceAll("_", " ")}) ✓`); }}>Nudge now</button>}
@@ -265,9 +286,9 @@ function LeadDetail({ id, users, priceBook, close, refresh }: any) {
         <div className="full"><label className="f">Notes / job details</label><textarea rows={3} value={edit.notes || ""} onChange={e => setEdit({ ...edit, notes: e.target.value })} /></div>
       </div>
       <div className="rowflex" style={{ marginTop: 12 }}><button className="btn" onClick={save}>Save changes</button>
-        <select style={{ width: 220 }} defaultValue="" onChange={e => { if (e.target.value) transit(e.target.value); e.target.value = ""; }}><option value="">Close as / move to…</option>{STATES.filter(s => s !== l.state).map(s => <option key={s} value={s}>{s.replaceAll("_", " ")}</option>)}</select>
-        <button className="btn ghost" onClick={async () => setCheck(await api(`/api/leads/${id}/packet-check`, { method: "POST", body: {} }))}>Run completeness check</button></div>
-      {check && <div className="card" style={{ marginTop: 12 }}><h3>Completeness Gate — {check.complete ? "✅ Ready for approval" : "⛔ Not ready"} · score {check.score}/100</h3>
+        <select style={{ width: 220 }} defaultValue="" onChange={e => { const v = e.target.value; e.target.value = ""; if (!v) return; if (FINALS.includes(v)) setFinalPick({ to: v, reason: "", confirm: false }); else stageTo(v); }}><option value="">Move to any stage…</option>{STATES.filter(s => s !== l.state).map(s => <option key={s} value={s}>{s.replaceAll("_", " ")}</option>)}</select>
+        <button className="btn ghost" onClick={async () => setCheck(await api(`/api/leads/${id}/packet-check`, { method: "POST", body: {} }))}>Run readiness check</button></div>
+      {check && <div className="card" style={{ marginTop: 12 }}><h3>Readiness — {check.complete ? "✅ Everything in place" : "⚠ Gaps below (warnings, not walls — you can still move and send)"} · score {check.score}/100</h3>
         {["contact name", "contact phone or email", "service requested", "service location", "scope notes", "project manager", "proposal", "proposal line items from price book"].map((label: string) => { const okc = !(check.missing || []).includes(label); return <div className="check" key={label}><span className={`st ${okc ? "pass" : "fail"}`}>{okc ? "✓" : "✗"}</span><span>{label}{okc ? "" : " — missing"}</span></div>; })}
         {(check.flags || []).map((fl: string, i: number) => <p className="muted" key={i}>⚑ {fl}</p>)}</div>}
     </div>}
@@ -275,6 +296,7 @@ function LeadDetail({ id, users, priceBook, close, refresh }: any) {
       <div className="card"><h3>Log contact (20 seconds)</h3>
         <div className="rowflex"><select style={{ width: 110 }} value={act.type} onChange={e => setAct({ ...act, type: e.target.value })}><option>call</option><option>text</option><option>email</option><option>visit</option></select><input style={{ flex: 1 }} placeholder="What happened?" value={act.body} onChange={e => setAct({ ...act, body: e.target.value })} /><button className="btn small" onClick={async () => { await api(`/api/leads/${id}/contact`, { method: "POST", body: act }); setAct({ type: "call", body: "", outcome: "" }); load(); }}>Log</button></div>
         <div className="feed" style={{ marginTop: 10 }}>{d.activities.map((a: any) => <div className="ev" key={a.id}><b>{a.type}</b> — {a.body} <span>· {a.user_name || ""} · {dt(a.created_at)}</span></div>)}{d.activities.length === 0 && <p className="muted">No activity logged yet.</p>}</div></div>
+      <div className="card"><h3>Schedule a callback</h3><CallbackForm leadId={id} done={load} /></div>
       <div className="card"><h3>Tasks ({d.tasks.filter((t: any) => t.status === "open").length} open)</h3>
         {d.tasks.map((t: any) => <div className="check" key={t.id}><span className={`st ${t.status === "done" ? "pass" : ""}`}>{t.status === "done" ? "✓" : "○"}</span><span style={{ flex: 1 }}>{t.title} <span className="muted">due {dOnly(t.due_at)}</span></span>{t.status === "open" && <button className="btn ghost small" onClick={async () => { await api(`/api/tasks/${t.id}/complete`, { method: "POST", body: {} }); load(); }}>Done</button>}</div>)}
         <div className="feed" style={{ marginTop: 12 }}><h3>Timeline</h3>{d.events.map((e: any) => <div className="ev" key={e.id}>{e.type.replaceAll("_", " ")}{e.to_state ? ` → ${e.to_state}` : ""} <span>· {dt(e.created_at)}</span></div>)}</div></div>
@@ -283,17 +305,19 @@ function LeadDetail({ id, users, priceBook, close, refresh }: any) {
     {tab === "crew" && <CrewTime lead={l} users={users} reloadLead={load} />}
     {tab === "proposals" && <div>
       <div className="card"><h3>Proposals</h3>
-        {d.proposals.map((p: any) => <div key={p.id} style={{ borderBottom: "1px solid #eef2f7", padding: "8px 0" }}><b>v{p.version} · {money(p.total)}</b> · {p.status}{p.signed_at ? " · ✅ signed" : ""} · payment {p.payment_status || "—"}<br />
+        {d.proposals.map((p: any) => <div key={p.id} style={{ borderBottom: "1px solid #eef2f7", padding: "8px 0" }}><b>v{p.version} · {money(p.total)}</b> · {p.status}{p.signed_at ? " · ✅ signed" : ""} · payment {p.payment_status || "—"}{p.view_count ? ` · 👁 viewed ${p.view_count}× (first ${dt(p.first_viewed_at)})` : " · not viewed yet"}{p.expires_at ? (new Date(p.expires_at) < new Date() && !p.signed_at ? ` · ⏰ expired ${dOnly(p.expires_at)}` : ` · valid until ${dOnly(p.expires_at)}`) : ""}{p.options ? (() => { try { const o = JSON.parse(p.options); return ` · options: ${o.map((x: any) => `${x.name} ${money(x.total)}`).join(" / ")}${p.selected_option ? " → picked: " + p.selected_option : ""}`; } catch { return ""; } })() : ""}<br />
           <span className="rowflex" style={{ marginTop: 5 }}><button className="btn ghost small" onClick={async () => { const r = await api(`/api/proposals/${p.id}/sign-link`, { method: "POST", body: {} }); navigator.clipboard && navigator.clipboard.writeText(location.origin + "/sign/" + r.token); setMsg("Sign link copied: /sign/" + r.token); }}>Copy sign link</button>
           <button className="btn ghost small" onClick={async () => { const r = await api(`/api/proposals/${p.id}/deposit`, { method: "POST", body: {} }); setMsg(`Deposit link (${r.mode}): ${r.link}`); }}>Deposit link</button>
           <a className="btn ghost small" style={{ textDecoration: "none" }} href={`/api/proposals/${p.id}/docx`}>DOCX</a>
           <a className="btn ghost small" style={{ textDecoration: "none" }} href={`/print/proposal/${p.id}`} target="_blank" rel="noreferrer">🖨 Print / PDF</a>
-          <button className="btn ghost small" onClick={() => transit("PROPOSAL_SENT")}>Mark sent</button>
+          <button className="btn ghost small" onClick={async () => { const r = await api(`/api/proposals/${p.id}/clone`, { method: "POST", body: {} }); setMsg(`Cloned as v${r.version} (draft) ✓`); load(); }}>⧉ Clone</button>
+          <button className="btn ghost small" onClick={() => stageTo("SENT")}>Mark sent</button>
           <button className="btn small" onClick={async () => { const r = await api(`/api/proposals/${p.id}/send`, { method: "POST", body: { channel: "email" } }).catch((e: any) => ({ error: e.message })); setMsg(r.error ? "Send failed: " + r.error : `Proposal emailed to customer — delivery status: ${r.status}${r.status === "test_mode" ? " (test mode: recorded, not sent — add RESEND_API_KEY to go live)" : ""}`); load(); }}>✉ Send to customer</button>
           <button className="btn ghost small" onClick={async () => { const r = await api(`/api/proposals/${p.id}/send`, { method: "POST", body: { channel: "sms" } }).catch((e: any) => ({ error: e.message })); setMsg(r.error ? "SMS failed: " + r.error : `Proposal texted — status: ${r.status}`); load(); }}>💬 Text it</button></span></div>)}
         <label className="f">Build proposal — price book only</label>
         {items.map((it, i) => <div className="rowflex" key={i}><select style={{ flex: 2 }} value={it.price_book_item_id || ""} onChange={e => { const n = [...items]; n[i] = { ...n[i], price_book_item_id: e.target.value }; setItems(n); }}><option value="">Choose item…</option>{priceBook.map((pb: any) => <option key={pb.id} value={pb.id}>{pb.name} — {money(pb.standard_price)}</option>)}</select><input style={{ width: 70 }} type="number" value={it.qty || 1} onChange={e => { const n = [...items]; n[i] = { ...n[i], qty: e.target.value }; setItems(n); }} /><button className="btn ghost small" onClick={() => setItems(items.filter((_, x) => x !== i))}>✕</button></div>)}
-        <div className="rowflex" style={{ marginTop: 8 }}><button className="btn ghost small" onClick={() => setItems([...items, { qty: 1 }])}>+ Line item</button><button className="btn small" onClick={buildProposal}>Draft proposal</button></div></div>
+        {useOpts && <div>{optEditor(optB, setOptB, "Option B — Recommended")}{optEditor(optC, setOptC, "Option C — Complete")}<p className="muted" style={{ fontSize: 12 }}>Option A “Essential” = the lines above. The customer picks one option when signing; the job is priced from their pick.</p></div>}
+        <div className="rowflex" style={{ marginTop: 8 }}><button className="btn ghost small" onClick={() => setItems([...items, { qty: 1 }])}>+ Line item</button><label className="muted" style={{ fontSize: 12.5 }}>Valid <input type="number" style={{ width: 60 }} value={validDays} onChange={e => setValidDays(Number(e.target.value) || 0)} /> days</label><label className="muted" style={{ fontSize: 12.5 }}><input type="checkbox" style={{ width: "auto" }} checked={useOpts} onChange={e => setUseOpts(e.target.checked)} /> Offer options (Good / Better / Best)</label><button className="btn small" onClick={buildProposal}>Draft proposal</button></div></div>
       <div className="card"><h3>Documents & visits</h3>
         {d.documents.map((doc: any) => <div className="check" key={doc.id}><span className={`st ${doc.status === "received" ? "pass" : "fail"}`}>{doc.status === "received" ? "✓" : "✗"}</span><span style={{ flex: 1 }}>{doc.name}</span>{doc.status !== "received" && <button className="btn ghost small" onClick={async () => { await api(`/api/documents/${doc.id}`, { method: "PATCH", body: { status: "received" } }); load(); }}>Mark received</button>}</div>)}
         {d.site_visits.map((v: any) => <p key={v.id} className="muted" style={{ margin: "4px 0" }}>📍 Visit {dt(v.scheduled_at)} — {v.status}</p>)}
@@ -501,7 +525,9 @@ function InboxQueue({ inbox, reload }: any) {
   const counts: Record<string, number> = {}; for (const i of inbox) if ((i.status || "open") === "open") counts[i.category] = (counts[i.category] || 0) + 1;
   const openCount = inbox.filter((i: any) => (i.status || "open") === "open").length;
   const shown = inbox.filter((i: any) => cat === "all" || i.category === cat);
-  const expand = async (i: any) => { if (openId === i.id) { setOpenId(""); return; } setOpenId(i.id); setSug(null); const r = await api("/api/inbox/" + i.id + "/suggestion").catch(() => null); setSug(r); if (r) setDraft(r.draft_body); };
+  const [comments, setComments] = useState<any[]>([]); const [canned, setCanned] = useState<any[]>([]); const [cText, setCText] = useState("");
+  useEffect(() => { api("/api/canned-replies").then(setCanned).catch(() => {}); }, []);
+  const expand = async (i: any) => { if (openId === i.id) { setOpenId(""); return; } setOpenId(i.id); setSug(null); const r = await api("/api/inbox/" + i.id + "/suggestion").catch(() => null); setSug(r); if (r) setDraft(r.draft_body); api("/api/inbox/" + i.id + "/claim", { method: "POST", body: {} }).catch(() => {}); api("/api/inbox/" + i.id + "/comments").then(setComments).catch(() => {}); };
   const act = async (fn: () => Promise<any>, okMsg: string) => { const r = await fn().catch((e: any) => ({ error: e.message })); setMsg(r?.error ? "Failed: " + r.error : okMsg); reload(); };
   return (<div className="card"><h3>Inbox queue — everything that isn't a lead, worked like a queue</h3>
     <p className="muted">Triaged on arrival, each with an owner, a due date, and an AI-suggested next action with a ready-to-send reply. {openCount} open.</p>
@@ -515,13 +541,17 @@ function InboxQueue({ inbox, reload }: any) {
         {sug ? <div><p style={{ margin: "0 0 4px" }}><b>🤖 Suggested: {sug.action}</b></p><p className="muted" style={{ margin: "0 0 8px" }}>{sug.why}</p>
           <label className="f">Reply — edit freely, sends from your workspace</label>
           <textarea rows={7} value={draft} onChange={e => setDraft(e.target.value)} />
+          <div className="rowflex"><select style={{ width: 230 }} defaultValue="" onChange={e => { const c = canned.find((x: any) => x.id === e.target.value); if (c) setDraft(c.body); e.target.value = ""; }}><option value="">Insert a canned reply…</option>{canned.map((c: any) => <option key={c.id} value={c.id}>{c.title}</option>)}</select>{i.claimed_by && <span className="tinyBadge">👀 being handled</span>}</div>
           <div className="rowflex" style={{ marginTop: 8 }}>
             <button className="btn small" onClick={() => act(async () => { const r = await api("/api/inbox/" + i.id + "/reply", { method: "POST", body: { body: draft } }); return r; }, "Reply queued/sent ✓ — item closed")}>✉ Send reply & close</button>
             {!doneIt ? <button className="btn ghost small" onClick={() => act(() => api("/api/inbox/" + i.id, { method: "PATCH", body: { status: "done" } }), "Marked done ✓")}>✓ Mark done</button> : <button className="btn ghost small" onClick={() => act(() => api("/api/inbox/" + i.id, { method: "PATCH", body: { status: "open" } }), "Reopened ✓")}>Reopen</button>}
             <button className="btn ghost small" onClick={() => act(() => api("/api/inbox/" + i.id, { method: "PATCH", body: { snooze_days: 1 } }), "Snoozed to tomorrow ✓")}>💤 Snooze 1d</button>
             <button className="btn ghost small" onClick={() => act(() => api("/api/inbox/" + i.id + "/convert-task", { method: "POST", body: {} }), "Task created for the owner ✓")}>Make task</button>
             <button className="btn ghost small" onClick={() => act(() => api("/api/inbox/" + i.id + "/convert-lead", { method: "POST", body: {} }), "Converted to a lead ✓")}>Convert to lead</button>
-          </div></div> : <p className="muted">Loading suggestion…</p>}
+          </div>
+          <div style={{ marginTop: 12, borderTop: "1px solid #e5e7eb", paddingTop: 8 }}><b style={{ fontSize: 13 }}>Team discussion — on this email, not in a hallway</b>
+            {comments.map((c: any) => <p key={c.id} style={{ margin: "5px 0", fontSize: 13 }}><b>{c.user_name || "Teammate"}</b> <span className="muted">{dt(c.created_at)}</span><br />{c.body}</p>)}
+            <div className="rowflex"><input placeholder="Add a comment for the team…" value={cText} onChange={e => setCText(e.target.value)} style={{ flex: 1 }} /><button className="btn ghost small" disabled={!cText.trim()} onClick={async () => { await api("/api/inbox/" + i.id + "/comments", { method: "POST", body: { body: cText.trim() } }); setCText(""); api("/api/inbox/" + i.id + "/comments").then(setComments).catch(() => {}); }}>Comment</button></div></div></div> : <p className="muted">Loading suggestion…</p>}
       </div>}
     </div>; })}
     {shown.length === 0 && <p className="muted">Nothing here — this category is clear.</p>}
@@ -545,6 +575,7 @@ const [d, setD] = useState<any>(null); const [inbox, setInbox] = useState<any[]>
     <FieldReportsCard />
     <ScheduleCard />
     <TimesheetsCard />
+    <TimeGridCard />
     <InboxQueue inbox={inbox} reload={load} />
   </div>);
 }
@@ -614,7 +645,7 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any)
   const T = ({ id, children }: any) => <button className={tab === id ? "on" : ""} onClick={() => setTab(id)}>{children}</button>;
   return (<div><h2 className="pt">Settings</h2><p className="sub">Everything configurable, in the product — no engineer required.</p>
     {msg && <div className="ok">{msg}</div>}
-    <div className="tabs">{canSettings && <><T id="workspace">Workspace</T><T id="pricebook">Price Book</T><T id="templates">Templates</T><T id="services">Services</T></>}{canTeam && <T id="team">Team</T>}{canSettings && <T id="rates">Labor & Rates</T>}{canSettings && <T id="integrations">Integrations</T>}</div>
+    <div className="tabs">{canSettings && <><T id="workspace">Workspace</T><T id="pricebook">Price Book</T><T id="templates">Templates</T><T id="services">Services</T></>}{canTeam && <T id="team">Team</T>}{canSettings && <T id="workers">Workers</T>}{canSettings && <T id="rates">Labor & Rates</T>}{canSettings && <T id="rules">Inbox Rules</T>}{canSettings && <T id="integrations">Integrations</T>}</div>
     {!canSettings && !canTeam && <div className="card">Your access doesn't include settings or team management. Ask an owner or admin if you need something changed.</div>}
     {tab === "workspace" && canSettings && s && <div className="card"><div className="formgrid">
       <div><label className="f">Business name</label><input value={s.workspace.name || ""} onChange={e => setS({ ...s, workspace: { ...s.workspace, name: e.target.value } })} /></div>
@@ -622,6 +653,8 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any)
       <div><label className="f">Timezone</label><input value={s.workspace.timezone || ""} onChange={e => setS({ ...s, workspace: { ...s.workspace, timezone: e.target.value } })} /></div>
       <div><label className="f">Deposit % on signed proposals</label><input type="number" value={s.workspace.deposit_pct ?? 25} onChange={e => setS({ ...s, workspace: { ...s.workspace, deposit_pct: Number(e.target.value) } })} /></div>
       <div><label className="f">Autonomy level (1 draft-only · 2 bulk-approve · 3 scoped auto)</label><select value={s.workspace.autonomy_level ?? 1} onChange={e => setS({ ...s, workspace: { ...s.workspace, autonomy_level: Number(e.target.value) } })}><option value={1}>1 — draft only</option><option value={2}>2 — bulk approve</option><option value={3}>3 — scoped auto-approval</option></select></div>
+      <div><label className="f">Proposal approval policy</label><select value={s.workspace.approval_policy || "amount"} onChange={e => setS({ ...s, workspace: { ...s.workspace, approval_policy: e.target.value } })}><option value="off">Off — send freely, no approvals</option><option value="amount">By amount — approve only above the threshold</option><option value="always">Always — every proposal needs approval before sending</option></select></div>
+      <div><label className="f">Approval threshold ($)</label><input type="number" value={s.workspace.approval_threshold ?? 25000} onChange={e => setS({ ...s, workspace: { ...s.workspace, approval_threshold: Number(e.target.value) } })} /></div>
       <div><label className="f">Counts</label><p className="muted">{num(s.counts.leads)} leads · {num(s.counts.users)} users · {num(s.counts.price_items)} price items</p></div>
       <div><label className="f">Lead source API URL (for Sync)</label><input value={s.workspace.source_api_url || ""} placeholder="Leave blank to use the built-in demo source" onChange={e => setS({ ...s, workspace: { ...s.workspace, source_api_url: e.target.value } })} /></div>
       <div><label className="f">Sender name (outgoing email)</label><input value={s.workspace.from_name || ""} placeholder="Your business name" onChange={e => setS({ ...s, workspace: { ...s.workspace, from_name: e.target.value } })} /></div>
@@ -647,6 +680,8 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any)
       <div className="rowflex" style={{ marginTop: 12 }}><input style={{ flex: 1 }} placeholder="Name" value={nu.name} onChange={e => setNu({ ...nu, name: e.target.value })} /><input style={{ flex: 1 }} placeholder="Email" value={nu.email} onChange={e => setNu({ ...nu, email: e.target.value })} /><input style={{ flex: 1 }} placeholder="Temp password" value={nu.password} onChange={e => setNu({ ...nu, password: e.target.value })} /><select style={{ width: 150 }} value={nu.role} onChange={e => setNu({ ...nu, role: e.target.value })}><option>LEAD_OWNER</option><option>PM</option><option>APPROVER</option><option>OPS_ADMIN</option></select><button className="btn" onClick={async () => { await api("/api/users", { method: "POST", body: nu }); setNu({ name: "", email: "", role: "LEAD_OWNER", password: "" }); loadAll(); setMsg("Team member added ✓"); }}>Add member</button></div>
       {accessFor && <AccessModal member={accessFor} close={() => setAccessFor(null)} done={() => { setAccessFor(null); loadAll(); setMsg("Access updated ✓"); }} />}</div>}
     {tab === "rates" && canSettings && <RatesTab users={users} refreshUsers={loadAll} />}
+    {tab === "workers" && canSettings && <WorkersTab />}
+    {tab === "rules" && canSettings && <InboxRulesTab users={users} />}
     {tab === "integrations" && canSettings && <div>
       <div className="card"><h3 style={{ marginTop: 0 }}>Integration catalog — every way data moves in and out</h3>
       <div className="featGrid">{catalog.map((c: any) => <div className="feat clickable" key={c.id} onClick={() => { setCfg(c.id); setCfgMsg(""); }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><b>{c.name}</b><span className="tinyBadge" style={c.status === "connected" ? { background: "#dcfce7", color: "#166534" } : c.status === "test_mode" || c.status === "demo_source" ? { background: "#fef9c3", color: "#854d0e" } : {}}>{c.status.replaceAll("_", " ")}</span></div><p>{c.detail}</p><span className="cfgHint">Configure →</span></div>)}</div></div>
@@ -1088,6 +1123,7 @@ function MyDay({ user, openLead, go }: any) {
       <span className="rowflex" style={{ marginLeft: 10 }}><input placeholder="What got done yesterday…" style={{ width: 260 }} id="frquick" /><button className="btn small" onClick={async () => { const v = (document.getElementById("frquick") as HTMLInputElement).value; await api(`/api/field-reports/${d.field_alert.id}/submit`, { method: "POST", body: { notes: v } }); setTickL(t => t + 1); }}>File report</button></span></div>}
     <div className="kpis" style={{ marginBottom: 14 }}>
       <div className="kpi"><div className="lab">⏰ Overdue tasks</div><div className="val" style={{ color: d.overdue_tasks.length ? "#b91c1c" : undefined }}>{num(d.overdue_tasks.length)}</div><div className="hint">Assigned to you, past due</div></div>
+      <div className="kpi" onClick={() => (window as any).wpLogTime?.()} style={{ cursor: "pointer" }}><div className="lab">⏱ Log time</div><div className="val">10-sec</div><div className="hint">Any worker, any job — a name is enough</div></div>
       <div className="kpi" onClick={() => go({ view: "ops" })} style={{ cursor: "pointer" }}><div className="lab">📥 Inbox waiting</div><div className="val" style={{ color: d.inbox_count ? "#b45309" : undefined }}>{num(d.inbox_count || 0)}</div><div className="hint">Client mail & more — not leads</div></div>
       <div className="kpi"><div className="lab">📋 Due today</div><div className="val">{num(d.today_tasks.length + d.my_leads_due.length)}</div><div className="hint">Tasks + lead next steps</div></div>
       <div className="kpi" onClick={() => go({ view: "approvals" })}><div className="lab">⚖️ Approvals waiting</div><div className="val">{num(d.approvals_count)}</div><div className="hint">Packets needing a decision</div></div>
@@ -1113,6 +1149,9 @@ function Pulse({ openLead }: any) {
 function CommandPalette({ close, go, openLead, newLead }: any) {
   const [q, setQ] = useState(""); const [leads, setLeads] = useState<any[]>([]); const [recents, setRecents] = useState<any[]>([]); const [idx, setIdx] = useState(0);
   const ACTIONS = [
+    { label: "Work Queue", hint: "G then Q", run: () => go({ view: "queue" }) },
+    { label: "Jobs", hint: "G then J", run: () => go({ view: "jobs" }) },
+    { label: "Log time", hint: "T", run: () => (window as any).wpLogTime?.() },
     { label: "My Day", hint: "G then M", run: () => go({ view: "myday" }) },
     { label: "Dashboard", hint: "G then D", run: () => go({ view: "dashboard" }) },
     { label: "Pulse — activity stream", hint: "G then P", run: () => go({ view: "pulse" }) },
@@ -1172,16 +1211,185 @@ function FollowupSettings({ ws }: any) {
   </div>);
 }
 
+// ---------- v3 components (slices 29-36) ----------
+function CallbackForm({ leadId, done }: any) {
+  const [when, setWhen] = useState(""); const [note, setNote] = useState(""); const [msg, setMsg] = useState("");
+  return (<div><div className="rowflex"><input type="datetime-local" value={when} onChange={e => setWhen(e.target.value)} /><input placeholder="Note — e.g. 'call me Thursday, gate code 4417'" value={note} onChange={e => setNote(e.target.value)} style={{ flex: 1 }} />
+    <button className="btn small" disabled={!when} onClick={async () => { await api(`/api/leads/${leadId}/callback`, { method: "POST", body: { due_at: new Date(when).toISOString(), note } }); setMsg("Callback set ✓ — it resurfaces in the Work Queue at that time"); setNote(""); done && done(); }}>Set callback</button></div>
+    {msg && <p className="muted" style={{ marginTop: 6 }}>{msg}</p>}<p className="muted" style={{ fontSize: 12.5 }}>"Call me Thursday" is a promise — it lands in the queue when it's due, with your note attached.</p></div>);
+}
+
+function WorkQueue({ openLead, openJob, go }: any) {
+  const [q, setQ] = useState<any>(null); const [typeF, setTypeF] = useState("all"); const [focus, setFocus] = useState(0);
+  const load = () => { api("/api/queue").then(setQ).catch(() => {}); };
+  useEffect(load, []);
+  const items = (q?.items || []).filter((i: any) => typeF === "all" || i.type === typeF);
+  useEffect(() => { const h = (e: KeyboardEvent) => { const t = e.target as HTMLElement; if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
+    if (e.key.toLowerCase() === "j") setFocus(f => Math.min(items.length - 1, f + 1));
+    if (e.key.toLowerCase() === "k") setFocus(f => Math.max(0, f - 1));
+    if (e.key === "Enter" && items[focus]) act(items[focus]); };
+    window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, [items, focus]);
+  const act = (i: any) => { if (i.type === "approval") go({ view: "approvals" }); else if (i.job_id && i.type !== "followup_overdue" && i.type !== "lead_untouched" && i.type !== "proposal_cold" && i.type !== "proposal_viewed") openJob(i.job_id); else if (i.type === "inbox") go({ view: "ops" }); else if (i.type === "field_report" || i.type === "timesheet") go({ view: "ops" }); else if (i.lead_id) openLead(i.lead_id); };
+  const doneQuick = async (i: any) => { if (i.type === "callback") await api(`/api/callbacks/${i.callback_id}/done`, { method: "POST", body: {} }); load(); };
+  if (!q) return <p className="muted">Loading your pile…</p>;
+  const LBL: Record<string, string> = { handoff_failed: "⚠ Handoff failed", approval: "✋ Approval", callback: "📞 Callback", followup_overdue: "⏰ Overdue", lead_untouched: "🆕 Untouched", proposal_viewed: "👁 Viewed, unsigned", inbox: "✉ Inbox", proposal_cold: "🧊 Going cold", job_crew: "👷 Needs crew", paperwork: "📄 Paperwork", field_report: "📋 Field report", timesheet: "⏱ Timesheet" };
+  return (<div><h2 className="pt">Work Queue</h2><p className="sub">Everything that needs a human, worst-first — leads, email, approvals, jobs, paperwork. Work it to zero. <span className="muted">Keys: J/K move · Enter open</span></p>
+    <div className="rowflex" style={{ marginBottom: 10 }}><button className={`chip ${typeF === "all" ? "on" : ""}`} onClick={() => setTypeF("all")}>All ({q.total})</button>{Object.entries(q.by_type || {}).map(([t, c]: any) => <button key={t} className={`chip ${typeF === t ? "on" : ""}`} onClick={() => setTypeF(t)}>{LBL[t] || t} ({c})</button>)}<button className="btn ghost small" onClick={load}>↻ Refresh</button></div>
+    {items.length === 0 && <div className="card" style={{ textAlign: "center", padding: 34 }}><div style={{ fontSize: 34 }}>🎉</div><h3 style={{ margin: "8px 0 4px" }}>Zero. The pile is clear.</h3><p className="muted">Nothing is waiting on anyone. New leads, mail, and due follow-ups land here the moment they exist.</p></div>}
+    {items.map((i: any, ix: number) => <div key={i.id} className="card" style={{ padding: "10px 14px", marginBottom: 8, display: "flex", gap: 12, alignItems: "center", ...(ix === focus ? { outline: "2px solid #166534" } : {}) }}>
+      <span className="tinyBadge" style={{ whiteSpace: "nowrap" }}>{LBL[i.type] || i.type}</span>
+      <div style={{ flex: 1 }}><b>{i.title}</b><br /><span className="muted">{i.subtitle}</span></div>
+      {i.type === "callback" && <button className="btn ghost small" onClick={() => doneQuick(i)}>✓ Done</button>}
+      <button className="btn small" onClick={() => act(i)}>{i.primary?.label || "Open"}</button></div>)}
+  </div>);
+}
+
+function JobsBoard({ openJob }: any) {
+  const [jobs, setJobs] = useState<any[]>([]); const [dragId, setDragId] = useState("");
+  const load = () => { api("/api/jobs").then(setJobs).catch(() => {}); };
+  useEffect(load, []);
+  const drop = async (st: string) => { if (!dragId) return; await api(`/api/jobs/${dragId}/stage`, { method: "POST", body: { to: st } }).catch(() => {}); setDragId(""); load(); };
+  return (<div><h2 className="pt">Jobs</h2><p className="sub">Won work, run as operations: schedule it, crew it, work it, paper it, invoice it. Drag cards to move — both directions, always.</p>
+    <div className="kanban">{JOB_STAGES.map(st => <div className="kcol" key={st} onDragOver={e => e.preventDefault()} onDrop={() => drop(st)}><h4>{st.replaceAll("_", " ")}<span>{num(jobs.filter(j => j.stage === st).length)}</span></h4>
+      {jobs.filter(j => j.stage === st).map((j: any) => <div className="kcard" key={j.id} draggable onDragStart={() => setDragId(j.id)} onClick={() => openJob(j.id)}><b>{j.service_requested}</b><span className="m">{j.contact_name} · {money(j.value)}<br />{j.labor_hours ? `⏱ ${j.labor_hours}h · ${money(j.labor_cost)} labor (${j.labor_pct ?? 0}%)` : "no time logged"} · 📄 {j.docs_received}/{j.docs_total} docs</span></div>)}
+    </div>)}</div>
+    {jobs.length === 0 && <div className="card" style={{ textAlign: "center", padding: 30 }}><h3 style={{ margin: "4px 0" }}>No jobs yet</h3><p className="muted">Jobs are born the moment a proposal is signed (or a lead is marked Won). Win something and it lands here, ready to schedule.</p></div>}
+  </div>);
+}
+
+function JobDetail({ id, users, priceBook, close, refresh }: any) {
+  const [d, setD] = useState<any>(null); const [tab, setTab] = useState("overview"); const [msg, setMsg] = useState("");
+  const [co, setCo] = useState<any>({ delta_scope: "", delta_total: "" }); const [sched, setSched] = useState<any>({ worker_name: "", work_date: new Date().toISOString().slice(0, 10), note: "" });
+  const load = () => { api("/api/jobs/" + id).then(setD).catch(e => setMsg(e.message)); };
+  useEffect(load, [id]);
+  if (!d) return <div className="modalWrap"><div className="modal">Loading job… {msg}</div></div>;
+  const j = d.job;
+  const stageTo = async (st: string) => { await api(`/api/jobs/${id}/stage`, { method: "POST", body: { to: st } }); load(); refresh && refresh(); };
+  return (<div className="modalWrap"><div className="modal">
+    <div className="rowflex" style={{ justifyContent: "space-between" }}><h3 style={{ margin: 0 }}>{j.service_requested} — {j.contact_name}</h3><button className="btn ghost small" onClick={close}>✕ Close</button></div>
+    <p className="muted" style={{ margin: "6px 0" }}>{j.contact_phone || ""} {j.contact_email ? "· " + j.contact_email : ""} · {j.location || ""} · job value <b style={{ color: "#14532d" }}>{money(j.value)}</b> · labor {money(j.labor_cost)} ({j.labor_pct ?? 0}% of value)</p>
+    <div className="path">{JOB_STAGES.filter(st => st !== "ON_HOLD").map(st => <div key={st} className={`stage ${st === j.stage ? "cur" : ""}`} onClick={() => stageTo(st)}>{st.replaceAll("_", " ")}</div>)}</div>
+    <p className="muted" style={{ fontSize: 12 }}>Click any stage — jobs move both ways. Current: <b>{j.stage.replaceAll("_", " ")}</b></p>
+    {msg && <div className="ok">{msg}</div>}
+    <div className="tabs"><button className={tab === "overview" ? "on" : ""} onClick={() => setTab("overview")}>Overview & Paperwork</button><button className={tab === "crew" ? "on" : ""} onClick={() => setTab("crew")}>Crew & Time</button><button className={tab === "schedule" ? "on" : ""} onClick={() => setTab("schedule")}>Schedule ({d.schedule.length})</button></div>
+    {tab === "overview" && <div>
+      <div className="rowflex"><button className="btn small" onClick={async () => { const r = await api(`/api/jobs/${id}/packet`, { method: "POST", body: {} }).catch((e: any) => ({ error: e.message })); setMsg(r.error ? "Packet failed: " + r.error : `Job packet sent — status: ${r.status}${r.status === "test_mode" ? " (test mode: recorded, not delivered — add provider keys to go live)" : ""}`); load(); }}>📦 Send job packet to customer</button>
+        <select value={j.invoice_status} onChange={async e => { await api(`/api/jobs/${id}`, { method: "PATCH", body: { invoice_status: e.target.value } }); load(); }} style={{ width: 200 }}><option value="not_ready">Invoice: not ready</option><option value="ready">Invoice: ready to send</option><option value="sent">Invoice: sent</option><option value="paid">Invoice: paid</option></select>
+        <span className="muted">Packet carries scope, schedule, and the paperwork list — “send it over” in one click.</span></div>
+      <h4>Paperwork checklist</h4>
+      {d.documents.map((doc: any) => <div className="check" key={doc.id}><span className={`st ${doc.status === "received" ? "pass" : "fail"}`}>{doc.status === "received" ? "✓" : "✗"}</span><span style={{ flex: 1 }}>{doc.name}{doc.required ? " (required)" : ""}</span>{doc.status !== "received" && <><button className="btn ghost small" onClick={async () => { const r = await api(`/api/documents/${doc.id}/chase`, { method: "POST", body: {} }).catch((e: any) => ({ error: e.message })); setMsg(r.error ? "Chase failed: " + r.error : `Chase email queued — status: ${r.status}`); }}>Chase it</button><button className="btn ghost small" onClick={async () => { await api(`/api/documents/${doc.id}`, { method: "PATCH", body: { status: "received" } }); load(); }}>Mark received</button></>}</div>)}
+      {d.documents.length === 0 && <p className="muted">No documents tracked for this job yet.</p>}
+      <h4>Change orders</h4>
+      {d.change_orders.map((c: any) => <p key={c.id} style={{ margin: "5px 0" }}><b>{money(c.delta_total)}</b> — {c.delta_scope} · <span className="tinyBadge">{c.status}</span> {c.status === "draft" && <button className="btn ghost small" onClick={async () => { await api(`/api/change-orders/${c.id}/status`, { method: "POST", body: { status: "approved" } }); setMsg("Change order approved — added to the job value ✓"); load(); }}>Approve (adds to job value)</button>}</p>)}
+      <div className="rowflex"><input placeholder="Scope change — e.g. extra boring location" value={co.delta_scope} onChange={e => setCo({ ...co, delta_scope: e.target.value })} style={{ flex: 1 }} /><input type="number" placeholder="$ delta" style={{ width: 110 }} value={co.delta_total} onChange={e => setCo({ ...co, delta_total: e.target.value })} /><button className="btn ghost small" disabled={!co.delta_scope} onClick={async () => { await api(`/api/jobs/${id}/change-orders`, { method: "POST", body: { delta_scope: co.delta_scope, delta_total: Number(co.delta_total) || 0 } }); setCo({ delta_scope: "", delta_total: "" }); load(); }}>Add change order</button></div>
+      {d.field_reports.length > 0 && <><h4>Recent field reports</h4>{d.field_reports.slice(0, 5).map((f: any) => <p key={f.id} className="muted" style={{ margin: "4px 0" }}>📋 {f.report_date} — {f.manager || "worker"} · {f.status}</p>)}</>}
+    </div>}
+    {tab === "crew" && <CrewTime lead={{ id: j.lead_id, sector: j.sector, est_value: j.value, pm_id: j.pm_id }} users={users} reloadLead={load} />}
+    {tab === "schedule" && <div>
+      {d.schedule.map((s2: any) => <p key={s2.id} style={{ margin: "5px 0" }}>🗓 {s2.work_date} — <b>{s2.worker}</b>{s2.note ? " · " + s2.note : ""}</p>)}
+      {d.schedule.length === 0 && <p className="muted">Nothing scheduled yet.</p>}
+      <div className="rowflex" style={{ marginTop: 8 }}><input list="rosterNames2" placeholder="Worker name (roster — no account needed)" value={sched.worker_name} onChange={e => setSched({ ...sched, worker_name: e.target.value })} style={{ minWidth: 240 }} /><input type="date" value={sched.work_date} onChange={e => setSched({ ...sched, work_date: e.target.value })} /><input placeholder="Note" value={sched.note} onChange={e => setSched({ ...sched, note: e.target.value })} style={{ flex: 1 }} /><button className="btn small" disabled={!sched.worker_name.trim()} onClick={async () => { const r = await api("/api/schedule", { method: "POST", body: { lead_id: j.lead_id, worker_name: sched.worker_name.trim(), work_date: sched.work_date, note: sched.note } }).catch((e: any) => ({ error: e.message })); if (r.error) setMsg("Schedule failed: " + r.error); else { setSched({ ...sched, worker_name: "", note: "" }); load(); } }}>Schedule</button></div>
+    </div>}
+  </div></div>);
+}
+
+function LogTimeModal({ close, done }: any) {
+  const [leads, setLeads] = useState<any[]>([]); const [roster, setRoster] = useState<any[]>([]); const [msg, setMsg] = useState("");
+  const [f, setF] = useState<any>({ lead_id: "", worker_name: "", entry_date: new Date().toISOString().slice(0, 10), hours: "", note: "" });
+  useEffect(() => { api("/api/leads?paged=1&page=1&page_size=100&sort=recent").then(r => setLeads(r.items || [])).catch(() => {}); api("/api/workers").then(setRoster).catch(() => {}); }, []);
+  const save = async () => { if (!f.lead_id || !f.worker_name.trim() || !(Number(f.hours) > 0)) return setMsg("Pick the job, type the worker's name, enter hours."); const r = await api("/api/time", { method: "POST", body: { lead_id: f.lead_id, worker_name: f.worker_name.trim(), entry_date: f.entry_date, hours: Number(f.hours), note: f.note } }).catch((e: any) => ({ error: e.message })); if (r.error) return setMsg("Failed: " + r.error); setMsg(`Logged ${r.entry.hours}h for ${r.worker.name} — ${money(r.entry.amount)}${r.rated ? "" : " (no rate class — costed $0)"} ✓`); setF({ ...f, hours: "", note: "" }); done && done(); };
+  return (<div className="modalWrap"><div className="modal" style={{ maxWidth: 520 }}>
+    <div className="rowflex" style={{ justifyContent: "space-between" }}><h3 style={{ margin: 0 }}>⏱ Log time — 10 seconds</h3><button className="btn ghost small" onClick={close}>✕ Close</button></div>
+    <p className="muted">Worker = a name. If they're new, they're added to the roster as you type — no account, no seat.</p>
+    {msg && <div className={msg.includes("✓") ? "ok" : "err"}>{msg}</div>}
+    <label className="f">Job / lead</label>
+    <select value={f.lead_id} onChange={e => setF({ ...f, lead_id: e.target.value })}><option value="">Choose the job…</option>{leads.map((l: any) => <option key={l.id} value={l.id}>{l.service_requested} — {l.contact_name} ({l.state.replaceAll("_", " ")})</option>)}</select>
+    <label className="f">Worker</label>
+    <input list="rosterNamesG" placeholder="Type a name — new names join the roster" value={f.worker_name} onChange={e => setF({ ...f, worker_name: e.target.value })} /><datalist id="rosterNamesG">{roster.filter((w: any) => w.active).map((w: any) => <option key={w.id} value={w.name}>{w.class_name || ""}</option>)}</datalist>
+    <div className="rowflex"><span><label className="f">Date</label><input type="date" value={f.entry_date} onChange={e => setF({ ...f, entry_date: e.target.value })} /></span>
+      <span><label className="f">Hours</label><input type="number" min="0" step="0.25" value={f.hours} onChange={e => setF({ ...f, hours: e.target.value })} style={{ width: 100 }} /></span>
+      <span style={{ flex: 1 }}><label className="f">Note</label><input value={f.note} onChange={e => setF({ ...f, note: e.target.value })} placeholder="Phase, task…" /></span></div>
+    <div className="rowflex" style={{ marginTop: 12 }}>{[2, 4, 8].map(h => <button key={h} className="btn ghost small" onClick={() => setF({ ...f, hours: String(h) })}>{h}h</button>)}<button className="btn" onClick={save}>Log time</button></div>
+  </div></div>);
+}
+
+function WorkersTab() {
+  const [workers, setWorkers] = useState<any[]>([]); const [classes, setClasses] = useState<any[]>([]); const [msg, setMsg] = useState("");
+  const [nw, setNw] = useState<any>({ name: "", phone: "", labor_class_id: "" }); const [bulk, setBulk] = useState("");
+  const load = () => { api("/api/workers").then(setWorkers).catch(() => {}); api("/api/labor-classes").then(setClasses).catch(() => {}); };
+  useEffect(load, []);
+  return (<div className="card"><h3 style={{ marginTop: 0 }}>Workers — the roster</h3>
+    <p className="muted">Everyone who works jobs, by name. Roster workers <b>never need logins and never use seats</b> — seats are only for people who sign in. Team members appear here automatically (linked). Give each worker a labor class so their hours cost correctly.</p>
+    {msg && <div className="ok">{msg}</div>}
+    <table><thead><tr><th>Name</th><th>Phone</th><th>Labor class</th><th>Type</th><th>Active</th><th></th></tr></thead><tbody>
+      {workers.map((w: any) => <tr key={w.id}><td><b>{w.name}</b></td><td>{w.phone || <span className="muted">—</span>}</td>
+        <td><select value={w.labor_class_id || ""} onChange={async e => { await api("/api/workers/" + w.id, { method: "PATCH", body: { labor_class_id: e.target.value || null } }); setMsg(`Class set for ${w.name} ✓`); load(); }}><option value="">— No class (hours cost $0) —</option>{classes.map((c: any) => <option key={c.id} value={c.id}>{c.name} ({money(c.private_rate)} priv · {money(c.govt_rate)} govt)</option>)}</select></td>
+        <td>{w.linked_user_id ? <span className="tinyBadge">team login</span> : <span className="tinyBadge" style={{ background: "#fef9c3", color: "#854d0e" }}>roster only</span>}</td>
+        <td>{w.active ? "✓" : "—"}</td>
+        <td><button className="btn ghost small" onClick={async () => { await api("/api/workers/" + w.id, { method: "PATCH", body: { active: !w.active } }); load(); }}>{w.active ? "Deactivate" : "Reactivate"}</button></td></tr>)}
+    </tbody></table>
+    <div className="rowflex" style={{ marginTop: 12 }}><input placeholder="Worker name — e.g. Mike Torres" value={nw.name} onChange={e => setNw({ ...nw, name: e.target.value })} style={{ flex: 1 }} /><input placeholder="Phone (optional)" value={nw.phone} onChange={e => setNw({ ...nw, phone: e.target.value })} /><select value={nw.labor_class_id} onChange={e => setNw({ ...nw, labor_class_id: e.target.value })}><option value="">Class…</option>{classes.map((c: any) => <option key={c.id} value={c.id}>{c.name}</option>)}</select><button className="btn" disabled={!nw.name.trim()} onClick={async () => { await api("/api/workers", { method: "POST", body: { name: nw.name.trim(), phone: nw.phone, labor_class_id: nw.labor_class_id || undefined } }); setNw({ name: "", phone: "", labor_class_id: "" }); setMsg("Worker added ✓"); load(); }}>Add worker</button></div>
+    <label className="f" style={{ marginTop: 14 }}>Bulk add — paste names, one per line</label>
+    <textarea rows={3} value={bulk} onChange={e => setBulk(e.target.value)} placeholder={"Carlos M.\nDerek W.\nSam R."} />
+    <button className="btn ghost small" style={{ marginTop: 6 }} disabled={!bulk.trim()} onClick={async () => { const r = await api("/api/workers/bulk", { method: "POST", body: { text: bulk } }); setBulk(""); setMsg(`${r.created_or_found} workers on the roster ✓`); load(); }}>Add all names</button>
+  </div>);
+}
+
+function InboxRulesTab({ users }: any) {
+  const [rules, setRules] = useState<any[]>([]); const [msg, setMsg] = useState("");
+  const [nr, setNr] = useState<any>({ name: "", match_field: "sender", match_value: "", action: "assign", action_value: "" });
+  const load = () => { api("/api/inbox-rules").then(setRules).catch(() => {}); };
+  useEffect(load, []);
+  return (<div className="card"><h3 style={{ marginTop: 0 }}>Inbox rules — route the pile before it piles up</h3>
+    <p className="muted">When mail matches, the rule applies immediately — including to the backlog already sitting there. Example: sender contains <span className="mono">dec.ny.gov</span> → assign to you, because regulatory mail can't wait.</p>
+    {msg && <div className="ok">{msg}</div>}
+    {rules.map((r: any) => <div className="check" key={r.id}><span className="st pass">✓</span><span style={{ flex: 1 }}><b>{r.name}</b> — when {r.match_field} contains “{r.match_value}” → {r.action.replaceAll("_", " ")}{r.action === "assign" ? " to " + (users.find((u: any) => u.id === r.action_value)?.name || "—") : r.action === "snooze_days" ? " " + r.action_value + "d" : ""}</span><button className="btn ghost small" onClick={async () => { await api("/api/inbox-rules/" + r.id, { method: "DELETE" }); load(); }}>Delete</button></div>)}
+    {rules.length === 0 && <p className="muted">No rules yet.</p>}
+    <div className="formgrid" style={{ marginTop: 12 }}>
+      <div><label className="f">Rule name</label><input value={nr.name} onChange={e => setNr({ ...nr, name: e.target.value })} placeholder="DEC mail to me" /></div>
+      <div><label className="f">Match field</label><select value={nr.match_field} onChange={e => setNr({ ...nr, match_field: e.target.value })}><option value="sender">Sender (name or email)</option><option value="subject">Subject</option><option value="body">Subject or body</option><option value="category">Category</option></select></div>
+      <div><label className="f">Contains</label><input value={nr.match_value} onChange={e => setNr({ ...nr, match_value: e.target.value })} placeholder="dec.ny.gov" /></div>
+      <div><label className="f">Then</label><select value={nr.action} onChange={e => setNr({ ...nr, action: e.target.value })}><option value="assign">Assign to…</option><option value="mark_done">Mark done (noise)</option><option value="snooze_days">Snooze (days)</option></select></div>
+      {nr.action === "assign" && <div><label className="f">Assign to</label><select value={nr.action_value} onChange={e => setNr({ ...nr, action_value: e.target.value })}><option value="">Pick a person…</option>{users.map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}</select></div>}
+      {nr.action === "snooze_days" && <div><label className="f">Days</label><input type="number" value={nr.action_value} onChange={e => setNr({ ...nr, action_value: e.target.value })} /></div>}
+    </div>
+    <button className="btn" style={{ marginTop: 10 }} disabled={!nr.match_value || (nr.action === "assign" && !nr.action_value)} onClick={async () => { const r = await api("/api/inbox-rules", { method: "POST", body: nr }); setMsg(`Rule saved ✓ — applied to ${r.applied_now} open item(s) right away`); setNr({ name: "", match_field: "sender", match_value: "", action: "assign", action_value: "" }); load(); }}>Save rule</button>
+  </div>);
+}
+
+function TimeGridCard() {
+  const [g, setG] = useState<any>(null); const [week, setWeek] = useState(""); const [edits, setEdits] = useState<Record<string, string>>({}); const [msg, setMsg] = useState("");
+  const load = (w?: string) => { api("/api/time/grid" + (w ? "?week=" + w : "")).then(r => { setG(r); setWeek(r.week_of); }).catch(() => {}); };
+  useEffect(() => { load(); }, []);
+  if (!g) return null;
+  const days = [...Array(7)].map((_, i) => new Date(new Date(g.week_of + "T12:00:00").getTime() + i * 86400000).toISOString().slice(0, 10));
+  const cellVal = (workerId: string, leadId: string, date: string) => { const key = `${workerId}|${leadId}|${date}`; if (edits[key] !== undefined) return edits[key]; const es = g.entries.filter((e: any) => e.worker_id === workerId && e.lead_id === leadId && e.entry_date === date); return es.length ? String(es.reduce((a: number, e: any) => a + e.hours, 0)) : ""; };
+  const jobIds: string[] = [...new Set(g.entries.map((e: any) => e.lead_id))] as string[];
+  const save = async () => { const rows: any[] = []; for (const [key, v] of Object.entries(edits)) { const [worker_id, lead_id, entry_date] = key.split("|"); const hrs = Number(v); const existing = g.entries.filter((e: any) => e.worker_id === worker_id && e.lead_id === lead_id && e.entry_date === entry_date).reduce((a: number, e: any) => a + e.hours, 0); if (hrs > existing) rows.push({ lead_id, worker_id, entry_date, hours: hrs - existing }); } if (!rows.length) return setMsg("No new hours to save (the grid only adds — delete entries from the job to correct)."); const r = await api("/api/time/grid", { method: "POST", body: { rows } }); setMsg(`Saved ${r.saved} entries ✓`); setEdits({}); load(week); };
+  return (<div className="card"><h3>Weekly time grid — office entry for the whole crew</h3>
+    <p className="muted">Week of <input type="date" value={week} onChange={e => load(e.target.value)} style={{ width: 160 }} /> · Rows = workers with hours this week, per job. Type hours into a cell and save — Friday entry for everyone in one pass.</p>
+    {msg && <div className="ok">{msg}</div>}
+    {jobIds.length === 0 && <p className="muted">No time logged this week yet — log from a job, the Queue, or the ⏱ Log time button, and the grid fills in.</p>}
+    {jobIds.map(jid => { const job = g.jobs.find((x: any) => x.lead_id === jid); return <div key={jid} style={{ marginBottom: 14 }}><b>{job?.service_requested || "Job"} — {job?.contact_name || ""}</b>
+      <table><thead><tr><th>Worker</th>{days.map(d => <th key={d}>{d.slice(5)}</th>)}<th>Total</th></tr></thead><tbody>
+        {g.workers.filter((w: any) => g.entries.some((e: any) => e.lead_id === jid && e.worker_id === w.id)).map((w: any) => <tr key={w.id}><td>{w.name}</td>{days.map(d => <td key={d}><input type="number" min="0" step="0.25" style={{ width: 62 }} value={cellVal(w.id, jid, d)} onChange={e => setEdits({ ...edits, [`${w.id}|${jid}|${d}`]: e.target.value })} /></td>)}<td><b>{days.reduce((a, d) => a + (Number(cellVal(w.id, jid, d)) || 0), 0)}</b></td></tr>)}
+      </tbody></table></div>; })}
+    {jobIds.length > 0 && <button className="btn" onClick={save}>Save grid additions</button>}
+  </div>);
+}
+
+
 function App() {
   const [user, setUser] = useState<any>(null); const [login, setLogin] = useState({ email: "", password: "" }); const [err, setErr] = useState("");
-  const [nav, setNav] = useState<Nav>({ view: "myday" }); const [users, setUsers] = useState<any[]>([]); const [priceBook, setPriceBook] = useState<any[]>([]);
+  const [nav, setNav] = useState<Nav>({ view: "queue" }); const [users, setUsers] = useState<any[]>([]); const [priceBook, setPriceBook] = useState<any[]>([]);
 const [sb, setSb] = useState(() => localStorage.getItem("wp_sb") || "open"); const [mOpen, setMOpen] = useState(false);
   const [notifs, setNotifs] = useState<any[]>([]); const [unread, setUnread] = useState(0); const [bellOpen, setBellOpen] = useState(false); const [verifyMsg, setVerifyMsg] = useState("");
 const [pending, setPending] = useState(0); const [creating, setCreating] = useState(false); const [leadId, setLeadId] = useState<string | null>(null); const [tick, setTick] = useState(0);
-  const [palOpen, setPalOpen] = useState(false); const [helpOpen, setHelpOpen] = useState(false);
+  const [palOpen, setPalOpen] = useState(false); const [helpOpen, setHelpOpen] = useState(false); const [jobOpen, setJobOpen] = useState<string | null>(null); const [ltOpen, setLtOpen] = useState(false);
   const [theme, setTheme] = useState(() => localStorage.getItem("wp_theme") || "light");
   useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem("wp_theme", theme); }, [theme]);
   useEffect(() => { if (user && "serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {}); }, [user?.id]);
+  useEffect(() => { (window as any).wpLogTime = () => setLtOpen(true); }, []);
   const openLead = (id: string) => { setLeadId(id); try { const r = JSON.parse(localStorage.getItem("wp_recent") || "[]").filter((x: string) => x !== id); r.unshift(id); localStorage.setItem("wp_recent", JSON.stringify(r.slice(0, 6))); } catch {} };
   useEffect(() => { if (!user) return; let gAt = 0;
     const h = (e: KeyboardEvent) => { const t = e.target as HTMLElement; const typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
@@ -1190,9 +1398,10 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       if (e.key === "Escape") { setHelpOpen(false); return; }
       if (e.key === "?" || (e.key === "/" && e.shiftKey)) { setHelpOpen(o => !o); return; }
       if (e.key === "/") { e.preventDefault(); setPalOpen(true); return; }
+      if (e.key.toLowerCase() === "t") { setLtOpen(true); return; }
       if (e.key.toLowerCase() === "n") { setCreating(true); return; }
       if (e.key.toLowerCase() === "g") { gAt = Date.now(); return; }
-      if (gAt && Date.now() - gAt < 900) { const m: Record<string, string> = { m: "myday", d: "dashboard", p: "pulse", l: "leads", a: "approvals", r: "reports", s: "settings", b: "billing" }; const v = m[e.key.toLowerCase()]; if (v) { setNav({ view: v }); gAt = 0; } }
+      if (gAt && Date.now() - gAt < 900) { const m: Record<string, string> = { m: "myday", d: "dashboard", p: "pulse", l: "leads", a: "approvals", r: "reports", s: "settings", b: "billing", q: "queue", j: "jobs" }; const v = m[e.key.toLowerCase()]; if (v) { setNav({ view: v }); gAt = 0; } }
     };
     window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, [user, palOpen]);
   const [workspaces, setWorkspaces] = useState<any[]>([]); const [newWs, setNewWs] = useState("");
@@ -1210,7 +1419,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       <select className="wsSwitch" value={user.workspace_id} onChange={async e => { if (e.target.value === "__new") { const name = prompt("New business / workspace name"); if (name) { await api("/api/workspaces", { method: "POST", body: { name } }); location.reload(); } return; } await api("/api/workspaces/switch", { method: "POST", body: { workspace_id: e.target.value } }); location.reload(); }}>
         {workspaces.map((w: any) => <option key={w.workspace_id} value={w.workspace_id}>{w.name} ({w.role})</option>)}
         <option value="__new">+ New workspace…</option></select>
-      <NavB v="myday" short="MY">My Day</NavB><NavB v="dashboard" short="DA">Dashboard</NavB><NavB v="pulse" short="PU">Pulse</NavB><NavB v="leads" short="LE">Leads</NavB><NavB v="reports" short="RE">Reports</NavB><NavB v="approvals" short="AP" cnt={pending || undefined}>Approvals</NavB><NavB v="ai" short="AI">AI Assistant</NavB><NavB v="imports" short="IM">Import CSV</NavB><NavB v="demand" short="DG">Demand Gap</NavB><NavB v="handoffs" short="HA">Handoffs</NavB><NavB v="ops" short="OP">Ops Console</NavB><NavB v="settings" short="SE">Settings</NavB>{(!user?.permissions || user.permissions.can_billing) && <NavB v="billing" short="BI">Billing</NavB>}
+      <NavB v="queue" short="WQ">Work Queue</NavB><NavB v="myday" short="MY">My Day</NavB><NavB v="dashboard" short="DA">Dashboard</NavB><NavB v="pulse" short="PU">Pulse</NavB><NavB v="leads" short="LE">Leads</NavB><NavB v="jobs" short="JO">Jobs</NavB><NavB v="reports" short="RE">Reports</NavB><NavB v="approvals" short="AP" cnt={pending || undefined}>Approvals</NavB><NavB v="ai" short="AI">AI Assistant</NavB><NavB v="imports" short="IM">Import CSV</NavB><NavB v="demand" short="DG">Demand Gap</NavB><NavB v="handoffs" short="HA">Handoffs</NavB><NavB v="ops" short="OP">Ops Console</NavB><NavB v="settings" short="SE">Settings</NavB>{(!user?.permissions || user.permissions.can_billing) && <NavB v="billing" short="BI">Billing</NavB>}
       {user.is_platform_admin ? <NavB v="admin" short="AD">Platform Admin</NavB> : null}
       <div className="sideFoot"><button title="Sign out" onClick={async () => { await fetch("/api/auth/logout", { method: "POST" }).catch(() => {}); setUser(null); }}><span className="nshort">⏻</span><span className="nlab">Sign out</span></button></div>
     </aside>
@@ -1222,9 +1431,11 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
         {notifs.length === 0 && <p className="muted">Nothing yet \u2014 approvals, signatures, deposits, and new leads land here.</p>}
         {notifs.map(n => <div key={n.id} className="bellItem" style={n.read_at ? {} : { background: "#f0f9f1" }} onClick={async () => { await api(`/api/notifications/${n.id}/read`, { method: "POST", body: {} }); setUnread(u => Math.max(0, u - (n.read_at ? 0 : 1))); if (n.lead_id) { openLead(n.lead_id); setBellOpen(false); } }}><b>{n.title}</b><br /><span className="muted">{n.body}</span><br /><span className="muted" style={{ fontSize: 11.5 }}>{dt(n.created_at)}</span></div>)}</div>}</div>
         <button className="btn ghost" title="Toggle dark mode" onClick={() => setTheme(t => t === "dark" ? "light" : "dark")}>{theme === "dark" ? "☀️" : "🌙"}</button>
-        <button className="btn" onClick={() => setCreating(true)}>+ New Lead</button></div>
+        <button className="btn ghost" title="Log time (T)" onClick={() => setLtOpen(true)}>⏱ Log time</button><button className="btn" onClick={() => setCreating(true)}>+ New Lead</button></div>
       {user && user.email_verified === 0 && <div className="verifyBar">✉️ Verify your email to secure your account and enable password recovery. <button className="btn ghost small" onClick={async () => { const r = await api("/api/auth/resend-verify", { method: "POST", body: {} }).catch((e: any) => ({ error: e.message })); setVerifyMsg(r.verify_url ? "Test mode \u2014 verify here: " + r.verify_url : r.error ? r.error : "Verification email sent \u2014 check your inbox."); }}>Resend verification</button>{verifyMsg && <span style={{ marginLeft: 8 }}>{verifyMsg}</span>}</div>}
       <EB>
+      {nav.view === "queue" && <WorkQueue openLead={openLead} openJob={(id: string) => setJobOpen(id)} go={go} />}
+      {nav.view === "jobs" && <JobsBoard openJob={(id: string) => setJobOpen(id)} />}
       {nav.view === "myday" && <MyDay user={user} openLead={openLead} go={go} />}
       {nav.view === "dashboard" && <Dashboard go={go} openLead={openLead} />}
       {nav.view === "pulse" && <Pulse openLead={openLead} />}
@@ -1240,6 +1451,8 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       {nav.view === "billing" && <Billing />}
       {nav.view === "admin" && <Admin />}
       </EB>
+      {jobOpen && <JobDetail id={jobOpen} users={users} priceBook={priceBook} close={() => setJobOpen(null)} refresh={() => setTick(t => t + 1)} />}
+      {ltOpen && <LogTimeModal close={() => setLtOpen(false)} done={() => setTick(t => t + 1)} />}
       {creating && <CreateLead users={users} done={(id: any) => { setCreating(false); setTick(t => t + 1); if (id) openLead(id); }} />}
       {palOpen && <CommandPalette close={() => setPalOpen(false)} go={go} openLead={openLead} newLead={() => setCreating(true)} />}
       {helpOpen && <div className="modalWrap" onClick={() => setHelpOpen(false)}><div className="card" style={{ maxWidth: 430, margin: "10vh auto" }} onClick={e => e.stopPropagation()}><h3 style={{ marginTop: 0 }}>Keyboard shortcuts</h3><table><tbody>{[["⌘K or /", "Command palette — search + jump"], ["N", "New lead"], ["G then M / D / P / L / A / R / S / B", "Go to My Day / Dashboard / Pulse / Leads / Approvals / Reports / Settings / Billing"], ["?", "This help"], ["Esc", "Close dialogs"]].map(([k, v]) => <tr key={k}><td style={{ whiteSpace: "nowrap" }}><span className="kbd">{k}</span></td><td>{v}</td></tr>)}</tbody></table></div></div>}

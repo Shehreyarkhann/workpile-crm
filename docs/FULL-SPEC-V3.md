@@ -1,6 +1,6 @@
 # WORKPILE — FULL SPEC v3.0 (Speed Rebuild)
 
-**Date:** 2026-11-10. **Status:** supersedes FULL-SPEC v2.0 workflow model (§§3–9, 13–14) where they conflict. Pricing, §14.5 handoff contract, §25 Gregory P0s, §26 invariants remain in force unless amended here.
+**Date:** 2026-11-10. **IMPLEMENTED 2026-11-10 — Slices 28–36 shipped (server + client), 101/101 tests + smoke + build green; legacy migration verified on the 2,613-lead demo DB (states mapped, 2,001 WON backfilled to jobs); screenshots in screenshots-v10/. One render bug caught in QA and fixed (hooks below an early return in LeadDetail). Reaches the live pilot when the deploy one-liner is re-run (prod DB auto-migrates at server start).** **Status:** supersedes FULL-SPEC v2.0 workflow model (§§3–9, 13–14) where they conflict. Pricing, §14.5 handoff contract, §25 Gregory P0s, §26 invariants remain in force unless amended here.
 **Trigger:** founder pilot verdict — "the lead flow is broken, it's just another dashboard." Verified against the code before writing a word of this spec (§0).
 
 ---
