@@ -218,6 +218,7 @@ function LeadDetail({ id, users, priceBook, close, refresh }: any) {
           <span className="rowflex" style={{ marginTop: 5 }}><button className="btn ghost small" onClick={async () => { const r = await api(`/api/proposals/${p.id}/sign-link`, { method: "POST", body: {} }); navigator.clipboard && navigator.clipboard.writeText(location.origin + "/sign/" + r.token); setMsg("Sign link copied: /sign/" + r.token); }}>Copy sign link</button>
           <button className="btn ghost small" onClick={async () => { const r = await api(`/api/proposals/${p.id}/deposit`, { method: "POST", body: {} }); setMsg(`Deposit link (${r.mode}): ${r.link}`); }}>Deposit link</button>
           <a className="btn ghost small" style={{ textDecoration: "none" }} href={`/api/proposals/${p.id}/docx`}>DOCX</a>
+          <a className="btn ghost small" style={{ textDecoration: "none" }} href={`/print/proposal/${p.id}`} target="_blank" rel="noreferrer">🖨 Print / PDF</a>
           <button className="btn ghost small" onClick={() => transit("PROPOSAL_SENT")}>Mark sent</button>
           <button className="btn small" onClick={async () => { const r = await api(`/api/proposals/${p.id}/send`, { method: "POST", body: { channel: "email" } }).catch((e: any) => ({ error: e.message })); setMsg(r.error ? "Send failed: " + r.error : `Proposal emailed to customer — delivery status: ${r.status}${r.status === "test_mode" ? " (test mode: recorded, not sent — add RESEND_API_KEY to go live)" : ""}`); load(); }}>✉ Send to customer</button>
           <button className="btn ghost small" onClick={async () => { const r = await api(`/api/proposals/${p.id}/send`, { method: "POST", body: { channel: "sms" } }).catch((e: any) => ({ error: e.message })); setMsg(r.error ? "SMS failed: " + r.error : `Proposal texted — status: ${r.status}`); load(); }}>💬 Text it</button></span></div>)}
@@ -404,7 +405,7 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any)
     </tbody></table>
       <div className="rowflex" style={{ marginTop: 12 }}><input style={{ flex: 2 }} placeholder="New item name" value={nb.name} onChange={e => setNb({ ...nb, name: e.target.value })} /><input style={{ width: 90 }} placeholder="unit" value={nb.unit} onChange={e => setNb({ ...nb, unit: e.target.value })} /><input style={{ width: 120 }} type="number" placeholder="standard $" value={nb.standard_price} onChange={e => setNb({ ...nb, standard_price: e.target.value })} /><input style={{ width: 120 }} type="number" placeholder="floor $" value={nb.floor_price} onChange={e => setNb({ ...nb, floor_price: e.target.value })} /><button className="btn" onClick={async () => { await api("/api/price-book", { method: "POST", body: { ...nb, standard_price: Number(nb.standard_price) || 0, floor_price: Number(nb.floor_price) || 0 } }); setNb({ name: "", unit: "job", standard_price: "", floor_price: "" }); loadAll(); }}>Add item</button></div>
       <p className="muted">Proposals can only price from this book — the floor is the margin guardrail the Approval Gate enforces.</p></div>}
-    {tab === "templates" && canSettings && <div className="card">{tpls.map(t => <div key={t.id} style={{ borderBottom: "1px solid #eef2f7", padding: "10px 0" }}><b>{t.name}</b> <span className="muted">· {t.kind} · v{t.version} · {t.active ? "active" : "inactive"}</span><p className="muted" style={{ whiteSpace: "pre-wrap" }}>{t.body}</p><button className="btn ghost small" onClick={async () => { const v = prompt("Edit template body", t.body); if (v !== null) { await api(`/api/templates/${t.id}`, { method: "PATCH", body: { body: v } }); loadAll(); } }}>Edit</button> <button className="btn ghost small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></div>)}
+    {tab === "templates" && canSettings && <div className="card"><ProposalTemplateEditor /><h3>Message templates</h3>{tpls.map(t => <div key={t.id} style={{ borderBottom: "1px solid #eef2f7", padding: "10px 0" }}><b>{t.name}</b> <span className="muted">· {t.kind} · v{t.version} · {t.active ? "active" : "inactive"}</span><p className="muted" style={{ whiteSpace: "pre-wrap" }}>{t.body}</p><button className="btn ghost small" onClick={async () => { const v = prompt("Edit template body", t.body); if (v !== null) { await api(`/api/templates/${t.id}`, { method: "PATCH", body: { body: v } }); loadAll(); } }}>Edit</button> <button className="btn ghost small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></div>)}
       <div className="formgrid" style={{ marginTop: 12 }}><div><label className="f">New template name</label><input value={nt.name} onChange={e => setNt({ ...nt, name: e.target.value })} /></div><div className="full"><label className="f">Body (merge fields: {"{{contact_name}} {{service}} {{total}}"})</label><textarea rows={4} value={nt.body} onChange={e => setNt({ ...nt, body: e.target.value })} /></div></div>
       <button className="btn" style={{ marginTop: 10 }} onClick={async () => { await api("/api/templates", { method: "POST", body: nt }); setNt({ name: "", body: "" }); loadAll(); }}>Add template</button></div>}
     {tab === "services" && canSettings && <div className="card">{svcs.map(sv => <div className="check" key={sv.id}><span className={`st ${sv.active ? "pass" : "fail"}`}>{sv.active ? "✓" : "✗"}</span><span style={{ flex: 1 }}>{sv.name} {sv.is_catalog ? "" : "(not in catalog — Demand Gap territory)"}</span><button className="btn ghost small" onClick={async () => { await api(`/api/services/${sv.id}`, { method: "PATCH", body: { active: !sv.active } }); loadAll(); }}>{sv.active ? "Deactivate" : "Activate"}</button></div>)}
@@ -606,6 +607,82 @@ function Landing({ onAuth }: any) {
     <div className="section"><h2>Questions</h2>
       {[["Do I have to replace my current system?", "No — Workpile is the front door, not the house. Won jobs become projects in YOUR platform via API or webhooks; every final outcome is delivered and acknowledged there."], ["How do leads get in?", "Four ways: sync from your lead system's API by date range (daily auto-sync available), CSV upload, website form embed with TCPA consent, and inbox/API ingestion."], ["Is the AI allowed to send things on its own?", "Never. Agents draft, score, and organize; every customer-facing send and every price-bearing decision needs a human approval. That's a product invariant, not a setting."], ["What happens to duplicates?", "Ingestion dedupes by phone/email automatically. AI Cleanup finds the rest — same name + service — and archives them as duplicates of the original, with the merge recorded."]].map(([q, a]) => <div className="faq" key={q}><b>{q}</b><p>{a}</p></div>)}</div>
     <footer className="landFoot"><Logo /><span>© 2026 Workpile · workpile.io · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/dpa">DPA</a></span><span>Built for the businesses that answer the phone.</span></footer>
+  </div>);
+}
+
+function RichText({ value, onChange, minH }: any) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (ref.current && ref.current.innerHTML !== value) ref.current.innerHTML = value || ""; }, []);
+  const cmd = (c: string, v?: string) => { document.execCommand(c, false, v); ref.current?.focus(); };
+  const insert = (t: string) => { document.execCommand("insertText", false, t); ref.current?.focus(); };
+  return (<div>
+    <div className="rowflex" style={{ gap: 4, marginBottom: 4 }}>
+      <button type="button" className="btn ghost small" onClick={() => cmd("bold")}><b>B</b></button>
+      <button type="button" className="btn ghost small" onClick={() => cmd("italic")}><i>I</i></button>
+      <button type="button" className="btn ghost small" onClick={() => cmd("underline")}><u>U</u></button>
+      <button type="button" className="btn ghost small" onClick={() => cmd("formatBlock", "h3")}>Heading</button>
+      <button type="button" className="btn ghost small" onClick={() => cmd("insertUnorderedList")}>• List</button>
+      <span className="muted" style={{ marginLeft: 6 }}>Insert:</span>
+      {["{customer}", "{service}", "{total}", "{date}", "{ref}", "{business}", "{location}"].map(f => <button type="button" key={f} className="btn ghost small" onClick={() => insert(f)}>{f}</button>)}
+    </div>
+    <div ref={ref} contentEditable suppressContentEditableWarning className="richtext" style={{ minHeight: minH || 110 }} onBlur={() => onChange(ref.current?.innerHTML || "")} />
+  </div>);
+}
+
+function ProposalTemplateEditor() {
+  const [t, setT] = useState<any>(null); const [saved, setSaved] = useState(""); const [showPrev, setShowPrev] = useState(false);
+  useEffect(() => { api("/api/proposal-template").then(setT).catch(() => {}); }, []);
+  if (!t) return <p className="muted">Loading proposal template…</p>;
+  const save = async () => { const r = await api("/api/proposal-template", { method: "PUT", body: t }); setT(r); setSaved("Proposal template saved ✓ — new printouts, DOCX exports, and sign pages use it immediately."); };
+  const sample = (x: string) => String(x || "").replaceAll("{customer}", "Angela Ruiz").replaceAll("{service}", "Mold remediation").replaceAll("{total}", "$4,800.00").replaceAll("{date}", "Nov 9, 2026").replaceAll("{ref}", "PROP-7K2QX9").replaceAll("{business}", t.company || "Your Company").replaceAll("{location}", "Bay Shore, NY");
+  return (<div style={{ borderBottom: "2px solid #eef2f7", paddingBottom: 16, marginBottom: 6 }}>
+    <h3 style={{ marginTop: 0 }}>📄 Proposal document template</h3>
+    <p className="muted">Every proposal prints, downloads (DOCX), and signs on this template: your company header on top, your words before and after the price-book table, your footer on every page. Set it once — every proposal in the flow uses it.</p>
+    {saved && <div className="ok">{saved}</div>}
+    <div className="formgrid">
+      <div><label className="f">Company name (header)</label><input value={t.company} onChange={e => setT({ ...t, company: e.target.value })} /></div>
+      <div><label className="f">Tagline</label><input value={t.tagline} onChange={e => setT({ ...t, tagline: e.target.value })} placeholder="Licensed · Insured · Since 1998" /></div>
+      <div><label className="f">Header contact line</label><input value={t.contact_line} onChange={e => setT({ ...t, contact_line: e.target.value })} placeholder="(516) 555-0100 · hello@company.com · company.com" /></div>
+      <div><label className="f">Header address line</label><input value={t.address} onChange={e => setT({ ...t, address: e.target.value })} placeholder="123 Main St, Bay Shore, NY 11706" /></div>
+      <div className="full"><label className="f">Intro — printed above the line items</label><RichText value={t.intro_html} onChange={(v: string) => setT({ ...t, intro_html: v })} /></div>
+      <div className="full"><label className="f">Terms & conditions — printed below the total</label><RichText value={t.terms_html} onChange={(v: string) => setT({ ...t, terms_html: v })} /></div>
+      <div className="full"><label className="f">Footer — bottom of every page</label><input value={t.footer} onChange={e => setT({ ...t, footer: e.target.value })} /></div>
+    </div>
+    <div className="rowflex" style={{ marginTop: 10 }}><button className="btn" onClick={save}>Save proposal template</button><button className="btn ghost" onClick={() => setShowPrev(!showPrev)}>{showPrev ? "Hide preview" : "Preview with sample data"}</button>{t.customized ? <span className="st pass">customized</span> : <span className="st warn">using starter wording — make it yours</span>}</div>
+    {showPrev && <div className="printdoc" style={{ marginTop: 14, border: "1px solid #dbe4ee" }}>
+      <div className="pd-head"><div className="pd-company">{t.company}</div>{t.tagline && <div className="pd-tag">{t.tagline}</div>}{t.contact_line && <div className="pd-meta">{t.contact_line}</div>}{t.address && <div className="pd-meta">{t.address}</div>}</div>
+      <h2>Proposal — Mold remediation · PROP-7K2QX9</h2>
+      <p className="pd-meta">Prepared for: Angela Ruiz · Bay Shore, NY · Nov 9, 2026</p>
+      <div dangerouslySetInnerHTML={{ __html: sample(t.intro_html) }} />
+      <table className="pd-table"><thead><tr><th>Item</th><th>Qty</th><th>Unit price</th><th>Amount</th></tr></thead><tbody><tr><td>Mold remediation — primary bath</td><td>1</td><td>$3,900.00</td><td>$3,900.00</td></tr><tr><td>HEPA air scrubber (per day)</td><td>3</td><td>$300.00</td><td>$900.00</td></tr></tbody></table>
+      <p className="pd-total">Total: $4,800.00</p>
+      <h3>Terms & Conditions</h3><div dangerouslySetInnerHTML={{ __html: sample(t.terms_html) }} />
+      <p className="pd-sign">Signature: ______________________________&nbsp;&nbsp;Name (print): ______________________________&nbsp;&nbsp;Date: ______________</p>
+      <div className="pd-foot">{sample(t.footer)}</div>
+    </div>}
+  </div>);
+}
+
+function PrintProposal({ id }: any) {
+  const [d, setD] = useState<any>(null); const [err, setErr] = useState("");
+  useEffect(() => { api("/api/proposals/" + id + "/document").then((r: any) => { setD(r); setTimeout(() => window.print(), 600); }).catch((e: any) => setErr(e.message || "Could not load — sign in first, then reopen this page.")); }, [id]);
+  if (err) return <div style={{ padding: 40 }}><h2>Proposal</h2><p>{err}</p><p><a href="/app">Go to Workpile</a></p></div>;
+  if (!d) return <div style={{ padding: 40 }}>Loading proposal…</div>;
+  const t = d.template;
+  return (<div className="printdoc">
+    <div className="noprint" style={{ marginBottom: 16 }}><button className="btn" onClick={() => window.print()}>🖨 Print / Save as PDF</button> <button className="btn ghost" onClick={() => window.close()}>Close</button></div>
+    <div className="pd-head"><div className="pd-company">{t.company}</div>{t.tagline && <div className="pd-tag">{t.tagline}</div>}{t.contact_line && <div className="pd-meta">{t.contact_line}</div>}{t.address && <div className="pd-meta">{t.address}</div>}</div>
+    <h2>Proposal — {d.lead.service_requested} · {d.ref}</h2>
+    <p className="pd-meta">Prepared for: {d.contact.name} ({d.contact.email || ""} {d.contact.phone || ""}) · Location: {d.lead.location || ""} · Date: {new Date(d.proposal.created_at).toLocaleDateString()} · Version {d.proposal.version}</p>
+    <div dangerouslySetInnerHTML={{ __html: t.intro_html }} />
+    {d.lead.notes && <><h3>Scope</h3><p style={{ whiteSpace: "pre-wrap" }}>{d.lead.notes}</p></>}
+    <table className="pd-table"><thead><tr><th>Item</th><th>Qty</th><th>Unit price</th><th>Amount</th></tr></thead><tbody>
+      {d.items.map((i: any, k: number) => <tr key={k}><td>{i.name}</td><td>{i.qty || 1}</td><td>${Number(i.unit_price).toFixed(2)}</td><td>${(i.unit_price * (i.qty || 1)).toFixed(2)}</td></tr>)}
+    </tbody></table>
+    <p className="pd-total">Total: ${Number(d.proposal.total).toFixed(2)}</p>
+    <h3>Terms & Conditions</h3><div dangerouslySetInnerHTML={{ __html: t.terms_html }} />
+    <p className="pd-sign">Signature: ______________________________&nbsp;&nbsp;Name (print): ______________________________&nbsp;&nbsp;Date: ______________</p>
+    <div className="pd-foot">{t.footer}</div>
   </div>);
 }
 
@@ -869,4 +946,4 @@ function BookingPage({ slug }: any) {
     <p className="muted" style={{ fontSize: 12 }}>By booking you agree we may call/text about this request. No spam, ever.</p></div></div>);
 }
 const __path = window.location.pathname;
-createRoot(document.getElementById("root")!).render(__path.startsWith("/book/") ? <BookingPage slug={__path.split("/")[2]} /> : <App />);
+createRoot(document.getElementById("root")!).render(__path.startsWith("/book/") ? <BookingPage slug={__path.split("/")[2]} /> : __path.startsWith("/print/proposal/") ? <PrintProposal id={__path.split("/")[3]} /> : <App />);

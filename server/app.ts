@@ -6,6 +6,7 @@ import { triageLead, packetCheck, demandGap, demandPool, injectionScan } from ".
 import { metrics, morningBrief } from "./metrics.ts";
 import { parseEmail } from "./inbox.ts";
 import { proposalDocx } from "./docx.ts";
+import { getTemplate, proposalDocument, sanitizeHtml } from "./proptemplate.ts";
 import { ensureSignToken, getByToken, sign } from "./sign.ts";
 import { createDeposit, markPaid, verifyStripeSignature, handleStripeEvent, stripeMode } from "./payments.ts";
 import { getFlags, setFlag, workspaceHealth, runSynthetics } from "./admin.ts";
@@ -978,6 +979,20 @@ app.post("/api/ai/automations/run", requireAuth, (req: any, res) => res.json({ r
 app.get("/api/ai/runs", requireAuth, (req: any, res) => {
   const runs = db.prepare("SELECT * FROM agent_runs WHERE workspace_id=? ORDER BY created_at DESC LIMIT 20").all(req.user.workspace_id);
   res.json(runs);
+});
+// ---------- slice 17: proposal document template ----------
+app.get("/api/proposal-template", requireAuth, (req: any, res) => res.json(getTemplate(req.user.workspace_id)));
+app.put("/api/proposal-template", requireAuth, needPerm("can_settings"), (req: any, res) => {
+  const b = req.body || {};
+  db.prepare("UPDATE workspaces SET pt_company=?, pt_tagline=?, pt_contact=?, pt_address=?, pt_intro=?, pt_terms=?, pt_footer=? WHERE id=?")
+    .run(String(b.company || "").slice(0, 200), String(b.tagline || "").slice(0, 200), String(b.contact_line || "").slice(0, 300), String(b.address || "").slice(0, 300),
+      sanitizeHtml(String(b.intro_html || "")), sanitizeHtml(String(b.terms_html || "")), String(b.footer || "").slice(0, 500), req.user.workspace_id);
+  res.json(getTemplate(req.user.workspace_id));
+});
+app.get("/api/proposals/:id/document", requireAuth, (req: any, res) => {
+  const d = proposalDocument(req.params.id);
+  if (!d || d.workspace_id !== req.user.workspace_id) return res.status(404).json({ error: { code: "not_found" } });
+  res.json(d);
 });
 // ---------- slice 12 (Tier 2): online booking ----------
 function ensureBookingSlug(ws: any): string {
