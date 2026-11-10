@@ -296,14 +296,16 @@ export function registerCrm(app: any, requireAuth: any, needPerm: any = null) {
     ev.sort((a, b) => a.date.localeCompare(b.date)); res.json(ev); });
 
   // ----- Global search + favorites -----
-  app.get("/api/search", requireAuth, (req: any, res: any) => { const q = String(req.query.q || "").trim(); if (q.length < 2) return res.json({ leads: [], jobs: [], accounts: [], people: [], tasks: [], campaigns: [] }); const like = "%" + q + "%"; const W = ws(req);
+  app.get("/api/search", requireAuth, (req: any, res: any) => { const q = String(req.query.q || "").trim(); if (q.length < 2) return res.json({ leads: [], jobs: [], accounts: [], people: [], tasks: [], campaigns: [], invoices: [], proposals: [] }); const like = "%" + q + "%"; const W = ws(req);
     const leads = db.prepare(`SELECT l.id, l.service_requested title, l.state sub, c.name contact_name FROM leads l LEFT JOIN contacts c ON c.id=l.contact_id WHERE l.workspace_id=? AND (c.name LIKE ? OR l.service_requested LIKE ? OR c.email LIKE ? OR c.phone LIKE ?) AND l.state!='DUPLICATE' ORDER BY l.updated_at DESC LIMIT 8`).all(W, like, like, like, like);
     const jobs = db.prepare(`SELECT j.id, l.service_requested title, j.stage sub, c.name contact_name FROM jobs j JOIN leads l ON l.id=j.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE j.workspace_id=? AND (c.name LIKE ? OR l.service_requested LIKE ?) LIMIT 8`).all(W, like, like);
     const accounts = db.prepare(`SELECT id, name title, industry sub FROM accounts WHERE workspace_id=? AND name LIKE ? LIMIT 8`).all(W, like);
     const people = db.prepare(`SELECT id, name title, email sub FROM contacts WHERE workspace_id=? AND (name LIKE ? OR email LIKE ?) LIMIT 8`).all(W, like, like);
     const tasks = db.prepare(`SELECT id, title, due_at sub, lead_id FROM tasks WHERE workspace_id=? AND title LIKE ? AND status='open' LIMIT 8`).all(W, like);
     const campaigns = db.prepare(`SELECT id, name title, status sub FROM campaigns WHERE workspace_id=? AND name LIKE ? LIMIT 8`).all(W, like);
-    res.json({ leads, jobs, accounts, people, tasks, campaigns }); });
+    const invoices = db.prepare(`SELECT i.id, i.number title, i.status sub, i.lead_id, i.job_id, i.total FROM invoices i WHERE i.workspace_id=? AND i.number LIKE ? LIMIT 8`).all(W, like) as any[];
+    const proposals = db.prepare(`SELECT p.id, (c.name || ' — ' || l.service_requested) title, p.status sub, p.lead_id, p.total FROM proposals p JOIN leads l ON l.id=p.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE p.workspace_id=? AND (c.name LIKE ? OR l.service_requested LIKE ?) LIMIT 8`).all(W, like, like) as any[];
+    res.json({ leads, jobs, accounts, people, tasks, campaigns, invoices, proposals }); });
   app.get("/api/favorites", requireAuth, (req: any, res: any) => { const rows = db.prepare("SELECT * FROM favorites WHERE user_id=? ORDER BY created_at DESC").all(req.user.id) as any[]; res.json(rows.map(f => ({ ...f, label: entityLabel(ws(req), f.entity_type, f.entity_id) }))); });
   app.post("/api/favorites", requireAuth, (req: any, res: any) => { const { entity_type, entity_id } = req.body || {}; const ex = db.prepare("SELECT id FROM favorites WHERE user_id=? AND entity_type=? AND entity_id=?").get(req.user.id, entity_type, entity_id) as any;
     if (ex) { db.prepare("DELETE FROM favorites WHERE id=?").run(ex.id); return res.json({ favorite: false }); }

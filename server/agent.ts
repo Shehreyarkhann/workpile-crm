@@ -100,7 +100,7 @@ export async function createExecution(ws: string, userId: string, instruction: s
   const provider = getProvider(ws);
   if (provider) {
     try {
-      const r = await provider.chat({ system: SYSTEM, messages: [{ role: "user", content: `Instruction: ${instruction}\nBusiness context: ${JSON.stringify(ctx)}\nWorkspace autonomy level: L${level}.` }], tools: TOOL_LIST as any, maxTokens: 2048 });
+      const hr = houseRules(ws); const r = await provider.chat({ system: hr ? SYSTEM + "\nHouse rules from this business (follow them unless they conflict with the rules above): " + hr : SYSTEM, messages: [{ role: "user", content: `Instruction: ${instruction}\nBusiness context: ${JSON.stringify(ctx)}\nWorkspace autonomy level: L${level}.` }], tools: TOOL_LIST as any, maxTokens: 2048 });
       tokens = r.usage; planner = `${provider.kind}:${r.model}`;
       const raw = r.calls.length ? r.calls.map(c => ({ tool: c.name, args: c.args })) : J((r.text || "").slice((r.text || "").indexOf("["), (r.text || "").lastIndexOf("]") + 1), []);
       for (const s of Array.isArray(raw) ? raw.slice(0, 20) : []) if (s && TOOLS[s.tool]) steps.push(mkStep(s.tool, s.args || {}, level));
@@ -118,8 +118,11 @@ export async function createExecution(ws: string, userId: string, instruction: s
 export function getExecution(ws: string, id: string): any {
   const e = db.prepare("SELECT * FROM agent_executions WHERE id=? AND workspace_id=?").get(id, ws) as any;
   if (!e) return null;
-  return { ...e, plan: J(e.plan, []), context: J(e.context, {}) };
+  const nameOf = (uidv: any) => uidv ? (db.prepare("SELECT name FROM users WHERE id=?").get(uidv) as any)?.name || null : null;
+  return { ...e, plan: J(e.plan, []), context: J(e.context, {}), creator_name: nameOf(e.user_id), decided_by_name: nameOf(e.decided_by) };
 }
+export const AGENT_SYSTEM_PROMPT = SYSTEM;
+export function houseRules(ws: string): string { return String((db.prepare("SELECT agent_instructions FROM workspaces WHERE id=?").get(ws) as any)?.agent_instructions || "").trim(); }
 
 export async function runExecution(ws: string, id: string): Promise<any> {
   const ex = getExecution(ws, id); if (!ex) return null;
@@ -139,12 +142,12 @@ export async function runExecution(ws: string, id: string): Promise<any> {
   return getExecution(ws, id);
 }
 
-export async function decideSteps(ws: string, id: string, approveIds: string[], rejectIds: string[]): Promise<any> {
+export async function decideSteps(ws: string, id: string, approveIds: string[], rejectIds: string[], deciderId?: string): Promise<any> {
   const ex = getExecution(ws, id); if (!ex) return null;
   if (["completed", "failed", "cancelled", "rejected"].includes(ex.status)) { const err: any = new Error("execution is already " + ex.status); err.code = "already_final"; throw err; }
   const steps: Step[] = ex.plan;
   for (const s of steps) { if (approveIds.includes(s.id) && s.status === "pending") s.status = "approved"; if (rejectIds.includes(s.id) && s.status === "pending") s.status = "rejected"; }
-  db.prepare("UPDATE agent_executions SET plan=?, updated_at=? WHERE id=?").run(JSON.stringify(steps), now(), id);
+  db.prepare("UPDATE agent_executions SET plan=?, updated_at=?, decided_by=?, decided_at=? WHERE id=?").run(JSON.stringify(steps), now(), deciderId || null, now(), id);
   if (steps.every(s => s.status === "rejected" || s.status === "done" || s.status === "failed") && steps.some(s => s.status === "rejected") && !steps.some(s => s.status === "approved" || s.status === "done")) {
     db.prepare("UPDATE agent_executions SET status='rejected', summary='All remaining steps were rejected by the user.', updated_at=? WHERE id=?").run(now(), id);
     return getExecution(ws, id);

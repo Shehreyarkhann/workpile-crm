@@ -155,3 +155,6 @@ Root causes found: (1) ensureWeek only created timesheets for PM/LEAD_OWNER user
 - ensureWeek covers PM/LEAD_OWNER/OPS_ADMIN + anyone with a schedule row that week; POST /api/schedule ensures the week immediately.
 - GET /api/schedule returns `jobs` (scheduled starts) → Ops "Jobs starting this week" strip; time grid unions scheduled jobs as sections; /api/calendar and the Home agenda include scheduled jobs (kind "job").
 - Ops cards cross-refresh via a `wp-ops` window event (assign/delete → timesheets + grid reload live).
+
+## V20 — agent governance visibility (fourth audit response, 2026-11-10)
+Audit's §1 verified FABRICATED (no OpenRouter, no Postgres runtime, V19 contents invented) — see docs/AUDIT-RESPONSE-V20.md. Real items closed: decision attribution (decided_by/decided_at + panel), Agent playbook (system prompt + 13-tool locked list visible, house rules appended to planning), search + invoices/proposals, topbar online/offline + offline-queue pill. 186/186 tests.

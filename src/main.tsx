@@ -1142,6 +1142,21 @@ function PeriodsStrip() {
   return (<div className="card" style={{ marginTop: 12 }}><b>📅 This week vs last week</b><div className="rowflex" style={{ gap: 22, flexWrap: "wrap", marginTop: 8 }}>{cell("new leads", "leads_created", n => String(n))}{cell("proposals sent", "proposals_sent", n => String(n))}{cell("won", "won", n => String(n))}{cell("jobs created", "jobs_created", n => String(n))}{cell("signed value", "signed_value", n => money(n))}</div></div>);
 }
 
+function PlaybookCard() {
+  const [cfg, setCfg] = useState<any>(null); const [rules, setRules] = useState(""); const [note, setNote] = useState(""); const [open, setOpen] = useState(false);
+  useEffect(() => { api("/api/agent/config").then((r: any) => { setCfg(r); setRules(r.custom_instructions || ""); }).catch(() => {}); }, []);
+  if (!cfg) return null;
+  const CB2: Record<string, string> = { read: "#e0f2fe", draft: "#fef9c3", execute: "#dcfce7", approval: "#fee2e2" };
+  return (<div className="card" style={{ marginTop: 14 }}><h3 style={{ marginTop: 0 }}>📖 Agent playbook <span className="muted" style={{ fontWeight: 400, fontSize: 13 }}>— exactly what the agent is told, and the full locked tool list. Nothing hidden.</span></h3>
+    <button className="btn ghost small" onClick={() => setOpen(!open)}>{open ? "Hide" : "Show"} system prompt + {cfg.tools.length} tools</button>
+    {open && <div style={{ marginTop: 10 }}><pre style={{ whiteSpace: "pre-wrap", background: "#f8fafc", borderRadius: 8, padding: 10, fontSize: 12.5, margin: 0 }}>{cfg.system_prompt}</pre>
+    <table style={{ marginTop: 10 }}><thead><tr><th>Tool</th><th>Control</th><th>What it does</th></tr></thead><tbody>{cfg.tools.map((t: any) => <tr key={t.name}><td><b>{t.name}</b></td><td><span className="tinyBadge" style={{ background: CB2[t.control] || "#e2e8f0" }}>{t.control}</span></td><td className="muted" style={{ fontSize: 12.5 }}>{t.description}</td></tr>)}</tbody></table></div>}
+    <h4 style={{ margin: "14px 0 4px" }}>House rules <span className="muted" style={{ fontWeight: 400, fontSize: 12.5 }}>— your standing instructions; appended to the agent's prompt when a provider is connected</span></h4>
+    <textarea rows={3} style={{ width: "100%" }} value={rules} onChange={e => setRules(e.target.value)} placeholder="e.g. Always offer a site visit before quoting tank work. Never schedule on Sundays. Escalate anything over $25k to Gregory." />
+    <div className="rowflex" style={{ marginTop: 6 }}><button className="btn small" onClick={async () => { await api("/api/agent/config", { method: "PATCH", body: { custom_instructions: rules } }); setNote("Saved ✓ — applies to the next agent run."); }}>Save house rules</button>{note && <span className="ok">{note}</span>}</div>
+  </div>);
+}
+
 function ProviderCard() {
   const [st, setSt] = useState<any>(null); const [kind, setKind] = useState("anthropic"); const [model, setModel] = useState(""); const [key, setKey] = useState(""); const [msg, setMsg] = useState("");
   const load = () => { api("/api/ai/provider").then((r: any) => { setSt(r); if (r.model) setModel(r.model); if (r.kind && r.kind !== "rules") setKind(r.kind); }).catch(() => {}); };
@@ -1440,6 +1455,7 @@ function AIAssistant({ go, openLead, openJob }: any) {
     </div>
     <AutonomyCard />
     <ProviderCard />
+    <PlaybookCard />
     <AgentMetricsCard />
     <QuietHoursCard />
     <SuppressionsCard />
@@ -1557,7 +1573,9 @@ function CommandPalette({ close, go, openLead, newLead }: any) {
     ...((gs?.jobs || []).map((j: any) => ({ label: `${j.contact_name || "Job"} — ${j.title}`, sub: "Job · " + j.sub, run: () => (window as any).wpOpenJob?.(j.id) }))),
     ...((gs?.accounts || []).map((a: any) => ({ label: a.title, sub: "Customer", run: () => (window as any).wpOpenAccount?.(a.id) }))),
     ...((gs?.people || []).map((p: any) => ({ label: p.title, sub: "Person", run: () => (window as any).wpGoTab?.("customers", "people") }))),
-    ...((gs?.campaigns || []).map((c: any) => ({ label: c.title, sub: "Campaign", run: () => go({ view: "campaigns" }) })))];
+    ...((gs?.campaigns || []).map((c: any) => ({ label: c.title, sub: "Campaign", run: () => go({ view: "campaigns" }) }))),
+    ...((gs?.invoices || []).map((iv: any) => ({ label: `${iv.title} — $${Math.round(iv.total || 0).toLocaleString()}`, sub: "Invoice · " + iv.sub, run: () => iv.job_id ? (window as any).wpOpenJob?.(iv.job_id) : openLead(iv.lead_id) }))),
+    ...((gs?.proposals || []).map((p: any) => ({ label: p.title, sub: "Proposal · " + p.sub, run: () => openLead(p.lead_id) })))];
   useEffect(() => { setIdx(0); }, [q]);
   const pick = (it: any) => { if (it) { close(); it.run(); } };
   return (<div className="modalWrap" onClick={close}><div className="palette" onClick={e => e.stopPropagation()}>
@@ -2102,6 +2120,12 @@ function ToastHost() {
   return <div className="toastHost">{items.map(t => <div key={t.id} className="toast">{t.msg}</div>)}</div>;
 }
 
+function OnlinePill() {
+  const [on, setOn] = useState(typeof navigator !== "undefined" ? navigator.onLine : true); const [queued, setQueued] = useState(0);
+  useEffect(() => { const read = () => { setOn(navigator.onLine); try { setQueued((JSON.parse(localStorage.getItem("wp_offline_posts") || "[]") as any[]).length); } catch { setQueued(0); } }; read(); const iv = setInterval(read, 4000); window.addEventListener("online", read); window.addEventListener("offline", read); return () => { clearInterval(iv); window.removeEventListener("online", read); window.removeEventListener("offline", read); }; }, []);
+  return <span className="tinyBadge" title={on ? "Connected — changes save to the server" : "You're offline — work keeps queuing on this device and sends when you're back"} style={{ background: on ? "#dcfce7" : "#fee2e2", fontSize: 12, padding: "5px 9px" }}>{on ? "🟢 Online" : "🔴 Offline"}{queued > 0 ? ` · ${queued} queued` : ""}</span>;
+}
+
 function AgentPanel({ close, focusId }: any) {
   const [prov, setProv] = useState<any>(null); const [text, setText] = useState(""); const [ex, setEx] = useState<any>(null); const [hist, setHist] = useState<any[]>([]); const [sel, setSel] = useState<Set<string>>(new Set()); const [busy, setBusy] = useState(false); const [err, setErr] = useState("");
   const loadHist = () => { api("/api/agent/executions").then(setHist).catch(() => {}); };
@@ -2122,6 +2146,7 @@ function AgentPanel({ close, focusId }: any) {
       {err && <div className="err">{err}</div>}
       {ex && <div style={{ marginTop: 14 }}>
         <p style={{ margin: "0 0 4px" }}><b>“{ex.instruction}”</b></p>
+        <p className="muted" style={{ margin: "0 0 4px", fontSize: 12 }}>Run by {ex.creator_name || "a teammate"} · {new Date(ex.created_at).toLocaleString()}{ex.decided_by_name ? ` · decided by ${ex.decided_by_name}` : ""}</p>
         <p className="muted" style={{ margin: "0 0 10px", fontSize: 12.5 }}>Status: <b>{String(ex.status).replaceAll("_", " ")}</b> · planner: {ex.planner || "—"}{(ex.tokens_in || ex.tokens_out) ? ` · tokens ${ex.tokens_in}/${ex.tokens_out}` : ""}</p>
         {(ex.plan || []).map((s: any) => <div key={s.id} style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "7px 0", borderTop: "1px solid #eef2f7" }}>
           {s.status === "pending" ? <input type="checkbox" checked={sel.has(s.id)} onChange={() => setSel(prev => { const n = new Set(prev); if (n.has(s.id)) n.delete(s.id); else n.add(s.id); return n; })} style={{ width: 16, height: 16, marginTop: 2 }} /> : <span style={{ width: 16, textAlign: "center" }}>{s.status === "done" ? "✓" : s.status === "failed" ? "✗" : s.status === "rejected" ? "—" : "•"}</span>}
@@ -2203,7 +2228,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
         {notifs.length === 0 && <p className="muted">Nothing yet \u2014 approvals, signatures, deposits, and new leads land here.</p>}
         {notifs.map(n => <div key={n.id} className="bellItem" style={n.read_at ? {} : { background: "#f0f9f1" }} onClick={async () => { await api(`/api/notifications/${n.id}/read`, { method: "POST", body: {} }).catch(() => {}); setUnread(u => Math.max(0, u - (n.read_at ? 0 : 1))); setNotifs(ns => ns.map(x => x.id === n.id ? { ...x, read_at: x.read_at || "now" } : x)); const et = n.entity_type || (n.lead_id ? "lead" : null); const eid = n.entity_id || n.lead_id; setBellOpen(false); if (et === "lead" && eid) openLead(eid); else if (et === "job" && eid) setJobOpen(eid); else if (et === "account" && eid) setCustOpen(eid); else if (n.lead_id) openLead(n.lead_id); }}><b>{n.title}</b><br /><span className="muted">{n.body}</span><br /><span className="muted" style={{ fontSize: 11.5 }}>{dt(n.created_at)} · {(n.entity_type || (n.lead_id ? "lead" : "")) ? "tap to open →" : ""}</span></div>)}</div>}</div>
         <button className="btn ghost" title="Toggle dark mode" onClick={() => setTheme(t => t === "dark" ? "light" : "dark")}>{theme === "dark" ? "☀️" : "🌙"}</button>
-        <button className="btn ghost" onClick={() => setAgentOpen(true)}>✦ Agent</button><button className="btn ghost" title="Log time (T)" onClick={() => setLtOpen(true)}>⏱ Log time</button><button className="btn" onClick={() => setCreating(true)}>+ New Lead</button></div>
+        <OnlinePill /><button className="btn ghost" onClick={() => setAgentOpen(true)}>✦ Agent</button><button className="btn ghost" title="Log time (T)" onClick={() => setLtOpen(true)}>⏱ Log time</button><button className="btn" onClick={() => setCreating(true)}>+ New Lead</button></div>
       {user && user.email_verified === 0 && <div className="verifyBar">✉️ Verify your email to secure your account and enable password recovery. <button className="btn ghost small" onClick={async () => { const r = await api("/api/auth/resend-verify", { method: "POST", body: {} }).catch((e: any) => ({ error: e.message })); setVerifyMsg(r.verify_url ? "Test mode \u2014 verify here: " + r.verify_url : r.error ? r.error : "Verification email sent \u2014 check your inbox."); }}>Resend verification</button>{verifyMsg && <span style={{ marginLeft: 8 }}>{verifyMsg}</span>}</div>}
       <EB>
       {nav.view === "queue" && <WorkQueue openLead={openLead} openJob={(id: string) => setJobOpen(id)} go={go} />}
