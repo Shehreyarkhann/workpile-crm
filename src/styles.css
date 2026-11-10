@@ -161,3 +161,6 @@ aside.rail .sideHead { flex-direction: column; gap: 6px; }
 [data-theme="dark"] .chip { background:#16233a; color:var(--ink); border-color:#263449; } [data-theme="dark"] .chip.on { background:#14532d; }
 .landWrap { min-height:100vh; background:var(--bg); padding:20px 14px 60px; display:flex; flex-direction:column; align-items:center; }
 .landWrap .authCard { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:26px; box-shadow:var(--shadow); }
+[data-theme="dark"] .verifyBar { background:#33300f; color:#fde68a; border-color:#57500f; }
+[data-theme="dark"] .ok { background:#0f2e1c; color:#bbf7d0; }
+[data-theme="dark"] .err { background:#3a0f16; color:#fecdd3; }
