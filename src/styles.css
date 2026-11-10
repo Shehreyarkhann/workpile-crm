@@ -253,3 +253,6 @@ aside.rail .sideHead { flex-direction: column; gap: 6px; }
 .gaugeWrap { text-align: center; padding: 4px 0 0; }
 .seeAll { color: #16a34a; font-weight: 700; font-size: 12.5px; cursor: pointer; float: right; }
 .seeAll:hover { text-decoration: underline; }
+
+.navGroup { font-size: 10.5px; letter-spacing: 1.4px; color: #94a3b8; font-weight: 700; padding: 12px 12px 3px; }
+.side.rail .navGroup { display: none; }

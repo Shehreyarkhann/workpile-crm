@@ -61,6 +61,7 @@ export function initSchema() {
   CREATE TABLE IF NOT EXISTS inbox_items (id TEXT PRIMARY KEY, workspace_id TEXT, category TEXT, from_name TEXT, from_email TEXT, subject TEXT, body TEXT, lead_id TEXT, owner_id TEXT, next_action_due_at TEXT, received_at TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS signatures (id TEXT PRIMARY KEY, proposal_id TEXT, workspace_id TEXT, token TEXT UNIQUE, signer_name TEXT, signer_email TEXT, typed_signature TEXT, consent INTEGER DEFAULT 0, ip TEXT, user_agent TEXT, doc_hash TEXT, signed_at TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS payments (id TEXT PRIMARY KEY, workspace_id TEXT, proposal_id TEXT, kind TEXT DEFAULT 'deposit', amount REAL, currency TEXT DEFAULT 'USD', mode TEXT DEFAULT 'test', stripe_session_id TEXT, status TEXT DEFAULT 'pending', link TEXT, created_at TEXT, paid_at TEXT);
+  CREATE TABLE IF NOT EXISTS price_overrides (id TEXT PRIMARY KEY, workspace_id TEXT, proposal_id TEXT, lead_id TEXT, item_id TEXT, item_name TEXT, prev_price REAL, new_price REAL, reason TEXT, user_id TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS feature_flags (workspace_id TEXT, flag TEXT, enabled INTEGER DEFAULT 0, updated_at TEXT, PRIMARY KEY (workspace_id, flag));
   CREATE TABLE IF NOT EXISTS subscriptions (id TEXT PRIMARY KEY, workspace_id TEXT, plan TEXT, status TEXT DEFAULT 'trialing', stripe_customer_id TEXT, stripe_subscription_id TEXT, current_period_end TEXT, created_at TEXT, updated_at TEXT);
   CREATE TABLE IF NOT EXISTS oauth_connections (id TEXT PRIMARY KEY, workspace_id TEXT, provider TEXT, account_email TEXT, status TEXT DEFAULT 'not_configured', token_ref TEXT, last_poll_at TEXT, last_error TEXT, created_at TEXT);
@@ -85,6 +86,15 @@ export function initSchema() {
     "ALTER TABLE notifications ADD COLUMN entity_type TEXT",
     "ALTER TABLE notifications ADD COLUMN entity_id TEXT",
     "ALTER TABLE workspaces ADD COLUMN logo_data TEXT",
+    "ALTER TABLE approvals ADD COLUMN content_hash TEXT",
+    "ALTER TABLE tasks ADD COLUMN snooze_until TEXT",
+    "ALTER TABLE tasks ADD COLUMN snooze_reason TEXT",
+    "ALTER TABLE tasks ADD COLUMN escalation_level INTEGER DEFAULT 0",
+    "ALTER TABLE tasks ADD COLUMN completion_reason TEXT",
+    "ALTER TABLE tasks ADD COLUMN completed_by TEXT",
+    "ALTER TABLE workspaces ADD COLUMN quiet_start INTEGER",
+    "ALTER TABLE workspaces ADD COLUMN quiet_end INTEGER",
+    "ALTER TABLE workspaces ADD COLUMN tz TEXT DEFAULT 'America/New_York'",
     "ALTER TABLE workspaces ADD COLUMN deposit_pct REAL DEFAULT 25",
     "ALTER TABLE proposals ADD COLUMN sign_token TEXT",
     "ALTER TABLE workspaces ADD COLUMN trial_ends_at TEXT",

@@ -19,10 +19,10 @@
 
 | Target | Current state | Disposition | Phase | Status / gap |
 |---|---|---|---|---|
-| §4.1 Nav → 11 primary destinations | 20 destinations (v5 consolidation) | **Consolidate** | 1–2 | Next nav slice: Proposals & Schedule become top-level; Approvals fold into Work Queue/Proposals; Automations replaces "AI Assistant" label; Library/Demand Gap/Handoffs become contextual. Matrix-approved direction; scheduled after correctness tranche |
+| §4.1 Nav → 11 primary destinations | 20 destinations (v5 consolidation) | **Consolidate** | 1–2 | ✅ **DONE in v8**: sidebar = MENU (Home, Work Queue, Leads, Customers, Proposals, Jobs, Schedule, Inbox, Reports, Automations, Settings — the target 11 in order) + MORE group for the rest; new Proposals destination (list + Approvals tab) and standalone Inbox destination built; Schedule/Tasks open the Planner on the right tab; Billing moved inside Settings as a tab |
 | §4.2 Global interface (search, ⌘K, create, notifications, switcher) | All present; search is authorized/workspace-scoped | **Keep** | — | Add contextual help surface later |
 | §5 Home acceptance (defined calcs, drill-down, tz-aware, widget isolation) | Metrics defined in `metrics.ts`; drill-downs wired; finances now defined per-figure | **Keep + Improve** | 1 | Add period comparison (WoW/MoM) widgets; workspace timezone setting |
-| §6 Work Queue item model + views (Waiting on Customer/Approval, Blocked, snooze w/ reason, escalation) | Queue computes items from live records; views: mine/team/overdue exist in My Day + queue filters | **Keep + Improve** | 1–2 | Persisted work-item fields (snooze_reason, escalation, completion_reason) = Build New on the tasks layer |
+| §6 Work Queue item model + views (Waiting on Customer/Approval, Blocked, snooze w/ reason, escalation) | Queue computes items from live records; views: mine/team/overdue exist in My Day + queue filters | **Keep + Improve** | 1–2 | ✅ **DONE in v8 (fields)**: tasks gained snooze_until/snooze_reason/escalation_level/completion_reason/completed_by with API + UI (snoozed tasks leave open lists; completion records who + why). Remaining: Waiting-on-Customer/Approval queue views |
 | §25 UX rules (confirm destructive, progress, traceable numbers) | Mostly honored; finances strip advances traceability | **Keep** | — | Component-library formalization deferred (single-file client works; refactor only with Phase 3 platform work) |
 
 ## C. Revenue lifecycle (§§7–10)
@@ -34,10 +34,10 @@
 | §7.5 Readiness (non-blocking checklist) | Implemented in v3 (replaced the hard gate) | **Keep** | — | Add "required site visit completed" item |
 | §7.6 Timeline distinguishes human vs system vs agent | lead_events carry actor; agent runs logged separately | **Keep + Improve** | 4 | Visual actor badges in timeline (client-only change) |
 | §8 Customer/Person separation + idempotent conversion | Accounts/contacts/memberships; conversion idempotent | **Keep** | 1 | ✅ Conversion now **transactional** in v7 (withTx) — §11.3 compliance |
-| §9.2 Price overrides (permission + reason + before/after + approver) | Prices snapshot from price book; free lines unpriced | **Build New** | 1 | Override entity + audit fields on proposal lines |
-| §9.3 Approval binds to immutable version; material change invalidates | Approval binds to proposal; edits create versions (v3 clone/versioning) | **Keep + Improve** | 1 | Explicit invalidation check: hash proposal content at approval; compare at send |
+| §9.2 Price overrides (permission + reason + before/after + approver) | Prices snapshot from price book; free lines unpriced | **Build New** | 1 | ✅ **DONE in v8**: builder price field per line; any change from book price requires a reason + can_approve/can_settings (validated BEFORE creation — rejected overrides persist nothing); recorded in `price_overrides` (prev/new/reason/user) + audit log |
+| §9.3 Approval binds to immutable version; material change invalidates | Approval binds to proposal; edits create versions (v3 clone/versioning) | **Keep + Improve** | 1 | ✅ **DONE in v8**: approval stores a content hash at decision time; the send gate recomputes it — any material change returns `approval_invalidated`, creates a fresh pending approval, and notifies the approver (pre-v8 approvals grandfathered) |
 | §9.4 Delivery honesty (delivered only on provider confirmation) | Enforced (test-mode labeled; delivered only on provider response) | **Keep** | — | — |
-| §9.5 Cadences with quiet hours + reason-coded stops | 12-touch business-day cadence; stops reason-coded | **Keep + Improve** | 1 | Add quiet-hours window per workspace |
+| §9.5 Cadences with quiet hours + reason-coded stops | 12-touch business-day cadence; stops reason-coded | **Keep + Improve** | 1 | ✅ **DONE in v8**: per-workspace quiet window + timezone (`/api/settings/cadence`, UI card in Automations); the cadence processor defers sends inside the window — never drops them |
 | §10.2 Signature evidence (hash, consent version, IP/UA) | Evidence set captured incl. doc hash | **Keep** | — | Attorney review of the flow remains a founder/legal item |
 | §10.3 Deposit ≠ signature states; no silent "paid" | Separate payment_status; paid only on provider confirmation | **Keep** | — | Add refund recording |
 
@@ -81,7 +81,7 @@
 ## G. Tranche plan (execution order per target Appendix D)
 
 1. **Tranche 1 (v7) — Correctness:** ✅ baseline tag · docs reconciled · permission matrix + hardening · financial separation · identity resolution v2 · transactional conversion/job creation.
-2. **Tranche 2 (v8) — Revenue lifecycle depth:** nav consolidation to 11 · price overrides with audit · approval content-hash invalidation · cadence quiet hours · work-item persisted fields.
+2. **Tranche 2 (v8) — Revenue lifecycle depth:** ✅ SHIPPED — nav consolidation to 11 · Proposals + Inbox destinations · price overrides with audit · approval content-hash invalidation · cadence quiet hours · work-item persisted fields · Billing inside Settings. 126/126 tests.
 3. **Tranche 3 (v9) — Operations:** job lifecycle alignment · scheduling warnings · timesheet review states · offline field capture.
 4. **Tranche 4 (v10) — Production platform:** PostgreSQL cutover · durable queue + generalized outbox · object storage · monitoring/alerting · impersonation.
 5. **Tranche 5 (v11) — Intelligence:** autonomy levels + policy engine UI · golden-case agent suites · acceptance metrics.

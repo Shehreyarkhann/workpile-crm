@@ -59,6 +59,14 @@ export async function processFollowups(baseUrl = ""): Promise<{ sent: number; st
     const prop = db.prepare("SELECT * FROM proposals WHERE id=?").get(e.proposal_id) as any;
     if (!lead || !prop || FINALS.includes(lead.state) || prop.status === "signed") { stopFollowups(e.lead_id, !lead ? "lead_gone" : prop?.status === "signed" ? "signed" : "finalized"); stopped++; continue; }
     const ws = db.prepare("SELECT * FROM workspaces WHERE id=?").get(e.workspace_id) as any;
+    if (ws && ws.quiet_start !== null && ws.quiet_start !== undefined && ws.quiet_end !== null && ws.quiet_end !== undefined) {
+      try {
+        const hour = Number(new Intl.DateTimeFormat("en-US", { hour: "numeric", hour12: false, timeZone: ws.tz || "America/New_York" }).format(new Date()));
+        const qs = Number(ws.quiet_start), qe = Number(ws.quiet_end);
+        const inQuiet = qs <= qe ? (hour >= qs && hour < qe) : (hour >= qs || hour < qe);
+        if (inQuiet) continue;
+      } catch { /* bad tz: fail open */ }
+    }
     const steps = stepsFor(ws);
     const step = steps[e.step_idx];
     if (!step) { db.prepare("UPDATE followup_enrollments SET status='done', updated_at=? WHERE id=?").run(now(), e.id); continue; }

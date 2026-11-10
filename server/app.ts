@@ -138,6 +138,10 @@ export function approvalRequiredFor(workspaceId: string, total: number): boolean
 export function pendingApprovalFor(workspaceId: string, proposalId: string) {
   return db.prepare("SELECT * FROM approvals WHERE workspace_id=? AND proposal_id=? AND decision IS NULL ORDER BY submitted_at DESC").get(workspaceId, proposalId);
 }
+import { createHash as __createHash } from "node:crypto";
+export function proposalContentHash(p: any): string {
+  return __createHash("sha256").update(JSON.stringify({ li: p.line_items || "", total: p.total || 0, options: p.options || "", deposit: p.deposit_amount || p.deposit_pct || "" })).digest("hex").slice(0, 32);
+}
 export function approvedApprovalFor(workspaceId: string, proposalId: string) {
   return db.prepare("SELECT * FROM approvals WHERE workspace_id=? AND proposal_id=? AND decision='approved' ORDER BY decided_at DESC").get(workspaceId, proposalId);
 }
@@ -363,12 +367,14 @@ app.get("/api/templates", requireAuth, (req: any, res) => res.json(db.prepare("S
 app.post("/api/leads/:id/proposals", requireAuth, (req: any, res) => {
   const l = db.prepare("SELECT * FROM leads WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!l) return res.status(404).json({ error: { code: "not_found" } });
+  const __overrides: any[] = [];
   const priceItems = (arr: any[]) => { // price-book-only invariant (§26) applies to base lines AND every option
     let total = 0, below = false;
     for (const it of arr) {
       const pb = db.prepare("SELECT * FROM price_book_items WHERE id=? AND workspace_id=?").get(it.price_book_item_id, req.user.workspace_id) as any;
       if (!pb) return { error: `Line item must come from the price book: ${it.price_book_item_id || it.name || "?"}` };
       const price = it.unit_price !== undefined ? it.unit_price : pb.standard_price;
+      if (it.unit_price !== undefined && Number(it.unit_price) !== Number(pb.standard_price)) __overrides.push({ item_id: pb.id, item_name: pb.name, prev_price: pb.standard_price, new_price: Number(it.unit_price), reason: it.override_reason || req.body.override_reason || "" });
       if (price < pb.floor_price) below = true;
       total += price * (it.qty || 1);
       it.name = pb.name; it.unit_price = price;
@@ -386,9 +392,17 @@ app.post("/api/leads/:id/proposals", requireAuth, (req: any, res) => {
   const count = (db.prepare("SELECT COUNT(*) c FROM proposals WHERE lead_id=?").get(l.id) as any).c;
   const id = uid("prop");
   const expires = req.body.valid_days ? new Date(Date.now() + Number(req.body.valid_days) * 86400000).toISOString() : null;
+  if (__overrides.length) {
+    const perms = permsOf(req.user);
+    if (!perms.can_approve && !perms.can_settings) return res.status(403).json({ error: { code: "override_permission", message: "Changing a price-book price requires approval or settings permission." } });
+    const missing = __overrides.find((o: any) => !String(o.reason || "").trim());
+    if (missing) return res.status(422).json({ error: { code: "override_reason_required", message: `Price override on "${missing.item_name}" (${missing.prev_price} → ${missing.new_price}) requires a reason (target §9.2).` } });
+  }
   db.prepare("INSERT INTO proposals (id,workspace_id,lead_id,template_id,version,status,line_items,total,margin_band,win_prob_band,options,expires_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
     .run(id, req.user.workspace_id, l.id, req.body.template_id || null, count + 1, "draft", JSON.stringify(items), total, below ? "below_floor" : "in_band", total > 25000 ? "review" : "standard", options ? JSON.stringify(options) : null, expires, now());
   const created = db.prepare("SELECT * FROM proposals WHERE id=?").get(id) as any;
+  for (const o of __overrides) { db.prepare("INSERT INTO price_overrides (id,workspace_id,proposal_id,lead_id,item_id,item_name,prev_price,new_price,reason,user_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(uid("ovr"), req.user.workspace_id, id, l.id, o.item_id, o.item_name, o.prev_price, o.new_price, o.reason, req.user.id, now()); }
+  if (__overrides.length) audit(req.user.workspace_id, req.user.id, "proposal.price_override", "proposal", id, { overrides: __overrides });
   if (["PROPOSAL", "SENT", "FOLLOWUP"].includes(l.state)) maybeRequestApproval(req.user.workspace_id, req.user.id, l, created);
   res.status(201).json(created);
 });
@@ -428,7 +442,8 @@ app.post("/api/approvals/:id/decide", requireAuth, (req: any, res) => {
   const { decision, reason_code, edits_diff } = req.body;
   if (!["approved", "changes", "rejected"].includes(decision)) return res.status(422).json({ error: { code: "bad_decision" } });
   if (decision !== "approved" && !reason_code) return res.status(422).json({ error: { code: "reason_required", message: "Reject/change requires a reason code (§6.5)" } });
-  db.prepare("UPDATE approvals SET decision=?, reason_code=?, edits_diff=?, decided_at=? WHERE id=?").run(decision, reason_code || null, edits_diff ? JSON.stringify(edits_diff) : null, now(), a.id);
+  const __prop = decision === "approved" ? db.prepare("SELECT * FROM proposals WHERE id=?").get(a.proposal_id) as any : null;
+  db.prepare("UPDATE approvals SET decision=?, reason_code=?, edits_diff=?, decided_at=?, content_hash=? WHERE id=?").run(decision, reason_code || null, edits_diff ? JSON.stringify(edits_diff) : null, now(), __prop ? proposalContentHash(__prop) : null, a.id);
   emitEvent(req.user.workspace_id, "approval.decided", { lead_id: a.lead_id, approval_id: a.id, decision });
   notify(req.user.workspace_id, [a.submitted_by], "approval.decided", `Your proposal was ${decision}`, `Lead ${a.lead_id} — decision: ${decision}${reason_code ? " (" + reason_code + ")" : ""}`, a.lead_id);
   const l = db.prepare("SELECT * FROM leads WHERE id=?").get(a.lead_id) as any;
@@ -441,7 +456,9 @@ app.post("/api/approvals/:id/decide", requireAuth, (req: any, res) => {
 
 // tasks / follow-ups
 app.get("/api/tasks", requireAuth, (req: any, res) => res.json(db.prepare("SELECT t.*, l.service_requested FROM tasks t LEFT JOIN leads l ON l.id=t.lead_id WHERE t.workspace_id=? ORDER BY t.due_at").all(req.user.workspace_id)));
-app.post("/api/tasks/:id/complete", requireAuth, (req: any, res) => { db.prepare("UPDATE tasks SET status='done', completed_at=? WHERE id=?").run(now(), req.params.id); res.json({ ok: true }); });
+app.post("/api/tasks/:id/complete", requireAuth, (req: any, res) => { db.prepare("UPDATE tasks SET status='done', completed_at=?, completed_by=?, completion_reason=? WHERE id=? AND workspace_id=?").run(now(), req.user.id, req.body?.reason || null, req.params.id, req.user.workspace_id); res.json({ ok: true }); });
+app.post("/api/tasks/:id/snooze", requireAuth, (req: any, res) => { const until = req.body?.until || new Date(Date.now() + 86400000).toISOString(); db.prepare("UPDATE tasks SET snooze_until=?, snooze_reason=? WHERE id=? AND workspace_id=?").run(until, String(req.body?.reason || "snoozed"), req.params.id, req.user.workspace_id); res.json({ ok: true, snooze_until: until }); });
+app.post("/api/tasks/:id/escalate", requireAuth, (req: any, res) => { db.prepare("UPDATE tasks SET escalation_level=COALESCE(escalation_level,0)+1 WHERE id=? AND workspace_id=?").run(req.params.id, req.user.workspace_id); res.json({ ok: true }); });
 
 // metrics / brief / demand
 app.get("/api/metrics", requireAuth, (req: any, res) => res.json(metrics(req.user.workspace_id)));
@@ -1344,6 +1361,14 @@ app.post("/api/proposals/:id/send", requireAuth, async (req: any, res) => {
     const pend = maybeRequestApproval(req.user.workspace_id, req.user.id, l, p);
     return res.status(422).json({ error: { code: "approval_required", message: `Workspace policy requires approval before sending a $${p.total} proposal — it's in the approver's queue now.`, approval_id: pend?.id || null } });
   }
+  // target §9.3: approval binds to an immutable version — a material change since approval invalidates it
+  const __appr = approvedApprovalFor(req.user.workspace_id, p.id);
+  if (__appr && __appr.content_hash && proposalContentHash(p) !== __appr.content_hash) {
+    const nid = uid("apr");
+    db.prepare("INSERT INTO approvals (id,workspace_id,lead_id,proposal_id,submitted_by,approver_id,tier,submitted_at) VALUES (?,?,?,?,?,?,?,?)").run(nid, req.user.workspace_id, l.id, p.id, req.user.id, __appr.approver_id, __appr.tier || "manager", now());
+    notify(req.user.workspace_id, [__appr.approver_id], "approval.requested", "Proposal changed since approval", `${v.contact_name || "Lead"} — the proposal was edited after your approval, so it needs a fresh decision before it can send.`, l.id);
+    return res.status(422).json({ error: { code: "approval_invalidated", message: "This proposal changed after it was approved. It has been resubmitted for a fresh approval — it cannot send until the new decision lands.", approval_id: nid } });
+  }
   const token = ensureSignToken(p.id);
   const base = `${req.protocol}://${req.get("host")}`;
   const link = `${base}/sign/${token}`;
@@ -1647,6 +1672,8 @@ app.get("/api/ai/runs", requireAuth, (req: any, res) => {
   res.json(runs);
 });
 // ---------- slice 17: proposal document template ----------
+app.get("/api/settings/cadence", requireAuth, (req: any, res) => { const w = db.prepare("SELECT quiet_start, quiet_end, tz FROM workspaces WHERE id=?").get(req.user.workspace_id) as any; res.json({ quiet_start: w?.quiet_start ?? null, quiet_end: w?.quiet_end ?? null, tz: w?.tz || "America/New_York" }); });
+app.patch("/api/settings/cadence", requireAuth, needPerm("can_settings"), (req: any, res) => { const { quiet_start, quiet_end, tz } = req.body || {}; db.prepare("UPDATE workspaces SET quiet_start=?, quiet_end=?, tz=? WHERE id=?").run(quiet_start === null || quiet_start === undefined ? null : Number(quiet_start), quiet_end === null || quiet_end === undefined ? null : Number(quiet_end), tz || "America/New_York", req.user.workspace_id); res.json({ ok: true }); });
 app.get("/api/proposal-template", requireAuth, (req: any, res) => res.json(getTemplate(req.user.workspace_id)));
 app.put("/api/proposal-template", requireAuth, needPerm("can_settings"), (req: any, res) => {
   const b = req.body || {};
