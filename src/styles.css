@@ -264,3 +264,68 @@ aside.rail .sideHead { flex-direction: column; gap: 6px; }
 @keyframes toastIn { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
 .nextbar { margin: 10px 0; padding: 12px 14px; display: flex; gap: 12px; align-items: center; background: #14532d; color: #fff; border-radius: 12px; }
 .crumbs { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; font-size: 12.5px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 9px; padding: 7px 10px; }
+
+/* ——— Landing v2 (brand: docs/BRAND.md) ——— */
+.lp { background:var(--bg); overflow-x:clip; }
+.lpNav { position:sticky; top:0; z-index:40; display:flex; justify-content:space-between; align-items:center; gap:14px; max-width:1160px; margin:0 auto; padding:14px 24px; background:rgba(247,248,246,.88); backdrop-filter:blur(10px); }
+.lpLinks { display:flex; gap:26px; font-weight:600; } .lpLinks a { color:var(--mut); text-decoration:none; } .lpLinks a:hover { color:var(--ink); }
+.lpNavCtas { display:flex; gap:8px; align-items:center; }
+.lpHero { max-width:1160px; margin:0 auto; padding:44px 24px 8px; text-align:center; }
+.lpEyebrow { text-transform:uppercase; letter-spacing:.14em; font-size:12px; font-weight:800; color:var(--brand,#0e5c3a); margin:0 0 14px; }
+.lpHero h1 { font-size:clamp(34px,6vw,58px); line-height:1.04; letter-spacing:-.03em; margin:0 auto 16px; max-width:820px; }
+.lpHero h1 em { font-style:normal; color:#0e5c3a; }
+.lpLede { font-size:clamp(15.5px,2.2vw,18px); color:#334155; line-height:1.65; max-width:760px; margin:0 auto 24px; }
+.lpCtas { display:flex; gap:10px; justify-content:center; flex-wrap:wrap; }
+.btn.lpBig { padding:14px 24px; font-size:15.5px; border-radius:12px; text-decoration:none; display:inline-flex; align-items:center; }
+.lpMicro { color:var(--mut); margin:14px 0 30px; font-size:13.5px; }
+.lpShot { position:relative; max-width:1020px; margin:0 auto; background:#083b25; border-radius:18px; padding:10px; box-shadow:0 30px 60px rgba(8,59,37,.30); }
+.lpShot img, .lpShotSm img { width:100%; height:auto; display:block; border-radius:10px; }
+.lpChip { position:absolute; background:#fff; border:1px solid var(--line); border-radius:999px; padding:8px 14px; font-size:13px; font-weight:700; box-shadow:0 10px 24px rgba(16,22,19,.18); }
+.lpChipA { top:-16px; left:22px; } .lpChipB { bottom:-16px; right:22px; }
+.lpFacts { max-width:1160px; margin:44px auto 0; padding:22px 24px; display:grid; grid-template-columns:repeat(4,1fr); gap:16px; }
+.lpFacts div { background:#fff; border:1px solid var(--line); border-radius:14px; padding:16px 18px; }
+.lpFacts b { display:block; font-size:26px; letter-spacing:-.02em; color:#0e5c3a; }
+.lpFacts span { color:var(--mut); font-size:13.5px; line-height:1.45; display:block; margin-top:3px; }
+.lpSec { max-width:1160px; margin:0 auto; padding:56px 24px 8px; }
+.lpSec h2 { font-size:clamp(26px,4vw,38px); letter-spacing:-.025em; line-height:1.12; margin:0 0 14px; max-width:760px; }
+.lpKick { text-transform:uppercase; letter-spacing:.13em; font-size:12px; font-weight:800; color:#0e5c3a; margin:0 0 10px; }
+.lpKick.light { color:#4ade80; }
+.lpBody { font-size:16px; line-height:1.7; color:#334155; }
+.lpBody.light { color:#d7e5db; }
+.lpDark { background:#083b25; border-radius:22px; padding:44px 40px; margin-top:56px; }
+.lpDark h2 { color:#fff; }
+.lpSplit { display:grid; grid-template-columns:1fr 1fr; gap:34px; align-items:center; }
+.lpShotSm { background:#083b25; border-radius:16px; padding:8px; box-shadow:0 20px 44px rgba(8,59,37,.25); }
+.lpSec .lpShotSm { background:#0c2317; }
+.lpList { list-style:none; padding:0; margin:16px 0 0; display:grid; gap:12px; }
+.lpList li { line-height:1.6; color:#334155; padding-left:22px; position:relative; }
+.lpList li::before { content:"✓"; position:absolute; left:0; color:#0e5c3a; font-weight:800; }
+.lpList.light li { color:#d7e5db; } .lpList.light li::before { color:#4ade80; }
+.lpMoney { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; margin-top:20px; }
+.lpMoneyCard { background:#fff; border:1px solid var(--line); border-top:4px solid #0e5c3a; border-radius:12px; padding:16px; }
+.lpMoneyCard b { display:block; font-size:15.5px; margin-bottom:5px; } .lpMoneyCard span { color:var(--mut); font-size:13.5px; line-height:1.5; display:block; }
+.lpVerts { display:flex; gap:10px; flex-wrap:wrap; margin-top:18px; }
+.lpVerts span { background:#fff; border:1px solid var(--line); border-radius:999px; padding:10px 16px; font-weight:700; font-size:14.5px; }
+.lpBand { max-width:1160px; margin:56px auto 0; background:#0e5c3a; border-radius:22px; padding:46px 40px; text-align:center; color:#e7f4ec; }
+.lpBand h2 { color:#fff; font-size:clamp(24px,3.6vw,34px); letter-spacing:-.02em; margin:0 0 10px; }
+.lpBand p { max-width:640px; margin:0 auto 22px; line-height:1.65; }
+.lpBandBtn { background:#fff !important; color:#0e5c3a !important; font-weight:800; }
+.lpFoot { background:#083b25; margin-top:64px; color:#cfe3d6; }
+.lpFootIn { max-width:1160px; margin:0 auto; padding:36px 24px; display:flex; gap:14px; flex-wrap:wrap; align-items:center; justify-content:space-between; }
+.lpFoot a { color:#cfe3d6; } .lpFoot p { margin:0; font-weight:700; color:#fff; }
+.lpSticky { display:none; }
+@media (max-width:1020px){ .lpMoney { grid-template-columns:repeat(2,1fr); } .lpMoneyCard:last-child { grid-column:span 2; } .lpSplit { grid-template-columns:1fr; } .lpDark { padding:34px 22px; } }
+@media (max-width:720px){
+  .lpLinks { display:none; }
+  .lpNav { padding:12px 16px; } .lpNavCtas .btn { padding:9px 13px; font-size:13.5px; }
+  .lpHero { padding:30px 16px 4px; }
+  .lpFacts { grid-template-columns:1fr 1fr; padding:18px 16px; margin-top:34px; }
+  .lpSec { padding:42px 16px 4px; }
+  .lpChipA { left:8px; } .lpChipB { right:8px; }
+  .lpShot { padding:6px; border-radius:14px; }
+  .lpBand { margin:42px 16px 0; padding:34px 20px; }
+  .lpSticky { display:flex; gap:8px; position:fixed; left:0; right:0; bottom:0; z-index:50; background:rgba(255,255,255,.94); backdrop-filter:blur(10px); border-top:1px solid var(--line); padding:10px 12px calc(10px + env(safe-area-inset-bottom)); }
+  .lpSticky .btn { flex:1; padding:13px; font-size:15px; text-align:center; text-decoration:none; }
+  .lpFoot { padding-bottom:64px; }
+}
+@media (max-width:430px){ .lpMoney { grid-template-columns:1fr; } .lpMoneyCard:last-child { grid-column:auto; } .lpFacts b { font-size:22px; } }

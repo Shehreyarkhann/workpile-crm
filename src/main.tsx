@@ -1069,7 +1069,8 @@ function Reports() {
 
 class EB extends React.Component<any, any> { state = { err: "" }; static getDerivedStateFromError(e: any) { return { err: String(e && e.message || e) }; } componentDidCatch(e: any, info: any) { console.error("EB-CATCH:", e.message, (info.componentStack || "").slice(0, 900)); } render() { return this.state.err ? <div className="err">Render error: {this.state.err}</div> : this.props.children; } }
 
-function Logo({ light }: any) { return <span className="logo" style={light ? { color: "#fff" } : {}}><span className="mark">↗</span><span className="ltxt">Workpile</span></span>; }
+function LogoMark({ size = 30 }: any) { return (<svg width={size} height={size} viewBox="0 0 64 64" aria-label="Workpile" style={{ flex: "none", display: "block" }}><rect width="64" height="64" rx="14" fill="#0e5c3a"/><rect x="12" y="41" width="40" height="9" rx="4.5" fill="#ffffff"/><rect x="17" y="29.5" width="30" height="9" rx="4.5" fill="#ffffff" opacity="0.92"/><rect x="22" y="18" width="20" height="9" rx="4.5" fill="#4ade80"/></svg>); }
+function Logo({ light }: any) { return <span className="logo" style={light ? { color: "#fff" } : {}}><LogoMark size={30} /><span className="ltxt">Workpile</span></span>; }
 
 function AttachmentsPanel({ entityType, entityId }: any) {
   const [files, setFiles] = useState<any[]>([]); const [msg, setMsg] = useState("");
@@ -1249,32 +1250,120 @@ function Landing({ onAuth }: any) {
     ["✍️", "E-Sign + Deposits", "Signed proposal links with ESIGN evidence certificates, and deposit collection via Stripe the moment they sign."],
     ["🏢", "Multi-Business Ready", "Multiple workspaces under one login, per-business price books, teams, and roles. Owners see everything; staff see their work."],
   ];
-  return (<div>
-    <nav className="landNav"><Logo /><div className="links"><a href="#features">Features</a><a href="#how">How it works</a><a href="#compare">vs Salesforce</a><a href="#pricing">Pricing</a><button className="btn ghost" onClick={() => setMode("login")}>Sign in</button><button className="btn" onClick={() => setMode("register")}>Start free</button></div></nav>
-    <div className="hero"><div>
-      <h1>Your lead backlog, <em>cleared</em>. Your approvals, one tap. Your proposals, generated.</h1>
-      <p className="lede">Workpile is the operations layer for owner-operated service businesses: it ingests leads from your website, inbox, spreadsheets, and systems — then triages, routes, prices, and follows up until every single one reaches a final outcome in your own platform.</p>
-      <div className="rowflex"><button className="btn" style={{ padding: "13px 22px", fontSize: 15 }} onClick={() => setMode("register")}>Start 30-day free trial</button><button className="btn ghost" style={{ padding: "13px 22px", fontSize: 15 }} onClick={() => setMode("login")}>See the demo →</button></div>
-      <p className="muted" style={{ marginTop: 12 }}>No card · Set up in minutes · Your data stays yours</p></div>
-      <div className="heroMock"><div className="hm-kpis"><div className="hm"><span>Total leads</span><b>2,613</b></div><div className="hm"><span>Won</span><b>2,001</b></div><div className="hm"><span>First-pass approval</span><b>100%</b></div></div>
-        <div className="hm-row"><span>✅ Packet approved — Water damage, $4,550</span><b>10s</b></div>
-        <div className="hm-row"><span>🔥 17 hot leads scored 70+ today</span><b>AI</b></div>
-        <div className="hm-row"><span>🔁 Won → project GC-JOB-1042 acknowledged</span><b>✓</b></div>
-        <div className="hm-row"><span>🧹 23 duplicates archived by AI cleanup</span><b>✓</b></div></div></div>
-    <div className="section" id="features"><h2>Everything between "new lead" and "final outcome"</h2><p className="sub2">Salesforce tracks your pipeline. Workpile finishes it — with the approval discipline, pricing guardrails, and handoff plumbing a working business actually needs.</p>
-      <div className="featGrid">{FEATS.map(([ic, t, d]) => <div className="feat" key={t}><div className="ic">{ic}</div><h4>{t}</h4><p>{d}</p></div>)}</div></div>
-    <div className="section" id="how"><h2>How it works</h2><div className="steps">
-      <div className="step"><b>1</b><h4>Connect & clear</h4><p>Sync from your lead system by date range, upload the CSV pile, connect your inbox and website form. AI cleans, dedupes, scores, and assigns everything.</p></div>
-      <div className="step"><b>2</b><h4>Approve & propose</h4><p>Your team works leads on a Salesforce-style Path. Complete packets land in your Approval Inbox; proposals generate from your price book, get e-signed, and collect the deposit.</p></div>
-      <div className="step"><b>3</b><h4>Hand off & learn</h4><p>Every final — won, lost, no-response, N/A — is delivered into your own platform with acknowledgment tracking, while Demand Gap shows you what to sell next.</p></div></div></div>
-    <div className="section" id="compare"><h2>Why teams switch from Salesforce</h2><p className="sub2">Salesforce is a database you configure for six months. Workpile is the workflow, finished — at a tenth of the seat cost.</p>
+  return (<div className="lp">
+    <nav className="lpNav"><Logo /><div className="lpLinks"><a href="#product">Product</a><a href="#agent">AI Agent</a><a href="#ops">Ops</a><a href="#pricing">Pricing</a><a href="#faq">FAQ</a></div><div className="lpNavCtas"><button className="btn ghost" onClick={() => setMode("login")}>Sign in</button><button className="btn" onClick={() => setMode("register")}>Start free</button></div></nav>
+
+    <header className="lpHero">
+      <p className="lpEyebrow">The Revenue Execution OS for field-service businesses</p>
+      <h1>Turn every opportunity into <em>accountable work</em>.</h1>
+      <p className="lpLede">Leads pile up in inboxes, spreadsheets, and somebody's memory. Workpile ends the pile: every lead owned, every proposal priced from your own book, every job scheduled with its crew — and an AI agent that does the chasing while a human approves anything that matters.</p>
+      <div className="lpCtas"><button className="btn lpBig" onClick={() => setMode("register")}>Start 30-day free trial</button><a className="btn ghost lpBig" href="/audit">Run the free backlog audit →</a></div>
+      <p className="lpMicro">No card required · Set up in minutes · Your data stays yours</p>
+      <div className="lpShot"><img src="/shots/hero.png" alt="Workpile Work Queue with the AI agent panel" loading="eager" /><span className="lpChip lpChipA">✦ Agent — every send approved by a human</span><span className="lpChip lpChipB">Five money figures. Never blended.</span></div>
+    </header>
+
+    <div className="lpFacts">
+      <div><b>L0–L4</b><span>agent autonomy — you set the level</span></div>
+      <div><b>13</b><span>governed agent tools, each with a control class</span></div>
+      <div><b>5</b><span>money figures, tracked separately — always</span></div>
+      <div><b>10s</b><span>to approve a complete packet</span></div>
+    </div>
+
+    <section className="lpSec" id="product">
+      <p className="lpKick">The Work Queue</p>
+      <h2>One queue. Everything that needs a human, worst-first.</h2>
+      <div className="lpSplit"><div>
+        <p className="lpBody">Untouched leads, overdue follow-ups, approvals waiting, jobs that need crew, expiring paperwork — the Work Queue is the operational center of the business, not another dashboard you check on Fridays. Work it to zero, every day.</p>
+        <ul className="lpList">
+          <li><b>Untouched-lead triage in one click</b> — the agent qualifies, assigns, and drafts first touches in bulk; you approve the sends.</li>
+          <li><b>The Completeness Gate</b> — nothing reaches your approval half-empty: contact, scope, site visit, owner, and price-book pricing verified first.</li>
+          <li><b>Bulk actions</b> — assign, snooze, or task dozens of items at once. Approvals always stay individual.</li>
+        </ul></div>
+        <div className="lpShotSm"><img src="/shots/home.png" alt="Workpile Home with the working calendar" loading="lazy" /></div></div>
+    </section>
+
+    <section className="lpSec lpDark" id="agent">
+      <p className="lpKick light">The AI Agent</p>
+      <h2>An operator, not a chatbot. Accountable by design.</h2>
+      <div className="lpSplit"><div className="lpShotSm"><img src="/shots/agent.png" alt="The Agent playbook — system prompt and locked tool list" loading="lazy" /></div><div>
+        <p className="lpBody light">Tell it what to do — "handle all untouched leads", "recover customers who went quiet" — and it plans governed steps, runs what your autonomy level allows, and stops at your approval gates. Sends always need a human. Prices only ever come from your price book.</p>
+        <ul className="lpList light">
+          <li><b>The playbook is public</b> — the exact system prompt and all 13 tools, visible in your workspace. Nothing hidden.</li>
+          <li><b>House rules</b> — your standing instructions ("never schedule Sundays", "escalate over $25k") ride along with every plan.</li>
+          <li><b>Attribution</b> — every run records who asked, who decided, and what each step did. First-pass approval rate is measured, not vibes.</li>
+        </ul></div></div>
+    </section>
+
+    <section className="lpSec" id="money">
+      <p className="lpKick">Money, honestly</p>
+      <h2>Five figures. Five meanings. Never blended.</h2>
+      <p className="lpBody" style={{ maxWidth: 720 }}>Most CRMs show one pipeline number and call it revenue. Workpile keeps the five money concepts separate — with real invoices and true accounts receivable underneath, so "outstanding" always means money actually owed to you.</p>
+      <div className="lpMoney">
+        {[["Estimated pipeline", "What open leads might be worth"], ["Proposal value", "What you've actually quoted"], ["Signed contracts", "What customers agreed to"], ["Invoiced", "What you've billed — real invoices"], ["Collected cash", "What's in the bank"]].map(([t, d]) => <div className="lpMoneyCard" key={t}><b>{t}</b><span>{d}</span></div>)}
+      </div>
+    </section>
+
+    <section className="lpSec" id="ops">
+      <p className="lpKick">Jobs & Ops</p>
+      <h2>Signed means scheduled. Scheduled means staffed.</h2>
+      <div className="lpSplit"><div>
+        <p className="lpBody">A won proposal becomes a real job with a lifecycle — awaiting scheduling, scheduled, in progress, documentation, ready to invoice, closed. Move a job to Scheduled and you pick the day and time right there: the crew lands on the Ops Console for that day and the week's timesheets open underneath. No separate scheduling ritual, no spreadsheet.</p>
+        <ul className="lpList">
+          <li><b>Conflicts warn, never block</b> — double-booked crew is flagged; you decide.</li>
+          <li><b>Payroll-ready timesheets</b> — submitted → reviewed → approved → exported; only approved hours reach the payroll CSV.</li>
+          <li><b>Paperwork queue</b> — required documents tracked per job, with expiring documents surfacing before they lapse.</li>
+        </ul></div>
+        <div className="lpShotSm"><img src="/shots/ops.png" alt="Ops Console — crew schedule and jobs starting this week" loading="lazy" /></div></div>
+    </section>
+
+    <section className="lpSec" id="how">
+      <p className="lpKick">How it works</p>
+      <h2>Live in an afternoon</h2>
+      <div className="steps">
+        <div className="step"><b>1</b><h4>Bring the pile</h4><p>Sync from your current system, upload the CSV, connect your inbox and website form. The agent dedupes, scores, and assigns everything it finds.</p></div>
+        <div className="step"><b>2</b><h4>Approve & propose</h4><p>Work the queue, approve complete packets, send proposals generated from your price book. Customers e-sign and pay the deposit by card.</p></div>
+        <div className="step"><b>3</b><h4>Run the work</h4><p>Jobs get scheduled with crew and timesheets; invoices go out; every final outcome — won, lost, no-response — is delivered back into your platform.</p></div>
+      </div>
+      <div className="featGrid" style={{ marginTop: 18 }}>{FEATS.map(([ic, t, d]) => <div className="feat" key={t}><div className="ic">{ic}</div><h4>{t}</h4><p>{d}</p></div>)}</div>
+    </section>
+
+    <section className="lpSec" id="compare">
+      <p className="lpKick">Straight talk</p>
+      <h2>Why teams switch from Salesforce</h2>
+      <p className="lpBody" style={{ maxWidth: 720 }}>Salesforce is a database you configure for six months. Workpile is the workflow, finished — at a tenth of the seat cost.</p>
       <div className="tableWrap"><table className="cmp"><thead><tr><th></th><th>Workpile</th><th>Salesforce</th></tr></thead><tbody>
         {[["Backlog clearing & AI triage built in", 1, 0], ["Completeness Gate before approvals", 1, 0], ["Proposals generated from your price book", 1, 0], ["Final outcomes delivered into your other systems", 1, 0], ["Pipeline, Path, reports & dashboards", 1, 1], ["Live in an afternoon, no admin required", 1, 0], ["Per-seat pricing from $19.99/mo (annual)", 1, 0]].map(([t, a, b]: any) => <tr key={t}><td>{t}</td><td className={a ? "yes" : "no"}>{a ? "✓ Included" : "—"}</td><td className={b ? "yes" : "no"}>{b ? "✓" : "Add-on / custom build"}</td></tr>)}
-      </tbody></table></div></div>
-    <div className="section" id="pricing"><h2>Pricing — 30 days free, no card</h2><PlanCards onAction={() => setMode("register")} /></div>
-    <div className="section"><h2>Questions</h2>
-      {[["Do I have to replace my current system?", "No — Workpile is the front door, not the house. Won jobs become projects in YOUR platform via API or webhooks; every final outcome is delivered and acknowledged there."], ["How do leads get in?", "Four ways: sync from your lead system's API by date range (daily auto-sync available), CSV upload, website form embed with TCPA consent, and inbox/API ingestion."], ["Is the AI allowed to send things on its own?", "Never. Agents draft, score, and organize; every customer-facing send and every price-bearing decision needs a human approval. That's a product invariant, not a setting."], ["What happens to duplicates?", "Ingestion dedupes by phone/email automatically. AI Cleanup finds the rest — same name + service — and archives them as duplicates of the original, with the merge recorded."]].map(([q, a]) => <div className="faq" key={q}><b>{q}</b><p>{a}</p></div>)}</div>
-    <footer className="landFoot"><Logo /><span>© 2026 Workpile · workpile.io · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/dpa">DPA</a></span><span>Built for the businesses that answer the phone.</span></footer>
+      </tbody></table></div>
+    </section>
+
+    <section className="lpSec" id="verticals">
+      <p className="lpKick">Built for your trade</p>
+      <h2>Starts with your services, your paperwork, your words</h2>
+      <p className="lpBody" style={{ maxWidth: 720 }}>Vertical packs load a workspace with the trade's services, document requirements, and proposal language — environmental contracting is the flagship, with more trades on the same rails.</p>
+      <div className="lpVerts"><span>🌎 Environmental</span><span>🔧 Plumbing & HVAC</span><span>🏠 Roofing</span><span>💧 Restoration</span><span>+ your trade, configured</span></div>
+    </section>
+
+    <section className="lpSec" id="pricing">
+      <p className="lpKick">Pricing</p>
+      <h2>Per seat. 30 days free. No card.</h2>
+      <p className="lpBody" style={{ maxWidth: 720 }}>Trials start on the Crew plan so you see everything. Prices below are per seat, billed annually.</p>
+      <PlanCards onAction={() => setMode("register")} />
+    </section>
+
+    <section className="lpBand">
+      <h2>Not sure yet? Bring us your worst spreadsheet.</h2>
+      <p>The free backlog audit takes two minutes: drop in your lead list and see what the pile is worth, what's stale, and what to work first. Your rows are never stored — you get aggregates, we keep nothing.</p>
+      <a className="btn lpBig lpBandBtn" href="/audit">Run the free backlog audit →</a>
+    </section>
+
+    <section className="lpSec" id="faq">
+      <p className="lpKick">Questions</p>
+      <h2>Asked by owners like you</h2>
+      {[["Do I have to replace my current system?", "No — Workpile is the front door, not the house. Won jobs become projects in YOUR platform via API or webhooks; every final outcome is delivered and acknowledged there."], ["How do leads get in?", "Four ways: sync from your lead system's API by date range (daily auto-sync available), CSV upload, website form embed with TCPA consent, and inbox/API ingestion."], ["Is the AI allowed to send things on its own?", "Never. The agent drafts, scores, and organizes; every customer-facing send needs a human approval, and pricing only ever comes from your price book. That's a product invariant, not a setting."], ["Can the agent text customers without consent?", "No. Consent is enforced at the single send boundary — a text to a lead without recorded consent is blocked before it queues, whoever or whatever requested it."], ["What happens to duplicates?", "Ingestion dedupes by phone/email automatically. The agent's cleanup finds the rest — same name + service — and merges are recorded and reversible."], ["What does per-seat mean?", "You pay for login users — the people running the business. Field crew on the roster (timesheets, schedules) never consume seats."]].map(([q, a]) => <div className="faq" key={q}><b>{q}</b><p>{a}</p></div>)}
+    </section>
+
+    <footer className="lpFoot"><div className="lpFootIn"><Logo light /><p>Turn every opportunity into accountable work.</p><span>© 2026 Workpile · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/dpa">DPA</a> · <a href="/audit">Free backlog audit</a></span><span>Built for the businesses that answer the phone.</span></div></footer>
+    <div className="lpSticky"><button className="btn" onClick={() => setMode("register")}>Start free — 30 days</button><a className="btn ghost" href="/audit">Free audit</a></div>
   </div>);
 }
 
