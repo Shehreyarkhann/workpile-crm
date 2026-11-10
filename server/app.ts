@@ -16,6 +16,7 @@ import { emitEvent, EVENTS } from "./integrations.ts";
 import { queueAndDeliver, notify, notifyOwners, emailConfigured, smsConfigured } from "./comms.ts";
 import { weekStartOf, ensureWeek, chaseRow, sumDays } from "./timesheets.ts";
 import { rateFor, logTime, jobLabor, DEFAULT_CLASSES } from "./labor.ts";
+import { ensureDay, chaseReport, todayStr } from "./fieldreports.ts";
 import { enrollFollowup, stopFollowups } from "./followups.ts";
 
 import { providerStatus, authUrl, listConnections } from "./oauth.ts";
@@ -328,7 +329,7 @@ app.get("/api/ops", requireAuth, (req: any, res) => {
     documents: db.prepare("SELECT * FROM documents WHERE workspace_id=?").all(ws),
   });
 });
-app.post("/api/field-reports/:id/submit", requireAuth, (req: any, res) => { db.prepare("UPDATE field_reports SET status='submitted', submitted_at=? WHERE id=?").run(now(), req.params.id); res.json({ ok: true }); });
+// (field-reports submit is the richer slice-22 route below — notes + job link)
 // ---------- slice 20: timesheets — log, chase, payroll export ----------
 app.get("/api/timesheets", requireAuth, (req: any, res) => {
   const ws = req.user.workspace_id;
@@ -370,6 +371,58 @@ app.get("/api/timesheets/export", requireAuth, needPerm("can_export"), (req: any
   const lines = rows.map(r => { let d: any = {}; try { d = r.days ? JSON.parse(r.days) : {}; } catch { d = {}; } const esc = (v: any) => `"${String(v ?? "").replaceAll('"', '""')}"`; const j = db.prepare("SELECT COALESCE(SUM(hours),0) h, COALESCE(SUM(amount),0) a FROM time_entries WHERE workspace_id=? AND user_id=? AND entry_date>=? AND entry_date<=?").get(ws, r.manager_id, week, wkEnd2) as any; return [esc(r.manager), esc(r.email), r.week_of, d.mon || "", d.tue || "", d.wed || "", d.thu || "", d.fri || "", d.sat || "", d.sun || "", r.hours ?? "", j.h, (Number(r.hours) || 0) + j.h, Math.round(j.a * 100) / 100, r.status, esc(r.notes || "")].join(","); });
   res.setHeader("Content-Type", "text/csv"); res.setHeader("Content-Disposition", `attachment; filename="timesheets-${week}.csv"`);
   res.send([head, ...lines].join("\n"));
+});
+// ---------- slice 22: field reports, daily standard ----------
+app.get("/api/field-reports", requireAuth, (req: any, res) => {
+  const ws = req.user.workspace_id;
+  const date = String(req.query.date || todayStr());
+  ensureDay(ws, date);
+  const rows = db.prepare("SELECT f.*, u.name manager, l.service_requested job_service, c.name job_customer FROM field_reports f LEFT JOIN users u ON u.id=f.manager_id LEFT JOIN leads l ON l.id=f.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE f.workspace_id=? AND f.report_date=? ORDER BY u.name").all(ws, date) as any[];
+  for (const r of rows) r.overdue = r.status === "missing" && date < todayStr();
+  res.json({ report_date: date, rows, summary: { submitted: rows.filter(r => r.status === "submitted").length, missing: rows.filter(r => r.status === "missing").length } });
+});
+app.post("/api/field-reports/:id/submit", requireAuth, (req: any, res) => {
+  const r = db.prepare("SELECT * FROM field_reports WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!r) return res.status(404).json({ error: { code: "not_found" } });
+  const b = req.body || {};
+  db.prepare("UPDATE field_reports SET status='submitted', submitted_at=?, notes=COALESCE(?,notes), lead_id=COALESCE(?,lead_id) WHERE id=?").run(now(), b.notes ?? null, b.lead_id ?? null, r.id);
+  res.json(db.prepare("SELECT * FROM field_reports WHERE id=?").get(r.id));
+});
+app.post("/api/field-reports/:id/chase", requireAuth, (req: any, res) => {
+  const r = db.prepare("SELECT * FROM field_reports WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!r) return res.status(404).json({ error: { code: "not_found" } });
+  chaseReport(r);
+  res.json({ chased: true });
+});
+// ---------- slice 23: crew scheduling ----------
+app.get("/api/schedule/jobs", requireAuth, (req: any, res) => {
+  const rows = db.prepare("SELECT l.id, l.service_requested, l.state, c.name contact_name FROM leads l LEFT JOIN contacts c ON c.id=l.contact_id WHERE l.workspace_id=? AND l.state IN ('APPROVED','PROPOSAL_SENT','WON') ORDER BY l.created_at DESC LIMIT 100").all(req.user.workspace_id);
+  res.json(rows);
+});
+app.get("/api/schedule", requireAuth, (req: any, res) => {
+  const ws = req.user.workspace_id;
+  const week = String(req.query.week || weekStartOf(new Date()));
+  const wkEnd = new Date(new Date(week + "T12:00:00").getTime() + 6 * 86400000).toISOString().slice(0, 10);
+  const rows = db.prepare("SELECT s.*, u.name worker, l.service_requested, c.name contact_name FROM job_schedule s LEFT JOIN users u ON u.id=s.user_id LEFT JOIN leads l ON l.id=s.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE s.workspace_id=? AND s.work_date>=? AND s.work_date<=? ORDER BY s.work_date, u.name").all(ws, week, wkEnd) as any[];
+  const byUserDay: Record<string, Set<string>> = {};
+  for (const r of rows) { const k = r.user_id + "|" + r.work_date; (byUserDay[k] = byUserDay[k] || new Set()).add(r.lead_id); }
+  for (const r of rows) r.conflict = (byUserDay[r.user_id + "|" + r.work_date]?.size || 0) > 1;
+  res.json({ week_of: week, rows });
+});
+app.post("/api/schedule", requireAuth, (req: any, res) => {
+  const ws = req.user.workspace_id; const b = req.body || {};
+  const lead = db.prepare("SELECT id FROM leads WHERE id=? AND workspace_id=?").get(String(b.lead_id || ""), ws) as any;
+  const user = db.prepare("SELECT id FROM users WHERE id=? AND workspace_id=?").get(String(b.user_id || ""), ws) as any;
+  if (!lead || !user) return res.status(422).json({ error: { code: "bad_job_or_user" } });
+  const id = uid("sch");
+  try { db.prepare("INSERT INTO job_schedule (id,workspace_id,lead_id,user_id,work_date,note,created_by,created_at) VALUES (?,?,?,?,?,?,?,?)").run(id, ws, lead.id, user.id, String(b.work_date || todayStr()), String(b.note || ""), req.user.id, now()); }
+  catch { return res.status(409).json({ error: { code: "already_scheduled" } }); }
+  notify(ws, [user.id], "scheduled", `🗓 You're scheduled — ${String(b.work_date || todayStr())}`, "You've been assigned to a job that day. Open Ops Console → Crew schedule for details.");
+  res.json(db.prepare("SELECT * FROM job_schedule WHERE id=?").get(id));
+});
+app.delete("/api/schedule/:id", requireAuth, (req: any, res) => {
+  db.prepare("DELETE FROM job_schedule WHERE id=? AND workspace_id=?").run(req.params.id, req.user.workspace_id);
+  res.json({ ok: true });
 });
 // ---------- slice 21: labor classes, crew, job time ----------
 app.get("/api/labor-classes", requireAuth, (req: any, res) => res.json(db.prepare("SELECT * FROM labor_classes WHERE workspace_id=? ORDER BY name").all(req.user.workspace_id)));
@@ -1262,13 +1315,17 @@ app.get("/api/myday", requireAuth, (req: any, res) => {
   const approvals_waiting = canApprove ? db.prepare(`SELECT a.id, a.lead_id, a.submitted_at, a.tier, c.name contact_name, l.service_requested, l.est_value FROM approvals a JOIN leads l ON l.id=a.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE a.workspace_id=? AND a.decision IS NULL ORDER BY a.submitted_at LIMIT 6`).all(ws) : [];
   const followups_due = db.prepare(`SELECT f.*, c.name contact_name, l.service_requested FROM followup_enrollments f JOIN leads l ON l.id=f.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE f.workspace_id=? AND f.status='active' AND f.next_due_at<? ORDER BY f.next_due_at LIMIT 6`).all(ws, tomorrow);
   const wins = db.prepare(`SELECT COUNT(*) c, COALESCE(SUM(est_value),0) v FROM leads WHERE workspace_id=? AND state='WON' AND updated_at>=?`).get(ws, new Date(Date.now() - 7 * 86400000).toISOString()) as any;
+  const yday = new Date(Date.now() - 86400000).toLocaleDateString("en-CA");
+  ensureDay(ws, yday);
+  const myFr = db.prepare("SELECT * FROM field_reports WHERE workspace_id=? AND manager_id=? AND report_date=?").get(ws, me, yday) as any;
+  const field_alert = myFr && myFr.status === "missing" ? { id: myFr.id, report_date: yday } : null;
   const lastWeek = weekStartOf(new Date(Date.now() - 7 * 86400000));
   ensureWeek(ws, lastWeek);
   const myTs = db.prepare("SELECT * FROM timesheets WHERE workspace_id=? AND manager_id=? AND week_of=?").get(ws, me, lastWeek) as any;
   const timesheet_alert = myTs && myTs.status === "missing" ? { week_of: lastWeek } : null;
   const inbox_open = db.prepare(`SELECT * FROM inbox_items WHERE workspace_id=? AND COALESCE(status,'open')='open' AND (owner_id=? OR owner_id IS NULL) ORDER BY next_action_due_at LIMIT 6`).all(ws, me);
   const inbox_count = (db.prepare(`SELECT COUNT(*) c FROM inbox_items WHERE workspace_id=? AND COALESCE(status,'open')='open'`).get(ws) as any).c;
-  res.json({ overdue_tasks, today_tasks, my_leads_due, approvals_waiting, approvals_count: approvals_waiting.length, followups_due, wins_week: { count: wins.c, value: wins.v }, inbox_open, inbox_count, timesheet_alert });
+  res.json({ overdue_tasks, today_tasks, my_leads_due, approvals_waiting, approvals_count: approvals_waiting.length, followups_due, wins_week: { count: wins.c, value: wins.v }, inbox_open, inbox_count, timesheet_alert, field_alert });
 });
 // ---------- slice 9: activity pulse + follow-ups ----------
 app.get("/api/activity", requireAuth, (req: any, res) => {

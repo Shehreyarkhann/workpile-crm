@@ -52,6 +52,7 @@ export function initSchema() {
   CREATE TABLE IF NOT EXISTS labor_classes (id TEXT PRIMARY KEY, workspace_id TEXT, name TEXT, private_rate REAL DEFAULT 0, govt_rate REAL DEFAULT 0, created_at TEXT);
   CREATE TABLE IF NOT EXISTS job_crew (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, user_id TEXT, created_at TEXT, UNIQUE(lead_id, user_id));
   CREATE TABLE IF NOT EXISTS time_entries (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, user_id TEXT, entry_date TEXT, hours REAL, rate REAL, amount REAL, class_name TEXT, note TEXT, created_by TEXT, created_at TEXT);
+  CREATE TABLE IF NOT EXISTS job_schedule (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, user_id TEXT, work_date TEXT, note TEXT, created_by TEXT, created_at TEXT, UNIQUE(lead_id, user_id, work_date));
   CREATE TABLE IF NOT EXISTS documents (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, project_id TEXT, name TEXT, required INTEGER DEFAULT 1, status TEXT DEFAULT 'missing', expires_at TEXT, received_at TEXT);
   CREATE TABLE IF NOT EXISTS site_visits (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, assigned_to TEXT, scheduled_at TEXT, status TEXT DEFAULT 'scheduled', outcome TEXT, notes TEXT);
   CREATE TABLE IF NOT EXISTS change_orders (id TEXT PRIMARY KEY, workspace_id TEXT, project_id TEXT, lead_id TEXT, delta_scope TEXT, delta_total REAL DEFAULT 0, status TEXT DEFAULT 'draft', created_at TEXT);
@@ -115,6 +116,8 @@ export function initSchema() {
     "ALTER TABLE timesheets ADD COLUMN chased_at TEXT",
     "ALTER TABLE users ADD COLUMN labor_class_id TEXT",
     "ALTER TABLE leads ADD COLUMN sector TEXT DEFAULT 'private'",
+    "ALTER TABLE field_reports ADD COLUMN lead_id TEXT",
+    "ALTER TABLE field_reports ADD COLUMN chased_at TEXT",
     "ALTER TABLE workspaces ADD COLUMN booking_slug TEXT",
     "ALTER TABLE workspaces ADD COLUMN booking_enabled INTEGER DEFAULT 0",
     "ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0",

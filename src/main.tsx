@@ -406,7 +406,65 @@ function Handoffs() {
 }
 
 function Ops() {
-  function TimesheetsCard() {
+  function FieldReportsCard() {
+  const today = new Date().toLocaleDateString("en-CA");
+  const [date, setDate] = useState(today); const [data, setData] = useState<any>(null);
+  const [subId, setSubId] = useState(""); const [notes, setNotes] = useState(""); const [jobId, setJobId] = useState("");
+  const [jobs, setJobs] = useState<any[]>([]); const [msg, setMsg] = useState("");
+  const load = () => { api("/api/field-reports?date=" + date).then(setData).catch(() => {}); };
+  useEffect(load, [date]);
+  useEffect(() => { api("/api/schedule/jobs").then(setJobs).catch(() => {}); }, []);
+  const shift = (n: number) => { const d = new Date(date + "T12:00:00"); d.setDate(d.getDate() + n); setDate(d.toLocaleDateString("en-CA")); };
+  const submit = async (r: any) => { await api(`/api/field-reports/${r.id}/submit`, { method: "POST", body: { notes, lead_id: jobId || undefined } }); setSubId(""); setNotes(""); setJobId(""); setMsg(`Report filed for ${r.manager} ✓`); load(); };
+  const chase = async (r: any) => { await api(`/api/field-reports/${r.id}/chase`, { method: "POST", body: {} }); setMsg(`Chase sent to ${r.manager} ✓`); load(); };
+  const chaseAll = async () => { if (!data) return; for (const r of data.rows.filter((x: any) => x.status === "missing")) await api(`/api/field-reports/${r.id}/chase`, { method: "POST", body: {} }); setMsg("All missing reports chased ✓"); load(); };
+  return (<div className="card"><h3>Field reports — daily, expected, chased</h3>
+    <div className="rowflex" style={{ marginBottom: 8 }}><button className="btn ghost small" onClick={() => shift(-1)}>← Prev day</button><b>{date}</b><button className="btn ghost small" onClick={() => shift(1)}>Next day →</button><button className="btn ghost small" onClick={() => setDate(today)}>Today</button>
+      <span style={{ flex: 1 }} /><button className="btn ghost small" onClick={chaseAll}>📣 Chase all missing</button></div>
+    {msg && <div className="ok">{msg}</div>}
+    {!data && <p className="muted">Loading…</p>}
+    {data && <><p className="muted" style={{ marginTop: 0 }}>{data.summary.submitted} of {data.rows.length} filed · {data.summary.missing} missing. A report is expected from every field manager, every day — missing ones past their day are chased automatically, once.</p>
+    <table><thead><tr><th>Manager</th><th>Status</th><th>Job</th><th>Notes</th><th></th></tr></thead><tbody>
+      {data.rows.map((r: any) => <tr key={r.id}><td>{r.manager}</td><td>{r.status === "submitted" ? <span className="st pass">filed</span> : r.overdue ? <span className="st fail">missing · overdue</span> : <span className="st warn">missing</span>}{r.chased_at ? <span className="muted"> · chased {dOnly(r.chased_at)}</span> : ""}</td><td>{r.job_service ? `${r.job_service} — ${r.job_customer || ""}` : <span className="muted">—</span>}</td><td className="muted">{r.notes ? String(r.notes).slice(0, 60) : ""}</td>
+        <td><span className="rowflex">{r.status === "missing" && <button className="btn ghost small" onClick={() => chase(r)}>Chase</button>}<button className="btn ghost small" onClick={() => { setSubId(subId === r.id ? "" : r.id); setNotes(r.notes || ""); }}>{r.status === "submitted" ? "Edit" : "File report"}</button></span>
+        {subId === r.id && <div style={{ marginTop: 8 }}><textarea rows={3} placeholder="What got done, what's blocked, what's needed tomorrow…" value={notes} onChange={e => setNotes(e.target.value)} />
+          <select value={jobId} onChange={e => setJobId(e.target.value)} style={{ marginTop: 6 }}><option value="">Attach to a job (optional)…</option>{jobs.map((j: any) => <option key={j.id} value={j.id}>{j.service_requested} — {j.contact_name}</option>)}</select>
+          <div className="rowflex" style={{ marginTop: 6 }}><button className="btn small" onClick={() => submit(r)}>Submit report</button><button className="btn ghost small" onClick={() => setSubId("")}>Cancel</button></div></div>}</td></tr>)}
+      {data.rows.length === 0 && <tr><td colSpan={5} className="muted">No field managers (PM / Lead Owner roles) in this workspace yet.</td></tr>}
+    </tbody></table></>}
+  </div>);
+}
+
+function ScheduleCard() {
+  const [users, setUsers] = useState<any[]>([]);
+  useEffect(() => { api("/api/users").then(setUsers).catch(() => {}); }, []);
+  const mondayOf = (d: Date) => { const x = new Date(d); const day = (x.getDay() + 6) % 7; x.setDate(x.getDate() - day); x.setHours(0, 0, 0, 0); return x.toISOString().slice(0, 10); };
+  const [week, setWeek] = useState(mondayOf(new Date())); const [data, setData] = useState<any>(null);
+  const [jobs, setJobs] = useState<any[]>([]); const [sel, setSel] = useState<any>(null); const [jobId, setJobId] = useState(""); const [note, setNote] = useState(""); const [msg, setMsg] = useState("");
+  const load = () => { api("/api/schedule?week=" + week).then(setData).catch(() => {}); };
+  useEffect(load, [week]);
+  useEffect(() => { api("/api/schedule/jobs").then(setJobs).catch(() => {}); }, []);
+  const shift = (n: number) => { const d = new Date(week + "T12:00:00"); d.setDate(d.getDate() + n * 7); setWeek(mondayOf(d)); };
+  const days = [0, 1, 2, 3, 4, 5, 6].map(i => { const d = new Date(week + "T12:00:00"); d.setDate(d.getDate() + i); return { iso: d.toISOString().slice(0, 10), lab: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][i] + " " + (d.getMonth() + 1) + "/" + d.getDate() }; });
+  const crew = users.filter((u: any) => ["PM", "LEAD_OWNER", "OPS_ADMIN"].includes(u.role) || (data?.rows || []).some((r: any) => r.user_id === u.id));
+  const cell = (uid2: string, iso: string) => (data?.rows || []).filter((r: any) => r.user_id === uid2 && r.work_date === iso);
+  const assign = async () => { if (!sel || !jobId) return; const r = await api("/api/schedule", { method: "POST", body: { user_id: sel.user_id, lead_id: jobId, work_date: sel.date, note } }).catch((e: any) => ({ error: e.message })); if ((r as any).error) setMsg("Couldn't assign: " + (r as any).error); else { setMsg("Scheduled ✓ — they've been notified"); setSel(null); setJobId(""); setNote(""); load(); } };
+  return (<div className="card"><h3>Crew schedule — who's on which job, this week</h3>
+    <div className="rowflex" style={{ marginBottom: 8 }}><button className="btn ghost small" onClick={() => shift(-1)}>← Prev week</button><b>Week of {week}</b><button className="btn ghost small" onClick={() => shift(1)}>Next week →</button><button className="btn ghost small" onClick={() => setWeek(mondayOf(new Date()))}>This week</button></div>
+    {msg && <div className="ok">{msg}</div>}
+    <div style={{ overflowX: "auto" }}><table><thead><tr><th>Worker</th>{days.map(d => <th key={d.iso}>{d.lab}</th>)}</tr></thead><tbody>
+      {crew.map((u: any) => <tr key={u.id}><td><b>{u.name}</b><br /><span className="muted">{u.role}</span></td>{days.map(d => <td key={d.iso} style={{ minWidth: 118, verticalAlign: "top" }}>{cell(u.id, d.iso).map((e: any) => <div key={e.id} className="chip on" style={{ display: "flex", marginBottom: 4, background: e.conflict ? "#fef3c7" : undefined, borderColor: e.conflict ? "#b45309" : undefined }}><span style={{ flex: 1 }}>{e.conflict ? "⚠ " : ""}{e.service_requested} — {e.contact_name}</span><button className="btn ghost small" style={{ padding: "0 4px" }} onClick={async () => { await api("/api/schedule/" + e.id, { method: "DELETE" }); load(); }}>✕</button></div>)}<button className="btn ghost small" onClick={() => setSel({ user_id: u.id, date: d.iso })}>+ Assign</button></td>)}</tr>)}
+      {crew.length === 0 && <tr><td colSpan={8} className="muted">No crew members yet.</td></tr>}
+    </tbody></table></div>
+    <p className="muted">⚠ marks a double-booking — same person, two jobs, one day. Assigning notifies the worker.</p>
+    {sel && <div className="card" style={{ marginTop: 10, background: "#f8fafc" }}><b>Assign {users.find((u: any) => u.id === sel.user_id)?.name} — {sel.date}</b>
+      <div className="rowflex" style={{ marginTop: 8 }}><select value={jobId} onChange={e => setJobId(e.target.value)} style={{ flex: 1 }}><option value="">Pick a job (approved / sent / won)…</option>{jobs.map((j: any) => <option key={j.id} value={j.id}>{j.service_requested} — {j.contact_name} ({j.state})</option>)}</select>
+      <input placeholder="Note (arrival time, phase…)" value={note} onChange={e => setNote(e.target.value)} style={{ flex: 1 }} />
+      <button className="btn small" disabled={!jobId} onClick={assign}>Assign</button><button className="btn ghost small" onClick={() => setSel(null)}>Cancel</button></div></div>}
+  </div>);
+}
+
+function TimesheetsCard() {
   const mondayOf = (d: Date) => { const x = new Date(d); const day = (x.getDay() + 6) % 7; x.setDate(x.getDate() - day); x.setHours(0, 0, 0, 0); return x.toISOString().slice(0, 10); };
   const [week, setWeek] = useState(mondayOf(new Date())); const [data, setData] = useState<any>(null);
   const [editId, setEditId] = useState(""); const [days, setDays] = useState<any>({}); const [notes, setNotes] = useState(""); const [msg, setMsg] = useState("");
@@ -477,13 +535,15 @@ const [d, setD] = useState<any>(null); const [inbox, setInbox] = useState<any[]>
   const chase = async (kind: string, id: string) => { await api(`/api/${kind}/${id}/submit`, { method: "POST", body: {} }); load(); };
   return (<div><h2 className="pt">Ops Console</h2><p className="sub">The daily chase, in one place: field reports, timesheets, site visits, paperwork, and the full inbox (not just leads).</p>
     <div className="grid2">
-      <div className="card"><h3>Field reports</h3><table><thead><tr><th>Manager</th><th>Date</th><th>Status</th><th></th></tr></thead><tbody>{d.field_reports.map((r: any) => <tr key={r.id}><td>{r.manager}</td><td>{r.report_date}</td><td>{r.status}</td><td>{r.status !== "submitted" && <button className="btn ghost small" onClick={() => chase("field-reports", r.id)}>Mark submitted</button>}</td></tr>)}</tbody></table></div>
+      {/* field reports moved below as full-width card */}
       {/* timesheets moved below as full-width card */}
     </div>
     <div className="grid2">
       <div className="card"><h3>Site visits</h3>{d.site_visits.map((v: any) => <p key={v.id} style={{ margin: "6px 0" }}>📍 {v.service_requested} — {dt(v.scheduled_at)} · {v.status}</p>)}{d.site_visits.length === 0 && <p className="muted">None scheduled.</p>}</div>
       <div className="card"><h3>Documents tracker</h3>{d.documents.map((doc: any) => <div className="check" key={doc.id}><span className={`st ${doc.status === "received" ? "pass" : "fail"}`}>{doc.status === "received" ? "✓" : "✗"}</span><span>{doc.name} — {doc.status}{doc.required ? " (required)" : ""}</span></div>)}</div>
     </div>
+    <FieldReportsCard />
+    <ScheduleCard />
     <TimesheetsCard />
     <InboxQueue inbox={inbox} reload={load} />
   </div>);
@@ -940,6 +1000,8 @@ function MyDay({ user, openLead, go }: any) {
   return (<div><h2 className="pt">{greet}, {first}.</h2><p className="sub">{new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })} — your personal queue. The business dashboard is one click over; this page is just yours.</p>
     {d.timesheet_alert && <div className="card" style={{ marginBottom: 14, borderLeft: "4px solid #b45309" }}><b>⏱ Your timesheet for the week of {d.timesheet_alert.week_of} is missing.</b> <span className="muted">Log the total here, or open Ops Console → Timesheets for the per-day grid.</span>
       <span className="rowflex" style={{ marginLeft: 10 }}><input type="number" min="0" placeholder="Total hours" style={{ width: 110 }} id="tsquick" /><button className="btn small" onClick={async () => { const v = (document.getElementById("tsquick") as HTMLInputElement).value; await api("/api/timesheets", { method: "POST", body: { week_of: d.timesheet_alert.week_of, hours: Number(v) || 0 } }); setTickL(t => t + 1); }}>Log it</button></span></div>}
+    {d.field_alert && <div className="card" style={{ marginBottom: 14, borderLeft: "4px solid #b45309" }}><b>📋 Your field report for {d.field_alert.report_date} is missing.</b> <span className="muted">File the short version here, or open Ops Console → Field reports to attach it to a job.</span>
+      <span className="rowflex" style={{ marginLeft: 10 }}><input placeholder="What got done yesterday…" style={{ width: 260 }} id="frquick" /><button className="btn small" onClick={async () => { const v = (document.getElementById("frquick") as HTMLInputElement).value; await api(`/api/field-reports/${d.field_alert.id}/submit`, { method: "POST", body: { notes: v } }); setTickL(t => t + 1); }}>File report</button></span></div>}
     <div className="kpis" style={{ marginBottom: 14 }}>
       <div className="kpi"><div className="lab">⏰ Overdue tasks</div><div className="val" style={{ color: d.overdue_tasks.length ? "#b91c1c" : undefined }}>{num(d.overdue_tasks.length)}</div><div className="hint">Assigned to you, past due</div></div>
       <div className="kpi" onClick={() => go({ view: "ops" })} style={{ cursor: "pointer" }}><div className="lab">📥 Inbox waiting</div><div className="val" style={{ color: d.inbox_count ? "#b45309" : undefined }}>{num(d.inbox_count || 0)}</div><div className="hint">Client mail & more — not leads</div></div>
