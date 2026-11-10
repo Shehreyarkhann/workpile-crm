@@ -79,7 +79,7 @@ export function insights(ws: string) {
 export function reactivateStale(ws: string, actorId: string) {
   const leads = leadsOf(ws).filter(l => OPEN.includes(l.state) && (Date.now() - new Date(l.updated_at).getTime()) > 14 * 86400000);
   let created = 0;
-  for (const l of leads) { db.prepare("INSERT INTO tasks (id,workspace_id,lead_id,assignee_id,type,title,due_at,status,created_at) VALUES (?,?,?,?,?,?,?,?,?)").run(uid("tsk"), ws, l.id, l.owner_id || actorId, "follow_up", "Reactivation: no activity in 14+ days — call today", new Date(Date.now() + 86400000).toISOString(), "open", now()); created++; }
+  for (const l of leads) { const dupe = db.prepare("SELECT id FROM tasks WHERE lead_id=? AND status='open' AND title LIKE 'Reactivation:%'").get(l.id); if (dupe) continue; db.prepare("INSERT INTO tasks (id,workspace_id,lead_id,assignee_id,type,title,due_at,status,created_at) VALUES (?,?,?,?,?,?,?,?,?)").run(uid("tsk"), ws, l.id, l.owner_id || actorId, "follow_up", "Reactivation: no activity in 14+ days — call today", new Date(Date.now() + 86400000).toISOString(), "open", now()); created++; }
   return { tasks_created: created };
 }
 

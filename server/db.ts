@@ -116,6 +116,8 @@ export function initSchema() {
     "ALTER TABLE workspaces ADD COLUMN tz TEXT DEFAULT 'America/New_York'",
     "ALTER TABLE workspaces ADD COLUMN deposit_pct REAL DEFAULT 25",
     "ALTER TABLE proposals ADD COLUMN sign_token TEXT",
+    "ALTER TABLE followup_enrollments ADD COLUMN fail_count INTEGER DEFAULT 0",
+    "ALTER TABLE api_keys ADD COLUMN created_at TEXT",
     "ALTER TABLE workspaces ADD COLUMN trial_ends_at TEXT",
     "ALTER TABLE leads ADD COLUMN consent_contact_ok INTEGER DEFAULT 0",
     "ALTER TABLE leads ADD COLUMN consent_source TEXT",

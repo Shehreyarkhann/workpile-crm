@@ -41,24 +41,6 @@ export const BUCKETS: [string, string][] = [["new", "New"], ["working", "Working
 export const BOARD_STAGES: [string, string][] = [["NEW", "New"], ["WORKING", "Working"], ["QUALIFIED", "Qualified"], ["PROPOSAL", "Proposal"], ["SENT", "Sent"], ["FOLLOWUP", "Follow-up"], ["WON", "Won"], ["CLOSED", "Closed"]];
 type Nav = { view: string; leads?: any; leadId?: string };
 
-function GettingStarted({ go }: any) {
-  const [st, setSt] = useState<any>(null); const [off, setOff] = useState(localStorage.getItem("wp_gs_off") === "1");
-  useEffect(() => { api("/api/setup-status").then(setSt).catch(() => {}); }, []);
-  if (!st || off) return null;
-  const steps = [
-    { done: st.has_services, label: "Add your services catalog", view: "settings" },
-    { done: st.has_price_book, label: "Build your price book (proposals price themselves from it)", view: "settings" },
-    { done: st.has_rates, label: "Set labor rates — private vs government", view: "settings" },
-    { done: st.template_customized, label: "Customize your proposal template (header, terms, footer)", view: "settings" },
-    { done: st.team_size > 1, label: "Invite your team and set each person's access", view: "settings" },
-    { done: st.has_sync || st.has_leads, label: "Connect lead sync or import your backlog", view: "imports" },
-    { done: st.has_booking, label: "Turn on the public booking page", view: "settings" },
-  ];
-  const done = steps.filter(x => x.done).length;
-  if (done === steps.length) return null;
-  return (<div className="card" style={{ marginBottom: 14, borderLeft: "4px solid #166534" }}><div className="rowflex" style={{ justifyContent: "space-between" }}><b>🚀 Getting started — {done} of {steps.length} done</b><button className="btn ghost small" onClick={() => { localStorage.setItem("wp_gs_off", "1"); setOff(true); }}>Dismiss</button></div>
-    <div className="chipRow" style={{ marginTop: 8 }}>{steps.map((x: any, i: number) => <button key={i} className={"chip" + (x.done ? " on" : "")} onClick={() => go({ view: x.view })}>{x.done ? "✓ " : "→ "}{x.label}</button>)}</div></div>);
-}
 
 function GoalGauge({ pct, target }: any) { const p = Math.max(0, Math.min(100, pct || 0)); const R = 74, C = Math.PI * R; const ticks = [0, 25, 50, 75, 100];
   return (<div className="gaugeWrap"><svg width="190" height="112" viewBox="0 0 190 112">
@@ -234,7 +216,6 @@ function Dashboard({ go, openLead }: any) {
         <button className="chip" onClick={() => go({ view: "ai" })}>🤖 AI insights →</button></div></div>
       <div className="briefSide">{(brief.stuck || []).slice(0, 3).map((t: any, i: number) => <div key={i}>⏰ {t.service_requested} — {t.state.replaceAll("_", " ").toLowerCase()}, overdue</div>)}</div></div>}
     <HomeDash go={go} openLead={openLead} m={m} d={d} />
-    <GettingStarted go={go} />
     <DashboardPins />
     {ins.length > 0 && <div className="card"><h3>🤖 AI insights <span className="more" onClick={() => go({ view: "ai" })}>Open AI Assistant →</span></h3>{ins.slice(0, 3).map((i: any, k: number) => <div className="insight" key={k}><div className="ic">{i.icon}</div><div><b>{i.title}</b><p>{i.detail}</p></div></div>)}</div>}
     <div className="grid3">
@@ -404,7 +385,7 @@ function CrewTime({ lead, users, reloadLead }: any) {
   </div>);
 }
 
-function LeadDetail({ id, users, priceBook, close, refresh, openJob }: any) {
+function LeadDetail({ id, users, priceBook, close, refresh, openJob, openApprovals }: any) {
   const [d, setD] = useState<any>(null); const [edit, setEdit] = useState<any>(null); const [msg, setMsg] = useState("");
   const [act, setAct] = useState<any>({ type: "call", body: "", outcome: "" }); const [sug, setSug] = useState<any>(null);
   useEffect(() => { api("/api/ai/suggest/" + id).then(setSug).catch(() => {}); }, [id, d?.lead?.state]);
@@ -449,9 +430,13 @@ function LeadDetail({ id, users, priceBook, close, refresh, openJob }: any) {
     </div>}
     {d.next_step && d.next_step.kind !== "closed" && <div className="nextbar"><div style={{ flex: 1 }}><b>▶ Next step: {d.next_step.label}</b><br /><span style={{ opacity: .85, fontSize: 12.5 }}>{d.next_step.detail}</span></div>
       {(() => { const k = d.next_step.kind; const goTab = (t: string, label: string) => <button className="btn small" style={{ background: "#fff", color: "#14532d" }} onClick={() => setTab(t)}>{label}</button>;
-        if (k === "approve") return goTab("proposals", "Review & send →");
-        if (k === "fix_step") return goTab("activity", "Open tasks →");
-        if (k === "assign") return goTab("details", "Assign owner →");
+        const act = async (fn: () => Promise<any>, ok: string) => { try { await fn(); toast(ok); load(); } catch (e: any) { setMsg(e.message); } };
+        if (k === "call") return <span style={{ display: "inline-flex", gap: 6 }}><button className="btn small" style={{ background: "#fff", color: "#14532d" }} onClick={() => act(() => api(`/api/leads/${id}/contact`, { method: "POST", body: { type: "call", body: "First contact call — logged from Next step", outcome: "contacted" } }), "Call logged — first contact recorded ✓")}>📞 Log the call</button>{goTab("messages", "Message instead →")}</span>;
+        if (k === "nudge") return <button className="btn small" style={{ background: "#fff", color: "#14532d" }} onClick={() => act(async () => { const r = await api("/api/ai/nudge", { method: "POST", body: { lead_id: id } }); if (r.status === "suppressed") throw new Error("Suppressed — on the do-not-contact list"); }, "Nudge sent ✓")}>Send the nudge</button>;
+        if (k === "reactivate") return <button className="btn small" style={{ background: "#fff", color: "#14532d" }} onClick={() => act(() => api("/api/tasks", { method: "POST", body: { lead_id: id, type: "follow_up", title: "Reactivation: call today — decide if this is pipeline or history" } }), "Follow-up task created ✓")}>Create follow-up task</button>;
+        if (k === "approve") return <button className="btn small" style={{ background: "#fff", color: "#14532d" }} onClick={() => { if (openApprovals) openApprovals(); else setTab("proposals"); }}>Open the approval →</button>;
+        if (k === "fix_step") return <button className="btn small" style={{ background: "#fff", color: "#14532d" }} onClick={() => act(() => api("/api/leads/" + id, { method: "PATCH", body: { next_action: "Follow up", next_action_due_at: new Date(Date.now() + 86400000).toISOString() } }), "Next step set for tomorrow ✓")}>Set next step: tomorrow</button>;
+        if (k === "assign") return <select defaultValue="" style={{ width: 190, background: "#fff", color: "#14532d", fontWeight: 600 }} onChange={e => { const v = e.target.value; if (v) act(() => api("/api/leads/" + id, { method: "PATCH", body: { owner_id: v } }), "Owner assigned ✓"); }}><option value="">Assign owner…</option>{users.map((u: any) => <option key={u.id} value={u.id}>{u.name} ({u.role})</option>)}</select>;
         if (k === "job") return <button className="btn small" style={{ background: "#fff", color: "#14532d" }} onClick={async () => { if (d.job_id && openJob) { openJob(d.job_id); } else { const r = await api("/api/jobs", { method: "POST", body: { lead_id: id } }).catch((e: any) => ({ error: e.message })); if (r.error) setMsg(r.error); else { toast("Job created ✓"); if (r.id && openJob) openJob(r.id); else load(); } } }}>{d.job_id ? "Open the job →" : "Create the job →"}</button>;
         if (["call", "nudge", "reactivate", "work"].includes(k)) return goTab("messages", "Open messages →");
         return null; })()}
@@ -1613,7 +1598,7 @@ function JobDetail({ id, users, priceBook, close, refresh, openLead }: any) {
   return (<div className="modalWrap"><div className="modal">
     <div className="rowflex" style={{ justifyContent: "space-between" }}><h3 style={{ margin: 0 }}>{j.service_requested} — {j.contact_name}</h3><button className="btn ghost small" onClick={close}>✕ Close</button></div>
     <p className="muted" style={{ margin: "6px 0" }}>{j.contact_phone || ""} {j.contact_email ? "· " + j.contact_email : ""} · {j.location || ""} · job value <b style={{ color: "#14532d" }}>{money(j.value)}</b> · labor {money(j.labor_cost)} ({j.labor_pct ?? 0}% of value)</p>
-    {d.origin && <div className="crumbs"><span className="clickable" onClick={() => openLead && openLead(d.origin.lead_id)}>🎯 Lead: {d.origin.service_requested || "originating lead"}</span>{d.origin.proposal_id ? <span>→ 📄 Proposal {money(d.origin.proposal_total)} · {d.origin.proposal_status}</span> : <span className="muted">→ no signed proposal (manual / legacy win)</span>}<span>→ 🔧 This job</span></div>}
+    {d.origin && <div className="crumbs"><span className="clickable" onClick={() => openLead && openLead(d.origin.lead_id)}>🎯 Lead: {d.origin.service_requested || "originating lead"}</span>{d.origin.proposal_id ? <span className="clickable" onClick={() => openLead && openLead(d.origin.lead_id)}>→ 📄 Proposal {money(d.origin.proposal_total)} · {d.origin.proposal_status}</span> : <span className="muted">→ no signed proposal (manual / legacy win)</span>}<span>→ 🔧 This job</span></div>}
     <div className="path">{JOB_STAGES.filter(st => st !== "ON_HOLD" && st !== "CANCELLED").map(st => <div key={st} className={`stage ${st === j.stage ? "cur" : ""}`} onClick={() => stageTo(st)}>{st.replaceAll("_", " ")}</div>)}</div>
     <p className="muted" style={{ fontSize: 12 }}>Click any stage — jobs move both ways. Current: <b>{j.stage.replaceAll("_", " ")}</b></p>
     {msg && <div className="ok">{msg}</div>}
@@ -1822,14 +1807,14 @@ function CustomerDetail({ id, close, openLead, openJob }: any) {
     {d.jobs.length === 0 && <p className="muted">No jobs yet.</p>}
     <h4>Lead history ({d.leads.length})</h4>
     {d.leads.map((l: any) => <p key={l.id} style={{ margin: "4px 0" }} className="clickable" onClick={() => openLead(l.id)}>🎯 <b>{l.service_requested}</b> — {money(l.est_value)} · <Badge s={l.state} /></p>)}
-    <h4>Proposals ({(d.proposals || []).length}) · {money((d.money360 || {}).proposals_value || 0)} proposed</h4>
-    {(d.proposals || []).map((p: any) => <p key={p.id} style={{ margin: "4px 0" }}>📄 <b>{p.service_requested}</b> — {money(p.total)} · <span className="tinyBadge">{p.status}</span>{p.sent_at ? " · sent " + dOnly(p.sent_at) : ""}{p.signed_at ? " · ✍️ signed " + dOnly(p.signed_at) : ""}</p>)}
+    <h4>Proposals ({(d.proposals || []).length}) · {money((d.money360 || {}).proposals_value || 0)} proposed (current versions) · {money((d.money360 || {}).signed_value || 0)} signed · {money((d.money360 || {}).outstanding || 0)} outstanding</h4>
+    {(d.proposals || []).map((p: any) => <p key={p.id} style={{ margin: "4px 0" }} className="clickable" onClick={() => openLead(p.lead_id)}>📄 <b>{p.service_requested}</b> — {money(p.total)} · <span className="tinyBadge">{p.status}</span>{p.sent_at ? " · sent " + dOnly(p.sent_at) : ""}{p.signed_at ? " · ✍️ signed " + dOnly(p.signed_at) : ""} →</p>)}
     {(d.proposals || []).length === 0 && <p className="muted">No proposals yet.</p>}
-    <h4>Payments · {money((d.money360 || {}).collected || 0)} collected{(d.money360 || {}).refunded ? " · " + money(d.money360.refunded) + " refunded" : ""}</h4>
-    {(d.payments || []).map((p: any) => <p key={p.id} style={{ margin: "4px 0" }}>{p.kind === "refund" ? "↩️" : "💳"} {money(p.amount)} · {p.kind} · <span className="tinyBadge">{p.status}</span> · {dOnly(p.created_at)}</p>)}
+    <h4>Payments · {money((d.money360 || {}).collected || 0)} collected{(d.money360 || {}).refunded ? " · " + money(d.money360.refunded) + " refunded" : ""} · net {money((d.money360 || {}).net_collected || 0)}</h4>
+    {(d.payments || []).map((p: any) => <p key={p.id} style={{ margin: "4px 0" }} className="clickable" onClick={() => p.lead_id && openLead(p.lead_id)}>{p.kind === "refund" ? "↩️" : "💳"} {money(p.amount)} · {p.kind} · <span className="tinyBadge">{p.status}</span> · {dOnly(p.created_at)} →</p>)}
     {(d.payments || []).length === 0 && <p className="muted">No payments recorded.</p>}
     <h4>Documents ({(d.documents || []).length})</h4>
-    {(d.documents || []).map((doc: any) => <p key={doc.id} style={{ margin: "4px 0" }}>📎 {doc.name} · <span className="tinyBadge">{doc.status}</span>{doc.expires_at ? " · expires " + dOnly(doc.expires_at) : ""}</p>)}
+    {(d.documents || []).map((doc: any) => <p key={doc.id} style={{ margin: "4px 0" }} className="clickable" onClick={() => { if (doc.job_id && openJob) openJob(doc.job_id); else if (doc.lead_id) openLead(doc.lead_id); }}>📎 {doc.name} · <span className="tinyBadge">{doc.status}</span>{doc.expires_at ? " · expires " + dOnly(doc.expires_at) : ""} →</p>)}
     {(d.documents || []).length === 0 && <p className="muted">No documents on file.</p>}
     <div style={{ marginTop: 14 }}><FeedPanel type="account" id={id} /></div>
     <CustomFieldsSection objectType="account" entityId={id} custom={a.custom} reload={load} />
@@ -2044,6 +2029,7 @@ function ToastHost() {
 }
 
 function App() {
+  useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key !== "Escape") return; const wraps = document.querySelectorAll(".modalWrap"); const last = wraps[wraps.length - 1] as HTMLElement | undefined; if (!last) return; const btns = Array.from(last.querySelectorAll("button")); const closer = btns.find(b => (b.textContent || "").includes("✕")); if (closer) (closer as HTMLButtonElement).click(); }; window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, []);
   const [user, setUser] = useState<any>(null); const [login, setLogin] = useState({ email: "", password: "" }); const [err, setErr] = useState("");
   const [nav, setNav] = useState<Nav>({ view: "queue" }); const [users, setUsers] = useState<any[]>([]); const [priceBook, setPriceBook] = useState<any[]>([]);
 const [sb, setSb] = useState(() => localStorage.getItem("wp_sb") || "open"); const [mOpen, setMOpen] = useState(false);
@@ -2145,7 +2131,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       {creating && <CreateLead users={users} done={(id: any) => { setCreating(false); setTick(t => t + 1); if (id) openLead(id); }} />}
       {palOpen && <CommandPalette close={() => setPalOpen(false)} go={go} openLead={openLead} newLead={() => setCreating(true)} />}
       {helpOpen && <div className="modalWrap" onClick={() => setHelpOpen(false)}><div className="card" style={{ maxWidth: 430, margin: "10vh auto" }} onClick={e => e.stopPropagation()}><h3 style={{ marginTop: 0 }}>Keyboard shortcuts</h3><table><tbody>{[["⌘K or /", "Command palette — search + jump"], ["N", "New lead"], ["G then M / D / P / L / A / R / S / B", "Go to My Day / Dashboard / Pulse / Leads / Approvals / Reports / Settings / Billing"], ["?", "This help"], ["Esc", "Close dialogs"]].map(([k, v]) => <tr key={k}><td style={{ whiteSpace: "nowrap" }}><span className="kbd">{k}</span></td><td>{v}</td></tr>)}</tbody></table></div></div>}
-      {leadId && <LeadDetail id={leadId} users={users} priceBook={priceBook} close={() => setLeadId(null)} refresh={() => setTick(t => t + 1)} openJob={(jid: string) => { setLeadId(null); setJobOpen(jid); }} />}
+      {leadId && <LeadDetail id={leadId} users={users} priceBook={priceBook} close={() => setLeadId(null)} refresh={() => setTick(t => t + 1)} openJob={(jid: string) => { setLeadId(null); setJobOpen(jid); }} openApprovals={() => { setLeadId(null); go({ view: "approvals" }); }} />}
     </main></div></div>);
 }
 function BookingPage({ slug }: any) {

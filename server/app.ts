@@ -1,6 +1,6 @@
 // Workpile — API application (spec §5 state machine, §6 approvals, §9 proposals, §14 public API, §14.5 handoffs, §25 Gregory P0s)
 import express from "express";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, createHmac, timingSafeEqual } from "node:crypto";
 import { db, uid, now, hashPassword, verifyPassword, apiKeyHash, logEvent, audit, withTx } from "./db.ts";
 import { triageLead, packetCheck, demandGap, demandPool, injectionScan } from "./agents.ts";
 import { metrics, morningBrief } from "./metrics.ts";
@@ -477,16 +477,20 @@ app.post("/api/tasks/:id/escalate", requireAuth, (req: any, res) => { db.prepare
 
 // metrics / brief / demand
 app.get("/api/onboarding", requireAuth, (req: any, res: any) => {
-    const w = req.user.workspace_id; const wrow = db.prepare("SELECT name, vertical FROM workspaces WHERE id=?").get(w) as any; const c = (sql: string) => (db.prepare(sql).get(w) as any).c;
-    const svc = c("SELECT COUNT(*) c FROM services WHERE workspace_id=?") + c("SELECT COUNT(*) c FROM price_book_items WHERE workspace_id=?");
+    const w = req.user.workspace_id; const wrow = db.prepare("SELECT name, vertical FROM workspaces WHERE id=?").get(w) as any; const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(w, ...p) as any).c;
+    const svc = c("SELECT COUNT(*) c FROM services WHERE workspace_id=?");
+    const pricing = c("SELECT COUNT(*) c FROM price_book_items WHERE workspace_id=? AND standard_price > 0");
     const steps = [
       { key: "profile", label: "Name your business + pick your trade", hint: "Vertical packs pre-load your services and fields.", done: !!(wrow?.name && wrow?.vertical), view: "settings" },
-      { key: "services", label: "Add your services & prices", hint: "Proposals price themselves from your price book.", done: svc > 0, view: "settings" },
-      { key: "team", label: "Invite your team", hint: "Owners approve; the crew works the queue.", done: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1, view: "settings" },
+      { key: "services", label: "Set up your service catalog", hint: "The services you sell, in your words.", done: svc > 0, view: "settings" },
+      { key: "pricing", label: "Price the price book", hint: "At least one real price — proposals price themselves from it.", done: pricing > 0, view: "settings" },
+      { key: "team", label: "Invite your team", hint: "Active teammates — owners approve, the crew works the queue.", done: c("SELECT COUNT(*) c FROM users WHERE workspace_id=? AND active=1") > 1, view: "settings" },
       { key: "first_lead", label: "Bring in your first lead", hint: "Import the backlog, paste a CSV, or add one by hand.", done: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, view: "leads" },
-      { key: "first_proposal", label: "Build your first proposal", hint: "From a lead — no re-typing; prices come from the book.", done: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, view: "leads" },
-      { key: "first_send", label: "Send it for signature", hint: "Approval first when policy asks; the customer signs by link.", done: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=? AND sent_at IS NOT NULL") > 0, view: "queue" },
-      { key: "first_won", label: "Win it → it becomes a job", hint: "Signed proposals convert to scheduled, tracked jobs.", done: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, view: "jobs" },
+      { key: "first_proposal", label: "Build a usable proposal", hint: "Beyond a draft — priced and ready to send.", done: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=? AND (sent_at IS NOT NULL OR status<>'draft')") > 0, view: "leads" },
+      { key: "first_send", label: "Deliver it — verified", hint: "A real provider delivery. Test mode doesn't count.", done: c("SELECT COUNT(*) c FROM proposals p WHERE p.workspace_id=? AND p.sent_at IS NOT NULL AND EXISTS (SELECT 1 FROM messages_outbox m WHERE m.lead_id=p.lead_id AND m.status IN ('sent','delivered') AND m.created_at>=p.sent_at)") > 0, view: "queue" },
+      { key: "first_won", label: "Win it → it becomes a job", hint: "A genuine Won conversion with its job created.", done: c("SELECT COUNT(*) c FROM jobs j JOIN leads l ON l.id=j.lead_id WHERE j.workspace_id=? AND l.state='WON'") > 0, view: "jobs" },
+      { key: "template", label: "Customize your proposal template", hint: "Your company header, terms and footer on every proposal.", done: c("SELECT COUNT(*) c FROM workspaces WHERE id=? AND pt_company IS NOT NULL AND pt_company<>''") > 0, view: "settings" },
+      { key: "booking", label: "Turn on the public booking page", hint: "Customers book site visits without calling.", done: c("SELECT COUNT(*) c FROM workspaces WHERE id=? AND booking_enabled=1") > 0, view: "settings" },
     ];
     res.json({ steps, done_count: steps.filter(x => x.done).length, total: steps.length, complete: steps.every(x => x.done) });
   });
@@ -742,8 +746,9 @@ app.get("/api/jobs/:id", requireAuth, (req: any, res) => {
   const documents = db.prepare("SELECT * FROM documents WHERE job_id=? OR lead_id=?").all(j.id, j.lead_id);
   const reports = db.prepare("SELECT f.*, COALESCE(w.name,u.name) manager FROM field_reports f LEFT JOIN workers w ON w.id=f.worker_id LEFT JOIN users u ON u.id=f.manager_id WHERE f.lead_id=? ORDER BY f.report_date DESC LIMIT 20").all(j.lead_id);
   const changeOrders = db.prepare("SELECT * FROM change_orders WHERE job_id=? OR lead_id=? ORDER BY created_at DESC").all(j.id, j.lead_id);
-  const origin = db.prepare("SELECT l.id lead_id, l.service_requested, l.state lead_state, p.id proposal_id, p.total proposal_total, p.status proposal_status FROM leads l LEFT JOIN proposals p ON p.lead_id=l.id AND p.status='signed' WHERE l.id=?").get(j.lead_id) as any;
-  res.json({ job: jobView(j), labor, schedule, documents, field_reports: reports, change_orders: changeOrders, origin: origin || { lead_id: j.lead_id } });
+  const origin = db.prepare("SELECT l.id lead_id, l.service_requested, l.state lead_state, p.id proposal_id, p.total proposal_total, p.status proposal_status FROM leads l LEFT JOIN proposals p ON p.id=? WHERE l.id=?").get(j.proposal_id || "", j.lead_id) as any;
+  const originRow = (origin && origin.proposal_id) ? origin : db.prepare("SELECT l.id lead_id, l.service_requested, l.state lead_state, p.id proposal_id, p.total proposal_total, p.status proposal_status FROM leads l LEFT JOIN proposals p ON p.lead_id=l.id AND p.status='signed' WHERE l.id=? ORDER BY p.version DESC, p.created_at DESC LIMIT 1").get(j.lead_id) as any;
+  res.json({ job: jobView(j), labor, schedule, documents, field_reports: reports, change_orders: changeOrders, origin: originRow || { lead_id: j.lead_id } });
 });
 app.post("/api/jobs/:id/stage", requireAuth, (req: any, res) => {
   const j = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
@@ -1221,7 +1226,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v14", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
+app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v15", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {
   const target = db.prepare("SELECT * FROM users WHERE id=?").get(String(req.body?.user_id || "")) as any;
@@ -1398,8 +1403,14 @@ app.post("/api/sync/run", requireAuth, async (req: any, res) => {
   const to = req.body.to || new Date().toISOString();
   const base = `${req.protocol}://${req.get("host")}`;
   const url = ws.source_api_url || `${base}/demo-source/leads`;
+  if (ws.source_api_url) { // SSRF guard: workspace-supplied URLs are fetched server-side with a credential header
+    let u: URL; try { u = new URL(ws.source_api_url); } catch { return res.status(422).json({ error: { code: "bad_source_url" } }); }
+    const host = u.hostname.toLowerCase();
+    const priv = host === "localhost" || host.endsWith(".local") || /^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host) || host === "::1" || /^169\.254\./.test(host);
+    if (!["http:", "https:"].includes(u.protocol) || priv) return res.status(422).json({ error: { code: "blocked_source_url", message: "Source URL must be a public http(s) address — private/loopback hosts are blocked." } });
+  }
   let rows: any[] = [];
-  try { const r = await fetch(`${url}${url.includes("?") ? "&" : "?"}from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, { headers: ws.source_api_key ? { Authorization: `Bearer ${ws.source_api_key}` } : {} }); if (!r.ok) return res.status(502).json({ error: { code: "source_error", message: `Source returned ${r.status}` } }); rows = await r.json(); if (!Array.isArray(rows)) return res.status(502).json({ error: { code: "source_shape", message: "Source must return a JSON array of leads." } }); }
+  try { const r = await fetch(`${url}${url.includes("?") ? "&" : "?"}from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, { headers: ws.source_api_key ? { Authorization: `Bearer ${ws.source_api_key}` } : {}, signal: AbortSignal.timeout(8000), redirect: "error" }); if (!r.ok) return res.status(502).json({ error: { code: "source_error", message: `Source returned ${r.status}` } }); rows = await r.json(); if (!Array.isArray(rows)) return res.status(502).json({ error: { code: "source_shape", message: "Source must return a JSON array of leads." } }); }
   catch (e: any) { return res.status(502).json({ error: { code: "source_unreachable", message: String(e.message || e) } }); }
   let created = 0, duplicates = 0, errors = 0;
   for (const row of rows) { try { const r = createLead(req.user.workspace_id, req.user.id, row); r.duplicate ? duplicates++ : created++; } catch { errors++; } }
@@ -1455,6 +1466,9 @@ app.post("/api/proposals/:id/send", requireAuth, async (req: any, res) => {
     ? `${ws.name}: your proposal ($${p.total}) is ready to review & sign: ${link}`
     : `Hi ${v.contact_name || "there"},\n\nYour proposal from ${ws.name} is ready — total $${p.total}.\nReview and sign securely here: ${link}\n\nQuestions? Just reply to this email.`;
   const r: any = await queueAndDeliver(req.user.workspace_id, { lead_id: l.id, channel, to, subject: `Your proposal from ${ws.name} — $${p.total}`, body });
+  // Business integrity: a proposal is "sent" only when a delivery actually happened (or test mode, labeled).
+  if (r.status === "suppressed") return res.status(422).json({ error: { code: "suppressed", message: `This ${channel} address is on the workspace suppression list — the proposal was NOT sent. Remove the suppression in Automations if this is a mistake.` } });
+  if (!["sent", "delivered", "test_mode"].includes(r.status)) return res.status(502).json({ error: { code: "delivery_failed", message: `Delivery failed (status: ${r.status}) — the proposal was NOT marked sent and no follow-ups were scheduled. Fix the channel and retry.` } });
   db.prepare("UPDATE proposals SET status='sent', sent_at=? WHERE id=?").run(now(), p.id);
   emitOutbox(req.user.workspace_id, "proposal.sent", p.id, { lead_id: l.id, total: p.total, channel });
   if (["NEW", "WORKING", "QUALIFIED", "PROPOSAL"].includes(l.state)) setStage(req.user.workspace_id, req.user.id, l, "SENT");
@@ -1625,13 +1639,14 @@ app.post("/api/users", requireAuth, (req: any, res) => { if (!["OWNER", "ADMIN"]
 app.patch("/api/users/:id", requireAuth, (req: any, res) => { if (!["OWNER", "ADMIN"].includes(req.user.role)) return res.status(403).json({ error: { code: "owner_or_admin" } }); db.prepare("UPDATE users SET role=COALESCE(?,role), approval_limit=COALESCE(?,approval_limit), active=COALESCE(?,active) WHERE id=? AND workspace_id=?").run(req.body.role ?? null, req.body.approval_limit ?? null, req.body.active === undefined ? null : (req.body.active ? 1 : 0), req.params.id, req.user.workspace_id); res.json({ ok: true }); });
 
 // Workspace settings
-app.get("/api/settings", requireAuth, (req: any, res) => { const ws: any = db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.user.workspace_id); if (ws) ws.booking_slug = ensureBookingSlug(ws); const counts = db.prepare("SELECT (SELECT COUNT(*) FROM leads WHERE workspace_id=?) leads, (SELECT COUNT(*) FROM users WHERE workspace_id=?) users, (SELECT COUNT(*) FROM price_book_items WHERE workspace_id=?) price_items").get(req.user.workspace_id, req.user.workspace_id, req.user.workspace_id); res.json({ workspace: ws, counts }); });
+app.get("/api/settings", requireAuth, (req: any, res) => { const row: any = db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.user.workspace_id); const WS_DTO = ["id","name","vertical","timezone","tz","plan","logo_data","agent_level","autonomy_level","quiet_start","quiet_end","deposit_pct","trial_ends_at","booking_slug","from_name","from_email","approval_policy","approval_threshold","created_at","last_sync_at","auto_score","auto_assign","auto_dedupe","auto_reactivate","followup_enabled","cadence_paused"]; const ws: any = {}; if (row) { for (const k of WS_DTO) if (row[k] !== undefined) ws[k] = row[k]; ws.booking_slug = ensureBookingSlug(row); ws.has_source_api_url = !!row.source_api_url; try { ws.source_api_host = row.source_api_url ? new URL(row.source_api_url).host : null; } catch { ws.source_api_host = null; } } const counts = db.prepare("SELECT (SELECT COUNT(*) FROM leads WHERE workspace_id=?) leads, (SELECT COUNT(*) FROM users WHERE workspace_id=?) users, (SELECT COUNT(*) FROM price_book_items WHERE workspace_id=?) price_items").get(req.user.workspace_id, req.user.workspace_id, req.user.workspace_id); res.json({ workspace: ws, counts }); });
 app.patch("/api/settings", requireAuth, needPerm("can_settings"), (req: any, res) => { if (req.user.role !== "OWNER") return res.status(403).json({ error: { code: "owner_only" } }); const b = req.body; db.prepare("UPDATE workspaces SET name=COALESCE(?,name), vertical=COALESCE(?,vertical), timezone=COALESCE(?,timezone), deposit_pct=COALESCE(?,deposit_pct), autonomy_level=COALESCE(?,autonomy_level), source_api_url=COALESCE(?,source_api_url), source_api_key=COALESCE(?,source_api_key), sync_enabled=COALESCE(?,sync_enabled), slack_webhook_url=COALESCE(?,slack_webhook_url), from_name=COALESCE(?,from_name), from_email=COALESCE(?,from_email), followup_enabled=COALESCE(?,followup_enabled), followup_steps=COALESCE(?,followup_steps), review_url=COALESCE(?,review_url), review_on_won=COALESCE(?,review_on_won), booking_enabled=COALESCE(?,booking_enabled) WHERE id=?").run(b.name ?? null, b.vertical ?? null, b.timezone ?? null, b.deposit_pct ?? null, b.autonomy_level ?? null, b.source_api_url ?? null, b.source_api_key ?? null, b.sync_enabled === undefined ? null : (b.sync_enabled ? 1 : 0), b.slack_webhook_url ?? null, b.from_name ?? null, b.from_email ?? null, b.followup_enabled === undefined ? null : (b.followup_enabled ? 1 : 0), b.followup_steps === undefined ? null : JSON.stringify(b.followup_steps), b.review_url ?? null, b.review_on_won === undefined ? null : (b.review_on_won ? 1 : 0), b.booking_enabled === undefined ? null : (b.booking_enabled ? 1 : 0), req.user.workspace_id); if (b.approval_policy !== undefined || b.approval_threshold !== undefined || b.business_hours !== undefined) db.prepare("UPDATE workspaces SET approval_policy=COALESCE(?,approval_policy), approval_threshold=COALESCE(?,approval_threshold), business_hours=COALESCE(?,business_hours) WHERE id=?").run(b.approval_policy ?? null, b.approval_threshold ?? null, b.business_hours ? JSON.stringify(b.business_hours) : null, req.user.workspace_id); res.json(db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.user.workspace_id)); });
 
 // API keys management
-app.get("/api/api-keys", requireAuth, (req: any, res) => res.json(db.prepare("SELECT id,label,scopes,last_used_at,revoked_at FROM api_keys WHERE workspace_id=?").all(req.user.workspace_id)));
-app.post("/api/api-keys", requireAuth, (req: any, res) => { const raw = "lf_" + randomBytes(18).toString("hex"); const id = uid("key"); db.prepare("INSERT INTO api_keys (id,workspace_id,label,hashed_key,scopes) VALUES (?,?,?,?,?)").run(id, req.user.workspace_id, req.body.label || "Integration key", apiKeyHash(raw), req.body.scopes || "leads:write outcomes:read projects:read"); res.status(201).json({ id, key: raw, note: "Shown once — store it in your system's secret manager." }); });
-app.delete("/api/api-keys/:id", requireAuth, (req: any, res) => { db.prepare("UPDATE api_keys SET revoked_at=? WHERE id=? AND workspace_id=?").run(now(), req.params.id, req.user.workspace_id); res.json({ ok: true }); });
+const API_KEY_SCOPES = ["leads:read", "leads:write", "outcomes:read", "projects:read", "jobs:read", "jobs:write"];
+app.get("/api/api-keys", requireAuth, (req: any, res) => { if (!permsOf(req.user).can_settings) return res.status(403).json({ error: { code: "forbidden", message: "API keys are managed by workspace admins (can_settings)." } }); res.json(db.prepare("SELECT id,label,scopes,last_used_at,revoked_at,created_at FROM api_keys WHERE workspace_id=?").all(req.user.workspace_id)); });
+app.post("/api/api-keys", requireAuth, (req: any, res) => { if (!permsOf(req.user).can_settings) return res.status(403).json({ error: { code: "forbidden", message: "API keys are managed by workspace admins (can_settings)." } }); const asked = String(req.body.scopes || "leads:write outcomes:read projects:read").split(/\s+/).filter(Boolean); const bad = asked.filter(x => !API_KEY_SCOPES.includes(x)); if (bad.length) return res.status(422).json({ error: { code: "bad_scopes", message: `Unknown scopes: ${bad.join(", ")}. Allowed: ${API_KEY_SCOPES.join(", ")}` } }); const raw = "lf_" + randomBytes(18).toString("hex"); const id = uid("key"); db.prepare("INSERT INTO api_keys (id,workspace_id,label,hashed_key,scopes,created_at) VALUES (?,?,?,?,?,?)").run(id, req.user.workspace_id, req.body.label || "Integration key", apiKeyHash(raw), asked.join(" "), now()); audit(req.user.workspace_id, req.user.id, "apikey.created", "api_key", id, { label: req.body.label || "Integration key", scopes: asked }); res.status(201).json({ id, key: raw, note: "Shown once — store it in your system's secret manager." }); });
+app.delete("/api/api-keys/:id", requireAuth, (req: any, res) => { if (!permsOf(req.user).can_settings) return res.status(403).json({ error: { code: "forbidden", message: "API keys are managed by workspace admins (can_settings)." } }); db.prepare("UPDATE api_keys SET revoked_at=? WHERE id=? AND workspace_id=?").run(now(), req.params.id, req.user.workspace_id); audit(req.user.workspace_id, req.user.id, "apikey.revoked", "api_key", req.params.id, {}); res.json({ ok: true }); });
 app.get("/api/imports", requireAuth, (req: any, res) => res.json(db.prepare("SELECT * FROM imports WHERE workspace_id=? ORDER BY created_at DESC").all(req.user.workspace_id)));
 
 // Dashboard aggregate (§10 + drill-down data)
@@ -1827,6 +1842,17 @@ app.post("/api/leads/bulk", requireAuth, (req: any, res) => {
   res.json(results);
 });
 app.post("/webhooks/twilio/inbound", express.urlencoded({ extended: false }), (req: any, res) => {
+  // P0: never trust an unsigned webhook. No auth token configured = endpoint disabled.
+  const authToken = process.env.TWILIO_AUTH_TOKEN || "";
+  if (!authToken) return res.status(403).type("text/xml").send("<Response/>");
+  try {
+    const sig = String(req.get("x-twilio-signature") || "");
+    const url = `${req.protocol}://${req.get("host")}${req.originalUrl}`;
+    const params = Object.keys(req.body || {}).sort().map(k => k + req.body[k]).join("");
+    const expected = createHmac("sha1", authToken).update(url + params).digest("base64");
+    const a = Buffer.from(sig), b = Buffer.from(expected);
+    if (a.length !== b.length || !timingSafeEqual(a, b)) return res.status(403).type("text/xml").send("<Response/>");
+  } catch { return res.status(403).type("text/xml").send("<Response/>"); }
   const from = String(req.body.From || ""); const body = String(req.body.Body || "");
   const digits = from.replace(/\D/g, "").slice(-10);
   if (!digits || !body) return res.type("text/xml").send("<Response/>");

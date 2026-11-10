@@ -27,7 +27,7 @@ const A = { Cookie: ck };
 
 test("onboarding: fresh workspace starts incomplete; progress flips steps", async () => {
   let ob = (await J("/api/onboarding", {}, { Cookie: ck })).j;
-  assert.equal(ob.total, 7); assert.equal(ob.complete, false);
+  assert.equal(ob.total, 10); assert.equal(ob.complete, false);
   assert.equal(ob.steps.find((x: any) => x.key === "profile").done, true); // name + vertical seeded
   assert.equal(ob.steps.find((x: any) => x.key === "first_lead").done, false);
   const lead = await J("/api/leads", { method: "POST", body: { contact_name: "Pat", service_requested: "Mold Remediation", est_value: 900 } }, { Cookie: ck });

@@ -83,6 +83,14 @@ export async function processFollowups(baseUrl = ""): Promise<{ sent: number; st
         stopped++;
         continue;
       }
+      if (!delivered || !["sent", "delivered", "test_mode"].includes(delivered.status)) {
+        // Delivery failed: do NOT advance the sequence. Retry in 6h; stop after 3 failures.
+        const fails = (e.fail_count || 0) + 1;
+        if (fails >= 3) { db.prepare("UPDATE followup_enrollments SET status='stopped', stop_reason='delivery_failed', fail_count=?, updated_at=? WHERE id=?").run(fails, now(), e.id); stopped++; }
+        else db.prepare("UPDATE followup_enrollments SET fail_count=?, next_due_at=?, updated_at=? WHERE id=?").run(fails, new Date(Date.now() + 6 * 3600000).toISOString(), now(), e.id);
+        continue;
+      }
+      if (e.fail_count) db.prepare("UPDATE followup_enrollments SET fail_count=0 WHERE id=?").run(e.id);
       sent++;
     }
     const next = steps[e.step_idx + 1];

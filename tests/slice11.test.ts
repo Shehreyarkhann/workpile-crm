@@ -47,7 +47,13 @@ test("two-way texting: a customer SMS reply threads onto the lead and stops the 
   const G = (globalThis as any).__; const { uid, now } = dbm;
   dbm.db.prepare("INSERT INTO followup_enrollments (id,workspace_id,lead_id,proposal_id,step_idx,next_due_at,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)").run(uid("fup"), G.ws, ids[0], uid("prop"), 0, now(), "active", now(), now());
   const form = new URLSearchParams({ From: "+1 (516) 555-0444", Body: "Yes — Thursday morning works for the visit." });
-  const r = await fetch(`http://localhost:${port}/webhooks/twilio/inbound`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Connection: "close" }, body: form.toString() });
+  // v15: the webhook verifies Twilio signatures — sign like Twilio does
+  process.env.TWILIO_AUTH_TOKEN = "slice11-token";
+  const { createHmac } = await import("node:crypto");
+  const sigParams = "Body" + "Yes — Thursday morning works for the visit." + "From" + "+1 (516) 555-0444";
+  const sig = createHmac("sha1", "slice11-token").update(`http://localhost:${port}/webhooks/twilio/inbound` + sigParams).digest("base64");
+  const r = await fetch(`http://localhost:${port}/webhooks/twilio/inbound`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Connection: "close", "x-twilio-signature": sig }, body: form.toString() });
+  delete process.env.TWILIO_AUTH_TOKEN;
   assert.equal(r.status, 200); await r.text();
   // the reply must match the lead whose phone texted (ids[0] owns +15165550444)
   const msgs = await J(`/api/leads/${ids[0]}/messages`, {}, { Cookie: cookie });

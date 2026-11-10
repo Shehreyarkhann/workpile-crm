@@ -1,4 +1,6 @@
 # UX Acceptance — criteria, evidence, and the usability test protocol
+
+**Verification status (honest labels, updated v15):** implemented = code shipped; auto-tested = covered by the node test suite; visually inspected = seen in a screenshot set in this repo (docs/screenshots-v21, docs/screenshots-v22); user-verified = exercised by a real unfamiliar user — **nothing is user-verified yet**; the first cohort is the G.C. pilot team (from Nov 16, 2026). Every criterion below is implemented + auto-tested (where testable) + visually inspected; none is user-verified.
 The brief's 10 criteria, each with its current evidence (v14) and how it gets re-checked.
 
 | Criterion | Evidence in the product | Re-check |

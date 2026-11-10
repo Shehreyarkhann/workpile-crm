@@ -100,3 +100,24 @@
 | §4 connectivity | Job breadcrumb Lead → signed Proposal → Job (GET /api/jobs/:id origin) | tests/ux.test.ts; screenshots-v21/03 |
 | §5 acceptance | One toast pattern; Esc closes modals; focus-visible; UX-ACCEPTANCE.md w/ 5 moderated test scenarios | docs/UX-ACCEPTANCE.md, docs/UX-BLUEPRINT.md |
 Remaining by design: moderated testing with unfamiliar users (first cohort = the G.C. pilot team from Nov 16); formal component library deferred (§25).
+
+## V15 — repository-audit close-out (Nov 10, second audit)
+| Finding | Verdict on re-check | Fix |
+|---|---|---|
+| Duplicate onboarding (GettingStarted + OnboardingCard) | REAL — both rendered on Home | GettingStarted removed; single engine at /api/onboarding, 10 steps, stricter semantics (pricing needs a priced item; team = active users; first_send requires a VERIFIED provider delivery — test mode never counts; first_won = WON lead with its job) |
+| Next Step buttons only navigate | REAL for most kinds | Bar now executes: Log the call (POST /contact, sets first response), Send the nudge, Create follow-up task, Set next step, inline Assign-owner select, Open the approval; job open/create already executed |
+| 360 totals double-count versions | REAL | Proposed = current version per lead only; added signed, net collected (collected − refunds), outstanding (signed − net), with printed definitions |
+| 360 rows static | REAL | Proposals/payments/documents rows click through to their lead/job |
+| Job origin inferred, unordered | PARTLY STALE — jobs.proposal_id already existed and was written at creation; the v14 breadcrumb query ignored it | Breadcrumb now reads the stored proposal_id (fallback: latest signed, version-ordered); proposal segment clickable |
+| API keys unguarded | REAL P0 | can_settings required on list/create/revoke; scope allowlist validated; create/revoke audited |
+| Twilio webhook unsigned | REAL P0 | Endpoint disabled without TWILIO_AUTH_TOKEN; HMAC-SHA1 signature verified (timing-safe) when configured |
+| Settings returns broad record | REAL in effect — workspaces carries source_api_key | GET /api/settings returns a field whitelist; the sync key never leaves the server; source URL exposed as host only |
+| Proposal marked sent on failed delivery | REAL | Send commits only on sent/delivered/test_mode; suppressed → 422, provider failure → 502, no state change, no cadence enrollment |
+| Cadence advances on failed delivery | REAL | Failed delivery: no advance, 6h retry, stop after 3 failures (fail_count) |
+| Reactivation task duplication | REAL | Sweep skips leads with an open reactivation task |
+| Job claiming not atomic | REAL (single-worker today) | Claim is a guarded UPDATE (status='queued' must match) |
+| Sync URL SSRF | REAL | Custom source URLs: http(s) only, private/loopback/link-local blocked, redirect refused, 8s timeout |
+| Screenshots-v21 not in repo | REAL | docs/screenshots-v21 + v22 committed; acceptance doc carries verification-status labels |
+| Outbox has no consumers | PARTLY — webhooks fire via integrations emitEvent at write time; the outbox is the durable event record | Left as-is deliberately: wiring the relay to webhooks would double-deliver events that already emit directly |
+| LLM agent orchestrator / PG cutover / monolith split | REAL but phased by design | Agent needs the founder's LLM provider + keys decision; PG remains the host cutover item; the audit itself prescribes incremental (not big-bang) refactor |
+Tests: 165/165 (tests/v15.test.ts, 7 tests; slice11 Twilio test now signs its posts; ux onboarding total updated to 10).

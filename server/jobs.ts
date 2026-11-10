@@ -14,7 +14,8 @@ export async function processJobs(handlers: Record<string, (payload: any) => Pro
   let done = 0, failed = 0, dead = 0;
   for (const j of due) {
     const handler = handlers[j.kind];
-    db.prepare("UPDATE background_jobs SET status='running', attempts=attempts+1, updated_at=? WHERE id=?").run(now(), j.id);
+    const claim = db.prepare("UPDATE background_jobs SET status='running', attempts=attempts+1, updated_at=? WHERE id=? AND status='queued'").run(now(), j.id) as any;
+    if (!claim.changes) continue; // claimed by another worker tick — never double-run
     if (!handler) { db.prepare("UPDATE background_jobs SET status='dead', last_error='no handler registered', updated_at=? WHERE id=?").run(now(), j.id); dead++; continue; }
     try {
       await handler(JSON.parse(j.payload || "{}"));
