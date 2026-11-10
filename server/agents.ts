@@ -91,8 +91,23 @@ export function packetCheck(lead: any, proposal: any | null): { complete: boolea
 }
 
 // §11 — Demand Gap: cluster unserviceable / not-a-fit demand by requested service text
-export function demandGap(leads: any[]): any[] {
-  const pool = leads.filter(l => ["UNSERVICEABLE", "NA"].includes(l.state) || l.lost_reason === "NOT_A_FIT" || l.state === "LOST" && l.lost_reason === "NOT_A_FIT");
+// Demand Gap counts ONLY genuine unmet demand: a request we had to turn away
+// because we don't offer the service. Closures for price/budget, no-response,
+// out-of-coverage-area, competitor or timing reasons are NOT unmet demand and
+// are excluded, as are requests for services already in the catalog.
+const DG_EXCLUDED_REASONS = [/NO_RESPONSE/, /PRICE/, /BUDGET/, /OUT_OF_AREA/, /COVERAGE/, /COMPETITOR/, /TIMING/, /SPAM/, /DUPLICATE/, /GHOST/, /UNRESPONSIVE/];
+export function demandPool(leads: any[], catalogNames?: string[]): any[] {
+  const cat = catalogNames ? new Set(catalogNames.map(x => x.trim().toLowerCase())) : null;
+  return leads.filter(l => {
+    if (!["LOST", "UNSERVICEABLE"].includes(l.state)) return false;
+    const r = (l.lost_reason || "").toUpperCase();
+    if (DG_EXCLUDED_REASONS.some(p => p.test(r))) return false;
+    if (cat && cat.has((l.service_requested || "").trim().toLowerCase())) return false;
+    return true;
+  });
+}
+export function demandGap(leads: any[], catalogNames?: string[]): any[] {
+  const pool = demandPool(leads, catalogNames);
   const byService = new Map<string, any[]>();
   for (const l of pool) {
     const key = (l.service_requested || "Unspecified").trim();

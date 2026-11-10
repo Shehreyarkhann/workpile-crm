@@ -272,14 +272,36 @@ function Imports() {
 
 function Demand({ openLead }: any) {
   const [rows, setRows] = useState<any[]>([]);
+  const [sel, setSel] = useState<any>(null); const [leads, setLeads] = useState<any[]>([]);
+  const [q, setQ] = useState(""); const [stF, setStF] = useState(""); const [sort, setSort] = useState("new");
   useEffect(() => { api("/api/demand-gap").then(setRows).catch(() => {}); }, []);
+  useEffect(() => { if (sel) api("/api/demand-gap/leads?service=" + encodeURIComponent(sel.service)).then(setLeads).catch(() => setLeads([])); }, [sel?.service]);
   const recColor = (r: string) => r === "Launch" ? { background: "#dcfce7", color: "#166534" } : r === "Partner" ? { background: "#fef9c3", color: "#854d0e" } : {};
-  return (<div><h2 className="pt">Demand Gap</h2><p className="sub">Services customers keep asking for that you don't sell yet — clustered from lost & unserviceable leads. Estimates are labeled estimates, never presented as booked revenue.</p>
-    {rows.map((r, i) => <div className="card" key={i}><div className="rowflex" style={{ justifyContent: "space-between" }}><b style={{ fontSize: 16 }}>{r.service}</b><span style={{ display: "inline-flex", gap: 6 }}><span className="tinyBadge" style={recColor(r.recommendation)}>{r.recommendation}</span><span className="badge b-READY_FOR_APPROVAL">Opportunity score {r.opportunity_score}</span></span></div>
+  if (sel) {
+    let view = leads.filter(l => (!stF || l.state === stF) && (!q || JSON.stringify(l).toLowerCase().includes(q.toLowerCase())));
+    view = [...view].sort((a, b) => sort === "value" ? (b.est_value || 0) - (a.est_value || 0) : String(b.created_at).localeCompare(String(a.created_at)));
+    return (<div><button className="btn ghost small" onClick={() => setSel(null)}>← All clusters</button>
+      <h2 className="pt" style={{ marginTop: 10 }}>{sel.service}</h2>
+      <p className="sub">{num(sel.lead_count)} customers asked for this and were turned away · est. {money(sel.est_revenue)} (estimate · {sel.est_basis}) · <span className="tinyBadge" style={recColor(sel.recommendation)}>{sel.recommendation}</span> · Opportunity score {sel.opportunity_score}</p>
+      <div className="rowflex" style={{ marginBottom: 10 }}>
+        <input type="search" style={{ flex: 1, minWidth: 200 }} placeholder="Filter by name, phone, email, location…" value={q} onChange={e => setQ(e.target.value)} />
+        <select style={{ width: 180 }} value={stF} onChange={e => setStF(e.target.value)}><option value="">All closure types</option><option value="UNSERVICEABLE">Unserviceable</option><option value="LOST">Lost</option></select>
+        <select style={{ width: 170 }} value={sort} onChange={e => setSort(e.target.value)}><option value="new">Newest first</option><option value="value">Highest value</option></select>
+        <span className="muted">{view.length} of {leads.length} shown</span>
+      </div>
+      <div className="card" style={{ padding: "4px 14px" }}><table><thead><tr><th>Contact</th><th>Phone</th><th>Email</th><th>Location</th><th>Asked</th><th>Value</th><th>Closed as</th><th>Reason</th></tr></thead><tbody>
+        {view.map((l: any) => <tr className="clickable" key={l.id} onClick={() => openLead(l.id)}><td><b>{l.contact_name}</b></td><td>{l.contact_phone || "—"}</td><td>{l.contact_email || "—"}</td><td>{l.location || "—"}</td><td>{dOnly(l.created_at)}</td><td>{money(l.est_value)}</td><td><Badge s={l.state} /></td><td>{(l.lost_reason || "—").replaceAll("_", " ")}</td></tr>)}
+        {view.length === 0 && <tr><td colSpan={8} className="muted">No leads match these filters.</td></tr>}
+      </tbody></table></div>
+      <p className="muted">Click any row to open the full lead record.</p>
+    </div>);
+  }
+  return (<div><h2 className="pt">Demand Gap</h2><p className="sub">Services customers keep asking for that you don't sell yet — clustered from leads turned away because the service isn't offered. Price losses, no-responses, out-of-area and competitor losses are <b>not</b> counted here. Estimates are labeled estimates, never presented as booked revenue.</p>
+    {rows.map((r, i) => <div className="card clickable" key={i} onClick={() => setSel(r)} style={{ cursor: "pointer" }}><div className="rowflex" style={{ justifyContent: "space-between" }}><b style={{ fontSize: 16 }}>{r.service}</b><span style={{ display: "inline-flex", gap: 6 }}><span className="tinyBadge" style={recColor(r.recommendation)}>{r.recommendation}</span><span className="badge b-READY_FOR_APPROVAL">Opportunity score {r.opportunity_score}</span></span></div>
       <p className="muted" style={{ margin: "8px 0 4px" }}>{num(r.lead_count)} leads asked · est. {money(r.est_revenue)} turned away (estimate) · basis: {r.est_basis}</p>
       <p style={{ margin: "4px 0" }}>{r.recommendation === "Launch" ? "Enough repeated demand to price it, staff it, and add it to the catalog." : r.recommendation === "Partner" ? "Real demand, thin volume — refer it to a partner for a cut instead of staffing it." : "Watch it — demand exists but is too thin to act on yet."}</p>
-      {(r.sample_lead_ids || []).length > 0 && <p style={{ margin: "4px 0" }}><span className="muted">Sample requests:</span> {r.sample_lead_ids.slice(0, 5).map((id: string) => <button key={id} className="btn ghost small" style={{ marginRight: 6 }} onClick={() => openLead && openLead(id)}>Open lead</button>)}</p>}</div>)}
-    {rows.length === 0 && <div className="card">No unmet-demand clusters yet — lost/N-A leads will surface them here.</div>}
+      <p style={{ margin: "4px 0" }}><span className="muted">Click to see all {num(r.lead_count)} leads →</span></p></div>)}
+    {rows.length === 0 && <div className="card">No unmet-demand clusters yet — when customers ask for services you don't offer, they'll surface here.</div>}
   </div>);
 }
 
