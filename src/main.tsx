@@ -456,10 +456,19 @@ function CreateLead({ users, done }: any) {
 }
 
 function Reports() {
+  const [fc, setFc] = useState<any>(null);
+  useEffect(() => { api("/api/forecast").then(setFc).catch(() => {}); }, []);
   const [ds, setDs] = useState("by_owner"); const [rows, setRows] = useState<any[]>([]);
   useEffect(() => { api("/api/reports?dataset=" + ds).then(r => setRows(r.rows)).catch(() => {}); }, [ds]);
   const tot = rows.reduce((a, r) => ({ leads: a.leads + (r.leads || 0), won: a.won + (r.won || 0), lost: a.lost + (r.lost || 0), value: a.value + (r.value || 0), won_value: a.won_value + (r.won_value || 0) }), { leads: 0, won: 0, lost: 0, value: 0, won_value: 0 });
   return (<div><h2 className="pt">Reports</h2><p className="sub">Tabular reports over your live data — the Salesforce Reports equivalent, without the report-builder maze. Export anything to CSV.</p>
+    {fc && <><div className="kpis">
+      <div className="kpi"><div className="lab">🔮 Weighted forecast</div><div className="val">{money(fc.weighted_pipeline)}</div><div className="hint">of {money(fc.raw_pipeline)} raw pipeline, probability-weighted by stage</div></div>
+      <div className="kpi"><div className="lab">🎯 Win rate (30d)</div><div className="val">{fc.intel.win_rate_30d === null ? "—" : fc.intel.win_rate_30d + "%"}</div><div className="hint">{num(fc.intel.decided_30d)} decided in the last 30 days</div></div>
+      <div className="kpi"><div className="lab">🥇 Best source</div><div className="val" style={{ fontSize: 20 }}>{fc.intel.best_source?.name || "—"}</div><div className="hint">{fc.intel.best_source ? money(fc.intel.best_source.won_value) + " won all-time" : "No wins yet"}</div></div>
+      <div className="kpi"><div className="lab">🛑 Top loss reason</div><div className="val" style={{ fontSize: 20 }}>{fc.intel.top_lost_reason?.reason?.replaceAll("_", " ") || "—"}</div><div className="hint">{fc.intel.top_lost_reason ? num(fc.intel.top_lost_reason.count) + " losses in 30 days" : "No losses logged"}</div></div>
+    </div>
+    {fc.at_risk.length > 0 && <div className="card" style={{ marginBottom: 12 }}><h3 style={{ marginTop: 0 }}>⚠️ Proposals going cold</h3>{fc.at_risk.map((r: any) => <p key={r.lead_id} style={{ margin: "6px 0" }}><b>{r.contact_name}</b> <span className="muted">· {r.service_requested} · {money(r.total)} · waiting {r.days_waiting} days</span></p>)}<p className="muted">Sent 4+ days ago, still unsigned. The follow-up cadence is nudging; a human call beats a third email.</p></div>}</>}
     <div className="chips">{[["by_owner", "By owner"], ["by_service", "By service"], ["by_stage", "By stage"], ["by_source", "By source"], ["lost_reasons", "Lost reasons"]].map(([k, lab]) => <button key={k} className={`chip ${ds === k ? "on" : ""}`} onClick={() => setDs(k)}>{lab}</button>)}
       <a className="btn small" style={{ textDecoration: "none" }} href={`/api/reports/export?dataset=${ds}`}>⬇ Export CSV</a></div>
     <div className="card" style={{ padding: 6 }}><table><thead><tr><th>{ds.replaceAll("_", " ")}</th><th>Leads</th><th>Won</th><th>Lost</th>{ds === "by_source" && <th>Win rate</th>}<th>Pipeline value</th><th>Won value</th></tr></thead><tbody>

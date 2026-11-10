@@ -790,6 +790,7 @@ app.get("/api/integrations", requireAuth, (req: any, res) => {
     { id: "handoff", name: "Final Outcome Handoff", status: eps ? "connected" : "not_configured", detail: "Won → project package into their platform, ack-tracked; every final delivered." },
     { id: "quickbooks", name: "QuickBooks Online", status: process.env.QBO_CLIENT_ID ? "ready" : "not_configured", detail: "Won jobs become invoice drafts in QBO. Activates with Intuit app credentials; sync engine ships with the credentials." },
     { id: "booking", name: "Online Booking Page", status: ws.booking_enabled ? "connected" : "not_configured", detail: "Public page where customers book site visits — every booking lands as an owned lead with the visit scheduled." },
+    { id: "receptionist", name: "Speed-to-Lead (missed calls)", status: keys ? "connected" : "not_configured", detail: "Your phone system POSTs /v1/missed-call; Workpile creates the lead and texts the caller back in under a minute — the 3-minute rule, automated." },
   ] });
 });
 const OPENAPI_SPEC: any = { openapi: "3.0.0", info: { title: "Workpile API", version: "1.0.0", description: "Two-way integration API for Workpile. Base URL https://workpile.io — Bearer API key from Settings → Integrations." }, servers: [{ url: "https://workpile.io" }], paths: {
@@ -881,6 +882,35 @@ app.get("/api/reports/export", requireAuth, (req: any, res) => {
   res.type("text/csv").setHeader("Content-Disposition", `attachment; filename="workpile-${kind}.csv"`).send(csv);
 });
 
+// ---------- slice 13 (Tier 3): forecast, at-risk, win/loss intel, speed-to-lead ----------
+const STAGE_WEIGHTS: Record<string, number> = { NEW: 0.05, TRIAGED: 0.10, QUALIFYING: 0.20, QUALIFIED: 0.35, READY_FOR_APPROVAL: 0.50, APPROVED: 0.65, PROPOSAL_DRAFTED: 0.70, PROPOSAL_SENT: 0.80, IN_FOLLOW_UP: 0.85, ON_HOLD: 0.10 };
+app.get("/api/forecast", requireAuth, (req: any, res) => {
+  const ws = req.user.workspace_id;
+  const open = db.prepare("SELECT state, COUNT(*) c, COALESCE(SUM(est_value),0) v FROM leads WHERE workspace_id=? AND state NOT IN ('WON','LOST','NO_RESPONSE','UNSERVICEABLE','JUNK','DUPLICATE') GROUP BY state").all(ws) as any[];
+  const by_stage = open.map(r => ({ state: r.state, count: r.c, value: r.v, weight: STAGE_WEIGHTS[r.state] ?? 0.05, weighted: Math.round(r.v * (STAGE_WEIGHTS[r.state] ?? 0.05)) }));
+  const weighted_pipeline = by_stage.reduce((a, r) => a + r.weighted, 0);
+  const raw_pipeline = by_stage.reduce((a, r) => a + r.value, 0);
+  const at_risk = db.prepare(`SELECT l.id lead_id, c.name contact_name, l.service_requested, p.total, p.sent_at, CAST((julianday('now') - julianday(COALESCE(p.sent_at, p.created_at))) AS INTEGER) days_waiting FROM proposals p JOIN leads l ON l.id=p.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE p.workspace_id=? AND p.status='sent' AND l.state IN ('PROPOSAL_SENT','IN_FOLLOW_UP') AND julianday('now') - julianday(COALESCE(p.sent_at, p.created_at)) >= 4 ORDER BY days_waiting DESC LIMIT 8`).all(ws);
+  const since = new Date(Date.now() - 30 * 86400000).toISOString();
+  const decided = db.prepare("SELECT COUNT(*) c, SUM(CASE WHEN state='WON' THEN 1 ELSE 0 END) w FROM leads WHERE workspace_id=? AND state IN ('WON','LOST') AND updated_at>=?").get(ws, since) as any;
+  const topLost = db.prepare("SELECT COALESCE(lost_reason,'UNSPECIFIED') r, COUNT(*) c FROM leads WHERE workspace_id=? AND state IN ('LOST','NO_RESPONSE') AND updated_at>=? GROUP BY r ORDER BY c DESC LIMIT 1").get(ws, since) as any;
+  const bestSource = db.prepare("SELECT COALESCE(s.name,'Unknown') name, SUM(l.est_value) v FROM leads l LEFT JOIN sources s ON s.id=l.source_id WHERE l.workspace_id=? AND l.state='WON' GROUP BY name ORDER BY v DESC LIMIT 1").get(ws) as any;
+  res.json({ weighted_pipeline, raw_pipeline, by_stage, at_risk, intel: { win_rate_30d: decided.c ? Math.round(100 * (decided.w || 0) / decided.c) : null, decided_30d: decided.c, top_lost_reason: topLost ? { reason: topLost.r, count: topLost.c } : null, best_source: bestSource ? { name: bestSource.name, won_value: bestSource.v } : null } });
+});
+app.post("/v1/missed-call", requireApiKey(["leads:write"]), async (req: any, res) => {
+  const phone = String(req.body.phone || "");
+  if (!phone) return res.status(422).json({ error: { code: "phone_required" } });
+  const ws = req.workspace_id;
+  const digits = phone.replace(/\D/g, "").slice(-10);
+  const existing = db.prepare(`SELECT l.* FROM leads l JOIN contacts c ON c.id=l.contact_id WHERE l.workspace_id=? AND REPLACE(REPLACE(REPLACE(c.phone,'-',''),' ',''),'(','') LIKE ? AND l.state NOT IN ('WON','LOST','NO_RESPONSE','UNSERVICEABLE','JUNK','DUPLICATE') ORDER BY l.created_at DESC LIMIT 1`).get(ws, "%" + digits) as any;
+  let lead = existing, created = false;
+  if (!lead) { const r = createLead(ws, "missed-call", { contact: { name: req.body.name || "", phone, email: req.body.email || "" }, service_requested: req.body.service || "", message: "Missed call — auto text-back sent", source: "missed-call" }); lead = r.lead; created = true; }
+  const wsRow = db.prepare("SELECT name FROM workspaces WHERE id=?").get(ws) as any;
+  const msg = await queueAndDeliver(ws, { lead_id: lead.id, channel: "sms", to: phone, body: `Hi, this is ${wsRow.name} — sorry we missed your call. How can we help? Reply here and a real person picks it up.` });
+  logEvent(ws, lead.id, "missed-call", "speed_to_lead", null, null, { created, status: (msg as any).status });
+  notifyOwners(ws, "call.missed", "Missed call — text-back sent ⚡", `${phone} called; an instant text-back went out and the lead is in the pile.`, lead.id);
+  res.status(created ? 201 : 200).json({ lead_id: lead.id, created, text_back_status: (msg as any).status });
+});
 // ---------- slice 12 (Tier 2): online booking ----------
 function ensureBookingSlug(ws: any): string {
   if (ws.booking_slug) return ws.booking_slug;
