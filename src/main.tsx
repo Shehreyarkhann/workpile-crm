@@ -270,13 +270,15 @@ function Imports() {
   </div>);
 }
 
-function Demand() {
+function Demand({ openLead }: any) {
   const [rows, setRows] = useState<any[]>([]);
   useEffect(() => { api("/api/demand-gap").then(setRows).catch(() => {}); }, []);
+  const recColor = (r: string) => r === "Launch" ? { background: "#dcfce7", color: "#166534" } : r === "Partner" ? { background: "#fef9c3", color: "#854d0e" } : {};
   return (<div><h2 className="pt">Demand Gap</h2><p className="sub">Services customers keep asking for that you don't sell yet — clustered from lost & unserviceable leads. Estimates are labeled estimates, never presented as booked revenue.</p>
-    {rows.map((r, i) => <div className="card" key={i}><div className="rowflex" style={{ justifyContent: "space-between" }}><b style={{ fontSize: 16 }}>{r.service}</b><span className="badge b-READY_FOR_APPROVAL">Opportunity score {r.opportunity_score}</span></div>
-      <p className="muted">{num(r.lead_count)} leads asked · est. {money(r.estimated_monthly_value)}/mo (estimate) · trend {r.trend}</p>
-      <p>{(r.sample_requests || []).slice(0, 3).join(" · ")}</p></div>)}
+    {rows.map((r, i) => <div className="card" key={i}><div className="rowflex" style={{ justifyContent: "space-between" }}><b style={{ fontSize: 16 }}>{r.service}</b><span style={{ display: "inline-flex", gap: 6 }}><span className="tinyBadge" style={recColor(r.recommendation)}>{r.recommendation}</span><span className="badge b-READY_FOR_APPROVAL">Opportunity score {r.opportunity_score}</span></span></div>
+      <p className="muted" style={{ margin: "8px 0 4px" }}>{num(r.lead_count)} leads asked · est. {money(r.est_revenue)} turned away (estimate) · basis: {r.est_basis}</p>
+      <p style={{ margin: "4px 0" }}>{r.recommendation === "Launch" ? "Enough repeated demand to price it, staff it, and add it to the catalog." : r.recommendation === "Partner" ? "Real demand, thin volume — refer it to a partner for a cut instead of staffing it." : "Watch it — demand exists but is too thin to act on yet."}</p>
+      {(r.sample_lead_ids || []).length > 0 && <p style={{ margin: "4px 0" }}><span className="muted">Sample requests:</span> {r.sample_lead_ids.slice(0, 5).map((id: string) => <button key={id} className="btn ghost small" style={{ marginRight: 6 }} onClick={() => openLead && openLead(id)}>Open lead</button>)}</p>}</div>)}
     {rows.length === 0 && <div className="card">No unmet-demand clusters yet — lost/N-A leads will surface them here.</div>}
   </div>);
 }
@@ -782,7 +784,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       {nav.view === "approvals" && <Approvals openLead={openLead} />}
       {nav.view === "ai" && <AIAssistant go={go} />}
       {nav.view === "imports" && <Imports />}
-      {nav.view === "demand" && <Demand />}
+      {nav.view === "demand" && <Demand openLead={openLead} />}
       {nav.view === "handoffs" && <Handoffs />}
       {nav.view === "ops" && <Ops />}
       {nav.view === "settings" && <Settings users={users} setUsers={setUsers} priceBook={priceBook} setPriceBook={setPriceBook} onJump={(v: string) => go({ view: v as any })} me={user} />}
