@@ -56,8 +56,9 @@ export function financialSummary(workspaceId: string) {
     proposal_value_outstanding: { value: one("SELECT COALESCE(SUM(total),0) v FROM proposals WHERE workspace_id=? AND status='sent'"), definition: "Total of proposals sent to customers and not yet signed or expired." },
     approved_proposal_value: { value: one("SELECT COALESCE(SUM(p.total),0) v FROM proposals p WHERE p.workspace_id=? AND p.status IN ('draft','sent') AND EXISTS (SELECT 1 FROM approvals a WHERE a.proposal_id=p.id AND a.decision='approved')"), definition: "Total of proposals that passed the approval gate and are not yet signed." },
     signed_contract_value: { value: one("SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND stage!='CANCELLED'"), definition: "Contract value of signed work (job value incl. approved change orders)." },
-    invoiced_value: { value: one("SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND invoice_status IN ('invoiced','paid')"), definition: "Value of jobs that have been invoiced (incl. those since paid)." },
+    invoiced_value: { value: one("SELECT COALESCE(SUM(total),0) v FROM invoices WHERE workspace_id=? AND status<>'void'"), definition: "Total of invoices issued (invoice records, v17). Creating an invoice from a job is what puts value here." },
     collected_cash: { value: one("SELECT COALESCE(SUM(amount),0) v FROM payments WHERE workspace_id=? AND status='paid'"), definition: "Cash actually received through recorded payments (e.g. deposits). The only 'money in' figure." },
-    outstanding_receivables: { value: one("SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND invoice_status='invoiced'"), definition: "Invoiced job value not yet marked paid." },
+    outstanding_receivables: { value: one("SELECT COALESCE(SUM(total - paid_amount),0) v FROM invoices WHERE workspace_id=? AND status IN ('sent','partially_paid')"), definition: "True accounts receivable: invoiced amounts not yet paid. Excludes signed-but-uninvoiced work." },
+    overdue_receivables: { value: one("SELECT COALESCE(SUM(total - paid_amount),0) v FROM invoices WHERE workspace_id=? AND status IN ('sent','partially_paid') AND due_at IS NOT NULL AND due_at < datetime('now')"), definition: "Receivables past their due date — the number that needs chasing." },
   };
 }

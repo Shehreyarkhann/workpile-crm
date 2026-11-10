@@ -129,3 +129,17 @@ Tests: 165/165 (tests/v15.test.ts, 7 tests; slice11 Twilio test now signs its po
 | Work Queue bulk (§Priority 1.4) | Multi-select on lead-backed items (approvals excluded — decisions stay individual): bulk assign owner, snooze 1d/3d, create follow-up tasks; POST /api/queue/bulk, audited |
 | Agent orchestrator v1 (§Priority 2) | server/orchestrator.ts: tool registry (prepare_proposals, ops_review, recover_revenue, exec_brief) + rules planner + policy = autonomy levels (draft tools plan-only below L2, recovery tasks below L3) + persistent runs (agent_runs) + report UI in AI Assistant ("tell it what to do", example chips, run history). Hard rules in code: never sends, never prices, approvals untouched. LLM provider seam (`llmProvider = null`) awaits the founder's provider/key decision |
 Tests: 168/168 (tests/v16.test.ts). Screenshots: docs/screenshots-v23 (agent full-sweep executed live on demo data — 2 drafts created; queue bulk bar; 360 timeline).
+
+## V17 — V15-audit close-out + Agentic AI transformation (Nov 10)
+| Audit item | Shipped |
+|---|---|
+| A. PATCH settings secret return | Both GET and PATCH return the shared DTO (extended with all non-secret UI fields incl. template/booking/review keys); secrets (source_api_key, slack_webhook_url, llm_api_key) never leave the server — test-proven |
+| B. Nudge consent + truthful status | SMS consent enforced at the CENTRAL send boundary (comms.queueMessage → blocked_consent) so UI, nudge, cadences and agent tools all inherit it; inbound call/SMS records its consent basis (inbound_call/inbound_sms); nudge returns honest sent/test_mode |
+| C. SSRF depth | Resolver-grade guard (server/netguard.ts): every resolved address must be public (v4/v6/CGNAT/metadata/mapped); Slack test additionally pins hooks.slack.com; residual DNS-rebinding race documented in code |
+| D. Job crash recovery | Worker leases (120s) + stale-lease recovery on every tick + idempotency keys on enqueue |
+| E. True receivables | Invoice records + lines + payment allocation + overpayment refusal + void rules; finances invoiced/AR/overdue now derive from invoices; signed-but-uninvoiced is labeled "uncollected contract value" everywhere; one-click backfill for flag-era jobs |
+| F. Delivery evidence | first_send requires provider-confirmed 'delivered' (accepted no longer counts) |
+| §3/P1 Agent platform | Provider layer (Anthropic/OpenAI/rules), governed tool registry (13 tools, control classes), persisted executions with per-step approval, global Agent panel, follow-ups via parent executions, token tracking, AGENT-SPEC.md |
+| L3≈L4 | L4 sweep now also drafts proposals proactively (test-proven difference) |
+Tests: 177/177 (tests/v17.test.ts, 9 tests incl. injection + governance evals; slice9/slice12/slice16/v7 tests updated where v17 deliberately changed contracts — PATCH response shape, nudge truthfulness, invoice-record finances, booking-slug ensure restored after the v15 DTO rewrite dropped it). Screenshots: docs/screenshots-v24.
+Named residuals: DNS-rebinding IP pinning; LLM multi-turn tool loop (v17 plans in one structured call); provider delivery callbacks depend on Resend/Twilio credentials (founder items); PG cutover unchanged.

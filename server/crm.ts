@@ -137,6 +137,11 @@ export function registerCrm(app: any, requireAuth: any, needPerm: any = null) {
     const proposed360 = latestProps.reduce((sm, p) => sm + (p.total || 0), 0);
     const signed360 = latestProps.filter(p => p.status === "signed").reduce((sm, p) => sm + (p.total || 0), 0);
     const net360 = collected360 - refunded360;
+    const invLeadIds = (leads as any[]).map(l => l.id);
+    const invoices360 = invLeadIds.length ? db.prepare(`SELECT * FROM invoices WHERE lead_id IN (${invLeadIds.map(() => "?").join(",")}) ORDER BY created_at DESC`).all(...invLeadIds) as any[] : [];
+    const invoiced360 = invoices360.filter(i => i.status !== "void").reduce((a, i) => a + (i.total || 0), 0);
+    const ar360 = invoices360.filter(i => ["sent", "partially_paid"].includes(i.status)).reduce((a, i) => a + ((i.total || 0) - (i.paid_amount || 0)), 0);
+    const overdue360 = invoices360.filter(i => ["sent", "partially_paid"].includes(i.status) && i.due_at && new Date(i.due_at) < new Date()).reduce((a, i) => a + ((i.total || 0) - (i.paid_amount || 0)), 0);
     // Customer 360 timeline: the whole relationship, chronological (audit §1B.3)
     const tl: any[] = [];
     const leadIds = (leads as any[]).map(l => l.id);
@@ -152,7 +157,7 @@ export function registerCrm(app: any, requireAuth: any, needPerm: any = null) {
     for (const j of jobs as any[]) tl.push({ at: j.created_at, icon: "🔧", text: `Job created — ${j.service_requested} · $${j.value}`, lead_id: j.lead_id, job_id: j.id });
     if (leadIds.length) { const ph2 = leadIds.map(() => "?").join(","); for (const co of db.prepare(`SELECT * FROM change_orders WHERE lead_id IN (${ph2}) ORDER BY created_at DESC LIMIT 20`).all(...leadIds) as any[]) tl.push({ at: co.created_at, icon: "📝", text: `Change order — ${co.delta_scope || "scope change"} · $${co.delta_total || 0}`, lead_id: co.lead_id }); }
     tl.sort((x, y) => String(y.at).localeCompare(String(x.at)));
-    res.json({ account: { ...a, custom: J(a.custom, {}) }, contacts, leads, jobs, lifetime_value: lifetime, proposals: proposals360, payments: payments360, documents: docs360, timeline: tl.slice(0, 80), money360: { collected: collected360, refunded: refunded360, net_collected: net360, proposals_value: proposed360, signed_value: signed360, outstanding: Math.max(0, signed360 - net360), definitions: { proposed: "Current proposal version per lead", signed: "Signed current versions", collected: "Settled payments", net_collected: "Collected minus refunds", outstanding: "Signed minus net collected" } } });
+    res.json({ account: { ...a, custom: J(a.custom, {}) }, contacts, leads, jobs, lifetime_value: lifetime, proposals: proposals360, payments: payments360, documents: docs360, timeline: tl.slice(0, 80), invoices: invoices360, money360: { collected: collected360, refunded: refunded360, net_collected: net360, proposals_value: proposed360, signed_value: signed360, outstanding: Math.max(0, signed360 - net360), invoiced: invoiced360, ar_outstanding: ar360, ar_overdue: overdue360, definitions: { proposed: "Current proposal version per lead", signed: "Signed current versions", collected: "Settled payments", net_collected: "Collected minus refunds", outstanding: "Uncollected contract value: signed minus net collected — includes work not yet invoiced; NOT accounts receivable", invoiced: "Invoices issued to this customer", ar_outstanding: "True receivables: invoiced and unpaid", ar_overdue: "Receivables past due" } } });
   });
   app.patch("/api/accounts/:id", requireAuth, (req: any, res: any) => { const b = req.body || {}; const F = ["name", "phone", "email", "address", "website", "industry", "notes"]; const sets = F.filter(f => b[f] !== undefined); if (!sets.length) return err(res, 422, "nothing to update");
     db.prepare(`UPDATE accounts SET ${sets.map(f => f + "=?").join(",")}, updated_at=? WHERE id=? AND workspace_id=?`).run(...sets.map(f => b[f]), now(), req.params.id, ws(req)); res.json({ ok: true }); });

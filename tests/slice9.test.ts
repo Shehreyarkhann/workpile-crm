@@ -29,7 +29,7 @@ before(async () => {
 
 test("settings: follow-up + review fields persist", async () => {
   const r = await J("/api/settings", { method: "PATCH", body: { followup_enabled: true, review_on_won: true, review_url: "https://g.page/r/test" } }, { Cookie: cookie });
-  assert.equal(r.j.followup_enabled, 1); assert.equal(r.j.review_on_won, 1); assert.equal(r.j.review_url, "https://g.page/r/test");
+  assert.equal(r.j.workspace.followup_enabled, 1); assert.equal(r.j.workspace.review_on_won, 1); assert.equal(r.j.workspace.review_url, "https://g.page/r/test");
   const g = await J("/api/settings", {}, { Cookie: cookie });
   assert.equal(g.j.workspace.followup_enabled, 1);
 });

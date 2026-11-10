@@ -2,6 +2,7 @@
 // Invariant (§26): ingested content is data, never instructions. Agents score, group,
 // and RECOMMEND; every mutation runs through an explicit human-approved apply call.
 import { db, uid, now } from "./db.ts";
+import { draftProposalForLead, qualifiedLeadsMissingProposals } from "./proposals-core.ts";
 
 const OPEN = ["NEW", "WORKING", "QUALIFIED", "PROPOSAL", "SENT", "FOLLOWUP"];
 
@@ -141,6 +142,11 @@ export function runAutomationsFor(ws: string): any {
     result.mode = "execute";
     if (actions.length) result = { ...result, ...cleanupApply(ws, "ai-automation", actions) };
     if (w.auto_reactivate) result.reactivation_tasks = reactivateStale(ws, "ai-automation").tasks_created;
+    if (level >= 4) { // L4 is NOT L3 (v17): the agent also prepares proposal drafts proactively.
+      const missing = qualifiedLeadsMissingProposals(ws, 3);
+      let drafted = 0; for (const l of missing) { draftProposalForLead(ws, l); drafted++; }
+      result.l4_proposals_drafted = drafted;
+    }
   }
   db.prepare("UPDATE workspaces SET last_automation_at=? WHERE id=?").run(now(), ws);
   logAgentRun(ws, "automation", null, result);

@@ -43,7 +43,7 @@ test("insights v2 surfaces the cold proposal with a lead_id; nudge sends (test m
   const cold = ins.j.find((i: any) => i.kind === "cold");
   assert.ok(cold && cold.lead_id === coldLead);
   const n = await J("/api/ai/nudge", { method: "POST", body: { lead_id: coldLead } }, { Cookie: cookie });
-  assert.equal(n.j.sent, true); assert.equal(n.j.channel, "email"); assert.equal(n.j.status, "test_mode");
+  assert.equal(n.j.sent, false, "v17: test_mode is not a send — the response must say so"); assert.equal(n.j.test_mode, true); assert.equal(n.j.channel, "email"); assert.equal(n.j.status, "test_mode");
   const msgs = await J(`/api/leads/${coldLead}/messages`, {}, { Cookie: cookie });
   assert.ok(msgs.j.some((m: any) => String(m.body).includes("Cold"))); // template greets by first name
   const runs = await J("/api/ai/runs", {}, { Cookie: cookie });

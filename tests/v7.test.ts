@@ -39,6 +39,9 @@ before(async () => {
 });
 
 test("finances: the five money concepts are separate, defined, and never blended", async () => {
+  // v17: invoiced/receivables figures come from invoice RECORDS — backfill creates them from the seeded job flags
+  const bf = await J("/api/invoices/backfill", { method: "POST", body: {} }, { Cookie: cookie });
+  assert.ok(bf.j.made >= 1, "backfill created the invoice record for the flagged job");
   const f = (await J("/api/finances", {}, { Cookie: cookie })).j;
   assert.equal(f.estimated_pipeline.value, 10000 + 3000 + 3500, "open leads' estimates");
   assert.equal(f.proposal_value_outstanding.value, 5000, "sent proposal only");

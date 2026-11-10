@@ -17,6 +17,16 @@ export function suppressionFor(workspaceId: string, channel: string, to: string)
 
 export function queueMessage(workspaceId: string, m: { lead_id?: string; channel: "email" | "sms"; to: string; subject?: string; body: string }) {
   const id = uid("msg");
+  // Central send boundary (v17): SMS consent is enforced HERE so every caller — UI, nudge,
+  // cadences, agent tools — inherits it. No path can text a lead that has not consented.
+  if (m.channel === "sms" && m.lead_id) {
+    const ld = db.prepare("SELECT consent_contact_ok FROM leads WHERE id=? AND workspace_id=?").get(m.lead_id, workspaceId) as any;
+    if (ld && !ld.consent_contact_ok) {
+      db.prepare("INSERT INTO messages_outbox (id,workspace_id,lead_id,channel,to_addr,subject,body,status,error,created_at) VALUES (?,?,?,?,?,?,?, 'blocked_consent', ?, ?)")
+        .run(id, workspaceId, m.lead_id, m.channel, m.to, m.subject || null, m.body, "TCPA: lead has not consented to SMS", now());
+      return id;
+    }
+  }
   const sup = suppressionFor(workspaceId, m.channel, m.to);
   if (sup) {
     db.prepare("INSERT INTO messages_outbox (id,workspace_id,lead_id,channel,to_addr,subject,body,status,error,created_at) VALUES (?,?,?,?,?,?,?, 'suppressed', ?, ?)")

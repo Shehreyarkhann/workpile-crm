@@ -1019,13 +1019,26 @@ function WeeklyReportCard() {
   </div>);
 }
 
+function InvoicesCard() {
+  const [invs, setInvs] = useState<any[]>([]); const [msg, setMsg] = useState("");
+  const load = () => { api("/api/invoices").then(setInvs).catch(() => {}); };
+  useEffect(load, []);
+  const open = invs.filter(i => ["sent", "partially_paid"].includes(i.status));
+  return (<div className="card" style={{ marginBottom: 14 }}><h3 style={{ marginTop: 0 }}>🧾 Invoices & receivables</h3>
+    <p className="sub" style={{ marginTop: 0 }}>{money(open.reduce((a, i) => a + (i.balance || 0), 0))} outstanding across {open.length} open invoice{open.length === 1 ? "" : "s"}{open.some(i => i.overdue) ? ` · ${money(open.filter(i => i.overdue).reduce((a, i) => a + i.balance, 0))} overdue` : ""}. Create invoices from any job; record payments against them here or on the job.</p>
+    {invs.slice(0, 12).map(i => <div key={i.id} className="rowflex" style={{ padding: "5px 0", borderTop: "1px solid #eef2f7" }}><span style={{ flex: 1 }}><b>{i.number}</b> · {i.service_requested || "Job"} · {money(i.total)} · {i.status}{i.overdue ? " · ⚠ overdue" : ""}</span>{i.balance > 0 && i.status !== "void" && <><input id={"pay-" + i.id} type="number" placeholder="Amount" style={{ width: 100 }} /><button className="btn ghost small" onClick={async () => { const v = Number((document.getElementById("pay-" + i.id) as HTMLInputElement).value); if (!(v > 0)) return; try { await api(`/api/invoices/${i.id}/payments`, { method: "POST", body: { amount: v } }); toast("Payment recorded ✓"); load(); } catch (e: any) { setMsg(e.message); } }}>Record payment</button></>}</div>)}
+    {msg && <div className="err">{msg}</div>}
+    <button className="btn ghost small" style={{ marginTop: 8 }} onClick={async () => { const r = await api("/api/invoices/backfill", { method: "POST", body: {} }); setMsg(`Backfill created ${r.made} invoice records from previously flagged jobs.`); load(); }}>Backfill invoices for already-flagged jobs</button>
+  </div>);
+}
+
 function Reports() {
   const [fc, setFc] = useState<any>(null);
   useEffect(() => { api("/api/forecast").then(setFc).catch(() => {}); }, []);
   const [ds, setDs] = useState("by_owner"); const [rows, setRows] = useState<any[]>([]);
   useEffect(() => { api("/api/reports?dataset=" + ds).then(r => setRows(r.rows)).catch(() => {}); }, [ds]);
   const tot = rows.reduce((a, r) => ({ leads: a.leads + (r.leads || 0), won: a.won + (r.won || 0), lost: a.lost + (r.lost || 0), value: a.value + (r.value || 0), won_value: a.won_value + (r.won_value || 0) }), { leads: 0, won: 0, lost: 0, value: 0, won_value: 0 });
-  return (<div><h2 className="pt">Reports</h2><p className="sub">Tabular reports over your live data — the Salesforce Reports equivalent, without the report-builder maze. Export anything to CSV.</p>
+  return (<div><h2 className="pt">Reports</h2><InvoicesCard /><p className="sub">Tabular reports over your live data — the Salesforce Reports equivalent, without the report-builder maze. Export anything to CSV.</p>
     <ReportBuilder />
     <WeeklyReportCard />
     {fc && <><div className="kpis">
@@ -1116,6 +1129,21 @@ function PeriodsStrip() {
   if (!p) return null;
   const cell = (label: string, k: string, fmt: (n: number) => string) => { const a = p.this_week[k] || 0, b = p.last_week[k] || 0; const d = a - b; return (<span key={k}><b style={{ fontSize: 17 }}>{fmt(a)}</b> <span className="muted">{label}</span> <span style={{ color: d > 0 ? "#157347" : d < 0 ? "#b3261e" : "#5b6b62" }}>{d > 0 ? `▲ ${fmt(d)}` : d < 0 ? `▼ ${fmt(-d)}` : "—"} vs last wk</span></span>); };
   return (<div className="card" style={{ marginTop: 12 }}><b>📅 This week vs last week</b><div className="rowflex" style={{ gap: 22, flexWrap: "wrap", marginTop: 8 }}>{cell("new leads", "leads_created", n => String(n))}{cell("proposals sent", "proposals_sent", n => String(n))}{cell("won", "won", n => String(n))}{cell("jobs created", "jobs_created", n => String(n))}{cell("signed value", "signed_value", n => money(n))}</div></div>);
+}
+
+function ProviderCard() {
+  const [st, setSt] = useState<any>(null); const [kind, setKind] = useState("anthropic"); const [model, setModel] = useState(""); const [key, setKey] = useState(""); const [msg, setMsg] = useState("");
+  const load = () => { api("/api/ai/provider").then((r: any) => { setSt(r); if (r.model) setModel(r.model); if (r.kind && r.kind !== "rules") setKind(r.kind); }).catch(() => {}); };
+  useEffect(load, []);
+  const save = async () => { const r = await api("/api/ai/provider", { method: "PATCH", body: { provider: kind, model: model || undefined, api_key: key === "" ? undefined : key } }); setSt(r); setKey(""); setMsg("Provider settings saved ✓"); };
+  const test = async () => { setMsg("Testing…"); const r = await api("/api/ai/provider/test", { method: "POST", body: {} }).catch((e: any) => ({ ok: false, error: e.message })); setMsg(r.ok ? (r.mode === "rules" ? r.message : `Connected ✓ ${r.model} responded in ${r.latency_ms}ms`) : "Failed: " + (r.error || "unknown")); };
+  return (<div className="card" style={{ marginBottom: 14 }}><h3 style={{ marginTop: 0 }}>🧠 AI provider</h3>
+    <p className="sub" style={{ marginTop: 0 }}>{st ? (st.configured ? <>Connected: <b>{st.label}</b>. The agent plans with the model; Workpile's policy engine still decides what may execute.</> : <>No provider connected — the agent runs on the deterministic rules planner and labels its output as such. Add a key to enable generative planning and drafting.</>) : "…"}</p>
+    <div className="grid2"><label>Provider<select value={kind} onChange={e => setKind(e.target.value)}><option value="anthropic">Anthropic (Claude)</option><option value="openai">OpenAI</option></select></label>
+    <label>Model<input value={model} onChange={e => setModel(e.target.value)} placeholder={kind === "anthropic" ? "claude-sonnet-4-5" : "gpt-5"} /></label>
+    <label>API key<input type="password" value={key} onChange={e => setKey(e.target.value)} placeholder={st?.source === "workspace" ? "•••••••• (saved — leave blank to keep)" : "sk-…"} /></label></div>
+    <div className="rowflex" style={{ marginTop: 10 }}><button className="btn small" onClick={save}>Save provider</button><button className="btn ghost small" onClick={test}>Test connection</button>{st?.source === "workspace" && <button className="btn ghost small" onClick={async () => { await api("/api/ai/provider", { method: "PATCH", body: { api_key: "" } }); load(); setMsg("Workspace key removed."); }}>Remove workspace key</button>}{msg && <span className="muted">{msg}</span>}</div>
+  </div>);
 }
 
 function AutonomyCard() {
@@ -1400,6 +1428,7 @@ function AIAssistant({ go, openLead, openJob }: any) {
       </div>}
     </div>
     <AutonomyCard />
+    <ProviderCard />
     <AgentMetricsCard />
     <QuietHoursCard />
     <SuppressionsCard />
@@ -1635,6 +1664,9 @@ function JobDetail({ id, users, priceBook, close, refresh, openLead }: any) {
       <h4>Paperwork checklist</h4>
       {d.documents.map((doc: any) => <div className="check" key={doc.id}><span className={`st ${doc.status === "received" ? "pass" : "fail"}`}>{doc.status === "received" ? "✓" : "✗"}</span><span style={{ flex: 1 }}>{doc.name}{doc.required ? " (required)" : ""}</span>{doc.status !== "received" && <><button className="btn ghost small" onClick={async () => { const r = await api(`/api/documents/${doc.id}/chase`, { method: "POST", body: {} }).catch((e: any) => ({ error: e.message })); setMsg(r.error ? "Chase failed: " + r.error : `Chase email queued — status: ${r.status}`); }}>Chase it</button><button className="btn ghost small" onClick={async () => { await api(`/api/documents/${doc.id}`, { method: "PATCH", body: { status: "received" } }); load(); }}>Mark received</button></>}</div>)}
       {d.documents.length === 0 && <p className="muted">No documents tracked for this job yet.</p>}
+      <h4 style={{ marginTop: 16 }}>Invoices</h4>
+      {(d.invoices || []).map((inv: any) => <div className="check" key={inv.id}><span style={{ flex: 1 }}><b>{inv.number}</b> · {money(inv.total)} · {inv.status} · balance {money(inv.balance)}{inv.due_at ? ` · due ${new Date(inv.due_at).toLocaleDateString()}` : ""}</span>{inv.balance > 0 && inv.status !== "void" && <><input id={"jpay-" + inv.id} type="number" placeholder="$" style={{ width: 90 }} /><button className="btn ghost small" onClick={async () => { const v = Number((document.getElementById("jpay-" + inv.id) as HTMLInputElement).value); if (!(v > 0)) return; try { await api(`/api/invoices/${inv.id}/payments`, { method: "POST", body: { amount: v } }); toast("Payment recorded ✓"); load(); } catch (e: any) { setMsg(e.message); } }}>Record payment</button></>}</div>)}
+      {!(d.invoices || []).some((x: any) => ["sent", "partially_paid"].includes(x.status)) && j.stage !== "CANCELLED" && <button className="btn ghost small" onClick={async () => { try { await api(`/api/jobs/${j.id}/invoice`, { method: "POST", body: {} }); toast("Invoice created ✓"); load(); } catch (e: any) { setMsg(e.message); } }}>🧾 Create invoice ({money(j.value)})</button>}
       <h4>Change orders</h4>
       {d.change_orders.map((c: any) => <p key={c.id} style={{ margin: "5px 0" }}><b>{money(c.delta_total)}</b> — {c.delta_scope} · <span className="tinyBadge">{c.status}</span> {c.status === "draft" && <button className="btn ghost small" onClick={async () => { await api(`/api/change-orders/${c.id}/status`, { method: "POST", body: { status: "approved" } }); setMsg("Change order approved — added to the job value ✓"); load(); }}>Approve (adds to job value)</button>}</p>)}
       <div className="rowflex"><input placeholder="Scope change — e.g. extra boring location" value={co.delta_scope} onChange={e => setCo({ ...co, delta_scope: e.target.value })} style={{ flex: 1 }} /><input type="number" placeholder="$ delta" style={{ width: 110 }} value={co.delta_total} onChange={e => setCo({ ...co, delta_total: e.target.value })} /><button className="btn ghost small" disabled={!co.delta_scope} onClick={async () => { await api(`/api/jobs/${id}/change-orders`, { method: "POST", body: { delta_scope: co.delta_scope, delta_total: Number(co.delta_total) || 0 } }); setCo({ delta_scope: "", delta_total: "" }); load(); }}>Add change order</button></div>
@@ -1833,9 +1865,10 @@ function CustomerDetail({ id, close, openLead, openJob }: any) {
     <h4>Lead history ({d.leads.length})</h4>
     {d.leads.map((l: any) => <p key={l.id} style={{ margin: "4px 0" }} className="clickable" onClick={() => openLead(l.id)}>🎯 <b>{l.service_requested}</b> — {money(l.est_value)} · <Badge s={l.state} /></p>)}
     {(d.timeline || []).length > 0 && <><h4>History — the whole relationship</h4><div style={{ maxHeight: 300, overflowY: "auto" }}>{(d.timeline || []).map((t: any, i: number) => <p key={i} style={{ margin: "4px 0", fontSize: 13 }} className={t.lead_id ? "clickable" : ""} onClick={() => { if (t.job_id && openJob) openJob(t.job_id); else if (t.lead_id) openLead(t.lead_id); }}>{t.icon} {t.text} <span className="muted">· {new Date(t.at).toLocaleDateString()}</span></p>)}</div></>}
-    <h4>Proposals ({(d.proposals || []).length}) · {money((d.money360 || {}).proposals_value || 0)} proposed (current versions) · {money((d.money360 || {}).signed_value || 0)} signed · {money((d.money360 || {}).outstanding || 0)} outstanding</h4>
+    <h4>Proposals ({(d.proposals || []).length}) · {money((d.money360 || {}).proposals_value || 0)} proposed (current versions) · {money((d.money360 || {}).signed_value || 0)} signed · {money((d.money360 || {}).outstanding || 0)} uncollected contract value</h4>
     {(d.proposals || []).map((p: any) => <p key={p.id} style={{ margin: "4px 0" }} className="clickable" onClick={() => openLead(p.lead_id)}>📄 <b>{p.service_requested}</b> — {money(p.total)} · <span className="tinyBadge">{p.status}</span>{p.sent_at ? " · sent " + dOnly(p.sent_at) : ""}{p.signed_at ? " · ✍️ signed " + dOnly(p.signed_at) : ""} →</p>)}
     {(d.proposals || []).length === 0 && <p className="muted">No proposals yet.</p>}
+    {(d.invoices || []).length > 0 && <><h4>Invoices ({(d.invoices || []).length}) · {money((d.money360 || {}).invoiced || 0)} invoiced · {money((d.money360 || {}).ar_outstanding || 0)} receivable{(d.money360 || {}).ar_overdue > 0 ? ` · ${money(d.money360.ar_overdue)} OVERDUE` : ""}</h4>{(d.invoices || []).map((i: any) => <p key={i.id} style={{ margin: "4px 0", fontSize: 13 }}>{i.number} · {money(i.total)} · {i.status}{i.paid_amount > 0 ? ` · ${money(i.paid_amount)} paid` : ""}{i.due_at ? ` · due ${new Date(i.due_at).toLocaleDateString()}` : ""}</p>)}</>}
     <h4>Payments · {money((d.money360 || {}).collected || 0)} collected{(d.money360 || {}).refunded ? " · " + money(d.money360.refunded) + " refunded" : ""} · net {money((d.money360 || {}).net_collected || 0)}</h4>
     {(d.payments || []).map((p: any) => <p key={p.id} style={{ margin: "4px 0" }} className="clickable" onClick={() => p.lead_id && openLead(p.lead_id)}>{p.kind === "refund" ? "↩️" : "💳"} {money(p.amount)} · {p.kind} · <span className="tinyBadge">{p.status}</span> · {dOnly(p.created_at)} →</p>)}
     {(d.payments || []).length === 0 && <p className="muted">No payments recorded.</p>}
@@ -2054,10 +2087,41 @@ function ToastHost() {
   return <div className="toastHost">{items.map(t => <div key={t.id} className="toast">{t.msg}</div>)}</div>;
 }
 
+function AgentPanel({ close }: any) {
+  const [prov, setProv] = useState<any>(null); const [text, setText] = useState(""); const [ex, setEx] = useState<any>(null); const [hist, setHist] = useState<any[]>([]); const [sel, setSel] = useState<Set<string>>(new Set()); const [busy, setBusy] = useState(false); const [err, setErr] = useState("");
+  const loadHist = () => { api("/api/agent/executions").then(setHist).catch(() => {}); };
+  useEffect(() => { api("/api/ai/provider").then(setProv).catch(() => {}); loadHist(); }, []);
+  const run = async (instruction: string, parent?: string) => { if (!instruction.trim() || busy) return; setBusy(true); setErr(""); try { const r = await api("/api/agent/execute", { method: "POST", body: { instruction, parent_id: parent || undefined } }); setEx(r); setSel(new Set()); setText(""); loadHist(); } catch (e: any) { setErr(e.message); } setBusy(false); };
+  const decide = async (mode: "approve" | "reject") => { if (!ex || !sel.size) return; setBusy(true); try { const r = await api(`/api/agent/executions/${ex.id}/decide`, { method: "POST", body: mode === "approve" ? { approve: [...sel] } : { reject: [...sel] } }); setEx(r); setSel(new Set()); loadHist(); } catch (e: any) { setErr(e.message); } setBusy(false); };
+  const cancel = async () => { if (!ex) return; const r = await api(`/api/agent/executions/${ex.id}/cancel`, { method: "POST", body: {} }); setEx(r); loadHist(); };
+  const CB: Record<string, string> = { read: "#e0f2fe", draft: "#fef9c3", execute: "#dcfce7", approval: "#fee2e2" };
+  const followParent = ex && ex.status !== "awaiting_approval" ? ex.id : undefined;
+  return (<div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: 430, maxWidth: "94vw", background: "#fff", boxShadow: "-8px 0 30px rgba(15,40,25,.18)", zIndex: 60, display: "flex", flexDirection: "column" }}>
+    <div style={{ padding: "14px 16px", borderBottom: "1px solid #e2e8f0", display: "flex", alignItems: "center", gap: 8 }}><h3 style={{ margin: 0, flex: 1 }}>✦ Workpile Agent</h3><button className="btn ghost small" onClick={close}>✕ Close</button></div>
+    <div style={{ padding: "10px 16px", borderBottom: "1px solid #eef2f7", fontSize: 12.5 }} className="muted">{prov ? (prov.configured ? <>Connected: <b>{prov.label}</b>{prov.model ? ` · ${prov.model}` : ""}</> : <>Deterministic mode — <b>no AI provider connected</b>. The agent plans with rules; connect a provider in Automations for generative planning.</>) : "…"}</div>
+    <div style={{ padding: 16, overflowY: "auto", flex: 1 }}>
+      <div className="rowflex"><input style={{ flex: 1 }} placeholder="Tell the agent what to do…" value={text} onChange={e => setText(e.target.value)} onKeyDown={e => { if (e.key === "Enter") run(text, followParent); }} /><button className="btn" disabled={busy} onClick={() => run(text, followParent)}>{busy ? "Working…" : followParent ? "Follow up" : "Run"}</button></div>
+      <div className="chipRow" style={{ marginTop: 8 }}>{["Review my new leads, qualify and assign the best ones", "Prepare proposals for qualified leads", "Recover customers who haven't responded", "Find jobs with missing documents", "How is the business doing?"].map(x => <button key={x} className="chip" onClick={() => run(x)}>{x}</button>)}</div>
+      {err && <div className="err">{err}</div>}
+      {ex && <div style={{ marginTop: 14 }}>
+        <p style={{ margin: "0 0 4px" }}><b>“{ex.instruction}”</b></p>
+        <p className="muted" style={{ margin: "0 0 10px", fontSize: 12.5 }}>Status: <b>{String(ex.status).replaceAll("_", " ")}</b> · planner: {ex.planner || "—"}{(ex.tokens_in || ex.tokens_out) ? ` · tokens ${ex.tokens_in}/${ex.tokens_out}` : ""}</p>
+        {(ex.plan || []).map((s: any) => <div key={s.id} style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "7px 0", borderTop: "1px solid #eef2f7" }}>
+          {s.status === "pending" ? <input type="checkbox" checked={sel.has(s.id)} onChange={() => setSel(prev => { const n = new Set(prev); if (n.has(s.id)) n.delete(s.id); else n.add(s.id); return n; })} style={{ width: 16, height: 16, marginTop: 2 }} /> : <span style={{ width: 16, textAlign: "center" }}>{s.status === "done" ? "✓" : s.status === "failed" ? "✗" : s.status === "rejected" ? "—" : "•"}</span>}
+          <div style={{ flex: 1 }}><span className="tinyBadge" style={{ background: CB[s.control] || "#e2e8f0" }}>{s.control}{s.needs_approval ? " · approval" : ""}</span> <b style={{ fontSize: 13.5 }}>{s.label}</b>{s.result && <div className="muted" style={{ fontSize: 12.5, marginTop: 2 }}>{s.result}</div>}</div>
+        </div>)}
+        {ex.status === "awaiting_approval" && <div className="rowflex" style={{ marginTop: 10 }}><button className="btn small" disabled={!sel.size || busy} onClick={() => decide("approve")}>Approve selected ({sel.size})</button><button className="btn ghost small" disabled={!sel.size || busy} onClick={() => decide("reject")}>Reject selected</button><button className="btn ghost small" onClick={cancel}>Cancel run</button></div>}
+        {ex.summary && !["awaiting_approval", "executing", "planning"].includes(ex.status) && <div style={{ background: "#f0fdf4", borderRadius: 8, padding: 10, marginTop: 10, whiteSpace: "pre-wrap", fontSize: 13 }}>{ex.summary}</div>}
+      </div>}
+      {hist.length > 0 && <div style={{ marginTop: 18 }}><h4 style={{ margin: "0 0 6px" }}>Previous runs</h4>{hist.slice(0, 8).map((h: any) => <p key={h.id} className="clickable" style={{ margin: "5px 0", fontSize: 13 }} onClick={() => { setEx(h); setSel(new Set()); }}>“{h.instruction}” <span className="muted">· {String(h.status).replaceAll("_", " ")} · {new Date(h.created_at).toLocaleString()}</span></p>)}</div>}
+    </div>
+  </div>);
+}
+
 function App() {
   useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key !== "Escape") return; const wraps = document.querySelectorAll(".modalWrap"); const last = wraps[wraps.length - 1] as HTMLElement | undefined; if (!last) return; const btns = Array.from(last.querySelectorAll("button")); const closer = btns.find(b => (b.textContent || "").includes("✕")); if (closer) (closer as HTMLButtonElement).click(); }; window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, []);
   const [user, setUser] = useState<any>(null); const [login, setLogin] = useState({ email: "", password: "" }); const [err, setErr] = useState("");
-  const [nav, setNav] = useState<Nav>({ view: "queue" }); const [users, setUsers] = useState<any[]>([]); const [priceBook, setPriceBook] = useState<any[]>([]);
+  const [nav, setNav] = useState<Nav>({ view: "queue" }); const [agentOpen, setAgentOpen] = useState(false); const [users, setUsers] = useState<any[]>([]); const [priceBook, setPriceBook] = useState<any[]>([]);
 const [sb, setSb] = useState(() => localStorage.getItem("wp_sb") || "open"); const [mOpen, setMOpen] = useState(false);
   const [notifs, setNotifs] = useState<any[]>([]); const [unread, setUnread] = useState(0); const [bellOpen, setBellOpen] = useState(false); const [verifyMsg, setVerifyMsg] = useState("");
 const [pending, setPending] = useState(0); const [creating, setCreating] = useState(false); const [leadId, setLeadId] = useState<string | null>(null); const [tick, setTick] = useState(0);
@@ -2121,7 +2185,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
         {notifs.length === 0 && <p className="muted">Nothing yet \u2014 approvals, signatures, deposits, and new leads land here.</p>}
         {notifs.map(n => <div key={n.id} className="bellItem" style={n.read_at ? {} : { background: "#f0f9f1" }} onClick={async () => { await api(`/api/notifications/${n.id}/read`, { method: "POST", body: {} }).catch(() => {}); setUnread(u => Math.max(0, u - (n.read_at ? 0 : 1))); setNotifs(ns => ns.map(x => x.id === n.id ? { ...x, read_at: x.read_at || "now" } : x)); const et = n.entity_type || (n.lead_id ? "lead" : null); const eid = n.entity_id || n.lead_id; setBellOpen(false); if (et === "lead" && eid) openLead(eid); else if (et === "job" && eid) setJobOpen(eid); else if (et === "account" && eid) setCustOpen(eid); else if (n.lead_id) openLead(n.lead_id); }}><b>{n.title}</b><br /><span className="muted">{n.body}</span><br /><span className="muted" style={{ fontSize: 11.5 }}>{dt(n.created_at)} · {(n.entity_type || (n.lead_id ? "lead" : "")) ? "tap to open →" : ""}</span></div>)}</div>}</div>
         <button className="btn ghost" title="Toggle dark mode" onClick={() => setTheme(t => t === "dark" ? "light" : "dark")}>{theme === "dark" ? "☀️" : "🌙"}</button>
-        <button className="btn ghost" title="Log time (T)" onClick={() => setLtOpen(true)}>⏱ Log time</button><button className="btn" onClick={() => setCreating(true)}>+ New Lead</button></div>
+        <button className="btn ghost" onClick={() => setAgentOpen(true)}>✦ Agent</button><button className="btn ghost" title="Log time (T)" onClick={() => setLtOpen(true)}>⏱ Log time</button><button className="btn" onClick={() => setCreating(true)}>+ New Lead</button></div>
       {user && user.email_verified === 0 && <div className="verifyBar">✉️ Verify your email to secure your account and enable password recovery. <button className="btn ghost small" onClick={async () => { const r = await api("/api/auth/resend-verify", { method: "POST", body: {} }).catch((e: any) => ({ error: e.message })); setVerifyMsg(r.verify_url ? "Test mode \u2014 verify here: " + r.verify_url : r.error ? r.error : "Verification email sent \u2014 check your inbox."); }}>Resend verification</button>{verifyMsg && <span style={{ marginLeft: 8 }}>{verifyMsg}</span>}</div>}
       <EB>
       {nav.view === "queue" && <WorkQueue openLead={openLead} openJob={(id: string) => setJobOpen(id)} go={go} />}
@@ -2153,6 +2217,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       </EB>
       {jobOpen && <JobDetail id={jobOpen} users={users} priceBook={priceBook} close={() => setJobOpen(null)} refresh={() => setTick(t => t + 1)} openLead={(lid: string) => { setJobOpen(null); setLeadId(lid); }} />}
       {custOpen && <CustomerDetail id={custOpen} close={() => setCustOpen(null)} openLead={openLead} openJob={(id: string) => setJobOpen(id)} />}
+      {agentOpen && <AgentPanel close={() => setAgentOpen(false)} />}
       {ltOpen && <LogTimeModal close={() => setLtOpen(false)} done={() => setTick(t => t + 1)} />}
       {creating && <CreateLead users={users} done={(id: any) => { setCreating(false); setTick(t => t + 1); if (id) openLead(id); }} />}
       {palOpen && <CommandPalette close={() => setPalOpen(false)} go={go} openLead={openLead} newLead={() => setCreating(true)} />}
