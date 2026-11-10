@@ -12,11 +12,11 @@ export function metrics(workspaceId: string) {
   const approvals = qa("SELECT * FROM approvals WHERE workspace_id=? AND decided_at IS NOT NULL", workspaceId);
   const cycleHrs = approvals.length ? approvals.map(a => (new Date(a.decided_at).getTime() - new Date(a.submitted_at).getTime()) / 3600000).sort((x, y) => x - y)[Math.floor(approvals.length / 2)] : null;
   const won = byState["WON"] || 0, lost = byState["LOST"] || 0;
-  const backlogStates = ["NEW", "TRIAGED"];
+  const backlogStates = ["NEW"];
   const backlogRemaining = leads.filter(l => backlogStates.includes(l.state)).length;
   const overdueFollowups = qa("SELECT COUNT(*) c FROM tasks WHERE workspace_id=? AND status='open' AND due_at < ?", workspaceId, new Date().toISOString()).c;
   const noNextStep = leads.filter(l => !["WON", "LOST", "NO_RESPONSE", "UNSERVICEABLE", "JUNK", "DUPLICATE"].includes(l.state) && !l.next_action_due_at).length;
-  const pipelineOpen = leads.filter(l => ["QUALIFIED", "READY_FOR_APPROVAL", "APPROVED", "PROPOSAL_DRAFTED", "PROPOSAL_SENT", "IN_FOLLOW_UP"].includes(l.state)).reduce((s, l) => s + (l.est_value || 0), 0);
+  const pipelineOpen = leads.filter(l => ["QUALIFIED", "PROPOSAL", "SENT", "FOLLOWUP", "WORKING"].includes(l.state)).reduce((s, l) => s + (l.est_value || 0), 0);
   const bySource = qa(`SELECT s.name as source, COUNT(*) leads, SUM(CASE WHEN l.state='WON' THEN 1 ELSE 0 END) won FROM leads l LEFT JOIN sources s ON s.id=l.source_id WHERE l.workspace_id=? GROUP BY s.name`, workspaceId);
   const byOwner = qa(`SELECT u.name, COUNT(*) active, SUM(CASE WHEN l.state='WON' THEN 1 ELSE 0 END) won, SUM(CASE WHEN l.state='LOST' THEN 1 ELSE 0 END) lost FROM leads l LEFT JOIN users u ON u.id=l.owner_id WHERE l.workspace_id=? GROUP BY u.name`, workspaceId);
   const frt = leads.filter(l => l.first_response_at);

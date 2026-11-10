@@ -38,7 +38,7 @@ test("cadence: sending a proposal enrolls; the due step sends; finalizing stops 
   const { uid, now } = dbm; const G = (globalThis as any).__;
   const c = await J("/api/leads", { method: "POST", body: { contact: { name: "Cadence Carl", phone: "+15165550233", email: "carl@x.co" }, service_requested: "Mold remediation", message: "help", location: "Bay Shore, NY", owner_id: G.owner } }, { Cookie: cookie });
   assert.equal(c.status, 201); leadId = c.j.lead.id;
-  dbm.db.prepare("UPDATE leads SET state='APPROVED', consent_contact_ok=1 WHERE id=?").run(leadId);
+  dbm.db.prepare("UPDATE leads SET state='PROPOSAL', consent_contact_ok=1 WHERE id=?").run(leadId);
   propId = uid("prop");
   dbm.db.prepare("INSERT INTO proposals (id,workspace_id,lead_id,version,status,line_items,total,created_at) VALUES (?,?,?,?,?,?,?,?)").run(propId, G.ws, leadId, 1, "approved", "[]", 4200, now());
   const send = await J(`/api/proposals/${propId}/send`, { method: "POST", body: { channel: "email" } }, { Cookie: cookie });
@@ -50,7 +50,7 @@ test("cadence: sending a proposal enrolls; the due step sends; finalizing stops 
   const r1 = await processFollowups("http://test");
   assert.ok(r1.sent >= 1, "expected the due nudge to send");
   const msgs = await J(`/api/leads/${leadId}/messages`, {}, { Cookie: cookie });
-  assert.ok(msgs.j.some((m: any) => String(m.body).includes("floating your proposal")), "nudge body should be in the outbox history");
+  assert.ok(msgs.j.some((m: any) => String(m.body).includes("is ready")), "nudge body should be in the outbox history");
   // finalize WON via the real transition: enrollments stop + review email queued
   const won = await J(`/api/leads/${leadId}/transition`, { method: "POST", body: { to_state: "WON" } }, { Cookie: cookie });
   assert.equal(won.status, 200);

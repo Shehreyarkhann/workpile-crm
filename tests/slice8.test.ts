@@ -60,6 +60,7 @@ test("proposal send to customer composes sign link + records delivery status", a
 });
 
 test("notifications: approver got approval request; owner got outcome; read flow works", async () => {
+  dbm.db.prepare("UPDATE workspaces SET approval_policy='always' WHERE id=?").run((globalThis as any).__.ws); // v3: approvals are policy-driven
   const t = (to: string) => J(`/api/leads/${leadId}/transition`, { method: "POST", body: { to_state: to } }, { Cookie: cookie });
   const r = await t("READY_FOR_APPROVAL");
   assert.equal(r.status, 200, JSON.stringify(r.j));

@@ -33,10 +33,13 @@ function seedWs() {
   return { ws, owner, lo, pm, svc, pb };
 }
 
-test("state machine rejects invalid transitions", () => {
-  assert.deepEqual(appm.TRANSITIONS.NEW.includes("WON"), false);
-  assert.equal(appm.TRANSITIONS.WON.length, 0);
+test("v3 flow: no ratchet — stages move freely; legacy names normalize", () => {
+  // spec v3 §4: the transition table is gone by design; finals discipline lives in setStage (see tests/v3.test.ts)
+  assert.ok(appm.TRANSITIONS.WON.includes("WORKING"), "even a final can be reopened");
+  assert.ok(appm.TRANSITIONS.NEW.includes("WON"));
   assert.ok(appm.FINAL_STATES.includes("UNSERVICEABLE"));
+  assert.equal(appm.normStage("PROPOSAL_SENT"), "SENT");
+  assert.equal(appm.normStage("TRIAGED"), "WORKING");
 });
 
 test("injection scan flags instruction attacks in lead content", () => {

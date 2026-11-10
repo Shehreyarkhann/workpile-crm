@@ -36,11 +36,11 @@ test("bulk: assign + advance + snooze across many leads at once", async () => {
   const adv = await J("/api/leads/bulk", { method: "POST", body: { ids: [ids[0]], action: "advance" } }, { Cookie: cookie });
   assert.equal(adv.j.ok, 1);
   const l = await J(`/api/leads/${ids[0]}`, {}, { Cookie: cookie });
-  assert.equal(l.j.lead.state, "TRIAGED");
+  assert.equal(l.j.lead.state, "WORKING"); // v3: NEW advances to WORKING (was TRIAGED)
   const snz = await J("/api/leads/bulk", { method: "POST", body: { ids: [ids[1]], action: "snooze", days: 7 } }, { Cookie: cookie });
   assert.equal(snz.j.ok, 1);
   const bad = await J("/api/leads/bulk", { method: "POST", body: { ids: [ids[2]], action: "advance" } }, { Cookie: cookie });
-  assert.equal(bad.j.ok, 1); // NEW → TRIAGED
+  assert.equal(bad.j.ok, 1); // NEW → WORKING (v3)
 });
 
 test("two-way texting: a customer SMS reply threads onto the lead and stops the cadence", async () => {

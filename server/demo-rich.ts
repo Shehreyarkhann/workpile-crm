@@ -27,10 +27,10 @@ const items1 = [{ price_book_item_id: pb[0].id, name: pb[0].name, qty: 1, unit_p
 
 // Board coverage
 mkLead("Maria Santos", "+15165550201", "maria@example.com", "Water damage cleanup", 6900, "NEW", 0, "Pipe burst in kitchen, water spreading — need someone today", { urgency: "emergency", responded: true });
-mkLead("David Kim", "+15165550202", "david@example.com", "Mold remediation", 4800, "TRIAGED", 2, "Black mold behind bathroom wall, kids coughing at night", { responded: true });
-const qual = mkLead("Susan Wright", "+15165550203", "susan@example.com", "Fire & smoke restoration", 14500, "QUALIFYING", 3, "Electrical fire in garage, smoke through the whole house", { responded: true, next: "Site visit — confirm scope" });
+mkLead("David Kim", "+15165550202", "david@example.com", "Mold remediation", 4800, "WORKING", 2, "Black mold behind bathroom wall, kids coughing at night", { responded: true });
+const qual = mkLead("Susan Wright", "+15165550203", "susan@example.com", "Fire & smoke restoration", 14500, "WORKING", 3, "Electrical fire in garage, smoke through the whole house", { responded: true, next: "Site visit — confirm scope" });
 // Ready for approval + pending approval packet (Approval Inbox hero shot)
-const rfa = mkLead("James O'Brien", "+15165550204", "james@example.com", "Water damage cleanup", 4550, "READY_FOR_APPROVAL", 1, "Basement flooded after storm, 2 inches standing water, finished basement", { responded: true, next: "Awaiting approval" });
+const rfa = mkLead("James O'Brien", "+15165550204", "james@example.com", "Water damage cleanup", 4550, "PROPOSAL", 1, "Basement flooded after storm, 2 inches standing water, finished basement", { responded: true, next: "Awaiting approval" });
 mkProposal(rfa, items1);
 db.prepare("INSERT INTO approvals (id,workspace_id,lead_id,proposal_id,submitted_by,approver_id,tier,submitted_at) VALUES (?,?,?,?,?,?,?,?)")
   .run(uid("apr"), ws, rfa, db.prepare("SELECT id FROM proposals WHERE lead_id=?").get(rfa).id, lo.id, approver.id, "manager", new Date(Date.now() - 2 * 3600000).toISOString());

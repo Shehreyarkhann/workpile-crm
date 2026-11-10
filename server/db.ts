@@ -72,6 +72,12 @@ export function initSchema() {
   CREATE TABLE IF NOT EXISTS auth_tokens (id TEXT PRIMARY KEY, user_id TEXT, kind TEXT, token_hash TEXT, expires_at TEXT, used_at TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS followup_enrollments (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, proposal_id TEXT, step_idx INTEGER DEFAULT 0, next_due_at TEXT, status TEXT DEFAULT 'active', stop_reason TEXT, created_at TEXT, updated_at TEXT);
   CREATE TABLE IF NOT EXISTS push_subscriptions (id TEXT PRIMARY KEY, user_id TEXT, endpoint TEXT UNIQUE, subscription TEXT, created_at TEXT);
+  CREATE TABLE IF NOT EXISTS workers (id TEXT PRIMARY KEY, workspace_id TEXT, name TEXT, phone TEXT, labor_class_id TEXT, linked_user_id TEXT, active INTEGER DEFAULT 1, created_at TEXT);
+  CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, proposal_id TEXT, stage TEXT DEFAULT 'SCHEDULED', value REAL DEFAULT 0, sector TEXT DEFAULT 'private', scheduled_start TEXT, scheduled_end TEXT, invoice_status TEXT DEFAULT 'not_ready', packet_sent_at TEXT, created_from TEXT DEFAULT 'sign', closed_at TEXT, created_at TEXT, updated_at TEXT);
+  CREATE TABLE IF NOT EXISTS inbox_comments (id TEXT PRIMARY KEY, workspace_id TEXT, inbox_item_id TEXT, user_id TEXT, body TEXT, created_at TEXT);
+  CREATE TABLE IF NOT EXISTS inbox_rules (id TEXT PRIMARY KEY, workspace_id TEXT, name TEXT, match_field TEXT, match_value TEXT, action TEXT, action_value TEXT, active INTEGER DEFAULT 1, created_at TEXT);
+  CREATE TABLE IF NOT EXISTS canned_replies (id TEXT PRIMARY KEY, workspace_id TEXT, category TEXT, title TEXT, body TEXT, created_at TEXT);
+  CREATE TABLE IF NOT EXISTS callbacks (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, due_at TEXT, note TEXT, status TEXT DEFAULT 'open', created_by TEXT, created_at TEXT, completed_at TEXT);
   `);
   // additive columns for existing DBs (expand step of expand-migrate-contract)
   for (const stmt of [
@@ -122,7 +128,52 @@ export function initSchema() {
     "ALTER TABLE workspaces ADD COLUMN booking_enabled INTEGER DEFAULT 0",
     "ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0",
     "ALTER TABLE webhook_endpoints ADD COLUMN events TEXT DEFAULT 'outcome.final'",
+    // ---- v3 (slices 28-36) ----
+    "ALTER TABLE leads ADD COLUMN legacy_state TEXT",
+    "ALTER TABLE leads ADD COLUMN stage_changed_at TEXT",
+    "ALTER TABLE leads ADD COLUMN hold_flag INTEGER DEFAULT 0",
+    "ALTER TABLE leads ADD COLUMN hold_until TEXT",
+    "ALTER TABLE workspaces ADD COLUMN approval_policy TEXT DEFAULT 'amount'",
+    "ALTER TABLE workspaces ADD COLUMN approval_threshold REAL DEFAULT 25000",
+    "ALTER TABLE workspaces ADD COLUMN business_hours TEXT",
+    "ALTER TABLE time_entries ADD COLUMN worker_id TEXT",
+    "ALTER TABLE job_crew ADD COLUMN worker_id TEXT",
+    "ALTER TABLE job_schedule ADD COLUMN worker_id TEXT",
+    "ALTER TABLE field_reports ADD COLUMN worker_id TEXT",
+    "ALTER TABLE timesheets ADD COLUMN worker_id TEXT",
+    "ALTER TABLE outcome_deliveries ADD COLUMN superseded_at TEXT",
+    "ALTER TABLE proposals ADD COLUMN options TEXT",
+    "ALTER TABLE proposals ADD COLUMN selected_option TEXT",
+    "ALTER TABLE proposals ADD COLUMN expires_at TEXT",
+    "ALTER TABLE proposals ADD COLUMN view_count INTEGER DEFAULT 0",
+    "ALTER TABLE proposals ADD COLUMN first_viewed_at TEXT",
+    "ALTER TABLE inbox_items ADD COLUMN claimed_by TEXT",
+    "ALTER TABLE inbox_items ADD COLUMN claimed_at TEXT",
+    "ALTER TABLE change_orders ADD COLUMN job_id TEXT",
+    "ALTER TABLE documents ADD COLUMN job_id TEXT",
   ]) { try { db.exec(stmt); } catch { /* already present */ } }
+  // ---- v3 stage migration (idempotent): v2 states -> v3 stages; ON_HOLD becomes a flag ----
+  try {
+    db.exec("UPDATE leads SET legacy_state=state WHERE legacy_state IS NULL AND state IN ('TRIAGED','QUALIFYING','READY_FOR_APPROVAL','APPROVED','PROPOSAL_DRAFTED','PROPOSAL_SENT','IN_FOLLOW_UP','ON_HOLD')");
+    db.exec("UPDATE leads SET hold_flag=1 WHERE state='ON_HOLD' AND COALESCE(hold_flag,0)=0");
+    db.exec("UPDATE leads SET state='QUALIFIED' WHERE state='ON_HOLD'");
+    db.exec("UPDATE leads SET state='WORKING' WHERE state IN ('TRIAGED','QUALIFYING')");
+    db.exec("UPDATE leads SET state='PROPOSAL' WHERE state IN ('READY_FOR_APPROVAL','APPROVED','PROPOSAL_DRAFTED')");
+    db.exec("UPDATE leads SET state='SENT' WHERE state='PROPOSAL_SENT'");
+    db.exec("UPDATE leads SET state='FOLLOWUP' WHERE state='IN_FOLLOW_UP'");
+    db.exec("UPDATE leads SET stage_changed_at=COALESCE(stage_changed_at, updated_at, created_at)");
+    // roster seed: every login user is also a worker (linked), created once
+    const users = db.prepare("SELECT id, workspace_id, name, labor_class_id FROM users").all() as any[];
+    for (const u of users) {
+      const exists = db.prepare("SELECT id FROM workers WHERE linked_user_id=?").get(u.id);
+      if (!exists) db.prepare("INSERT INTO workers (id,workspace_id,name,phone,labor_class_id,linked_user_id,active,created_at) VALUES (?,?,?,?,?,?,1,?)")
+        .run("wrk_" + u.id.replace(/^usr_/, ""), u.workspace_id, u.name, "", u.labor_class_id || null, u.id, now());
+    }
+    // backfill time_entries.worker_id from the linked worker of user_id
+    db.exec("UPDATE time_entries SET worker_id=(SELECT w.id FROM workers w WHERE w.linked_user_id=time_entries.user_id) WHERE worker_id IS NULL AND user_id IS NOT NULL");
+    db.exec("UPDATE job_crew SET worker_id=(SELECT w.id FROM workers w WHERE w.linked_user_id=job_crew.user_id) WHERE worker_id IS NULL AND user_id IS NOT NULL");
+    db.exec("UPDATE job_schedule SET worker_id=(SELECT w.id FROM workers w WHERE w.linked_user_id=job_schedule.user_id) WHERE worker_id IS NULL AND user_id IS NOT NULL");
+  } catch { /* migration is best-effort idempotent; schema guards above already applied */ }
 }
 
 export function logEvent(workspaceId: string, leadId: string, actor: string, type: string, fromState: string | null, toState: string | null, payload: any = {}) {

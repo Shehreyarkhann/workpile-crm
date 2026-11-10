@@ -33,7 +33,7 @@ test("HTTP: paged leads caps page size and reports totals; PATCH edits a lead", 
   const r2 = await (await fetch(`http://localhost:${port}/api/leads/${leadId}`, { method: "PATCH", headers: H, body: JSON.stringify({ est_value: 7777, next_action: "Call spouse" }) })).json();
   assert.equal(r2.lead.est_value, 7777); assert.equal(r2.lead.next_action, "Call spouse");
   const r3 = await (await fetch(`http://localhost:${port}/api/dashboard`, { headers: H })).json();
-  assert.equal(r3.metrics.total_leads, 250); assert.ok(r3.funnel.length >= 8); assert.equal(r3.series.length, 14);
+  assert.equal(r3.metrics.total_leads, 250); assert.ok(r3.funnel.length >= 7); assert.equal(r3.series.length, 14);
   const r4 = await (await fetch(`http://localhost:${port}/api/price-book`, { method: "POST", headers: H, body: JSON.stringify({ name: "HTTP item", standard_price: 900, floor_price: 700 }) })).json();
   assert.equal(r4.standard_price, 900);
   (srv as any).closeAllConnections?.(); srv.close();

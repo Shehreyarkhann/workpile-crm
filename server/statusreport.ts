@@ -16,8 +16,8 @@ export function weeklyReport(ws: string, week?: string) {
   const proposals = one(`SELECT COUNT(*) c, COALESCE(SUM(total),0) v FROM proposals WHERE workspace_id=? AND date(created_at)>=? AND date(created_at)<=?`, ws, from, to);
   const decided = one(`SELECT COUNT(*) c, SUM(CASE WHEN decision='approved' THEN 1 ELSE 0 END) a FROM approvals WHERE workspace_id=? AND decided_at IS NOT NULL AND date(decided_at)>=? AND date(decided_at)<=?`, ws, from, to);
   const pendingApprovals = one(`SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NULL`, ws).c;
-  const backlog = one(`SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state IN ('NEW','TRIAGED','QUALIFYING')`, ws).c;
-  const backlogValue = one(`SELECT COALESCE(SUM(est_value),0) v FROM leads WHERE workspace_id=? AND state IN ('NEW','TRIAGED','QUALIFYING','QUALIFIED','READY_FOR_APPROVAL')`, ws).v;
+  const backlog = one(`SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state IN ('NEW','WORKING')`, ws).c;
+  const backlogValue = one(`SELECT COALESCE(SUM(est_value),0) v FROM leads WHERE workspace_id=? AND state IN ('NEW','WORKING','QUALIFIED','PROPOSAL')`, ws).v;
   const fr = one(`SELECT COUNT(*) t, SUM(CASE WHEN status='submitted' THEN 1 ELSE 0 END) s FROM field_reports WHERE workspace_id=? AND report_date>=? AND report_date<=?`, ws, from, to);
   const ts = one(`SELECT COUNT(*) t, SUM(CASE WHEN status='submitted' THEN 1 ELSE 0 END) s FROM timesheets WHERE workspace_id=? AND week_of=?`, ws, from);
   const labor = one(`SELECT COALESCE(SUM(hours),0) h, COALESCE(SUM(amount),0) a, COUNT(DISTINCT lead_id) jobs FROM time_entries WHERE workspace_id=? AND entry_date>=? AND entry_date<=?`, ws, from, to);
@@ -27,6 +27,13 @@ export function weeklyReport(ws: string, week?: string) {
   const inboxOpen = one(`SELECT COUNT(*) c FROM inbox_items WHERE workspace_id=? AND COALESCE(status,'open')='open'`, ws).c;
   const sched = one(`SELECT COUNT(*) c, COUNT(DISTINCT lead_id) jobs FROM job_schedule WHERE workspace_id=? AND work_date>=? AND work_date<=?`, ws, from, to);
   const undelivered = one(`SELECT COUNT(*) c FROM outcome_deliveries WHERE workspace_id=? AND delivered_at IS NULL`, ws).c;
+  // v3 slice 36 additions: jobs completed, labor variance, touches, rehash wins, paperwork outstanding
+  const jobsDone = one(`SELECT COUNT(*) c FROM jobs WHERE workspace_id=? AND stage IN ('PAID','CLOSED') AND date(updated_at)>=? AND date(updated_at)<=?`, ws, from, to).c;
+  const variance = db.prepare(`SELECT l.service_requested, c.name customer, j.value job_value, SUM(t.amount) labor_cost FROM jobs j JOIN leads l ON l.id=j.lead_id LEFT JOIN contacts c ON c.id=l.contact_id LEFT JOIN time_entries t ON t.lead_id=j.lead_id WHERE j.workspace_id=? GROUP BY j.id HAVING labor_cost > j.value * 0.5 ORDER BY (labor_cost / MAX(j.value,1)) DESC LIMIT 5`).all(ws) as any[];
+  const touches = one(`SELECT COUNT(*) c FROM activities WHERE workspace_id=? AND date(created_at)>=? AND date(created_at)<=?`, ws, from, to).c
+    + one(`SELECT COUNT(*) c FROM messages_outbox WHERE workspace_id=? AND COALESCE(direction,'out')='out' AND date(created_at)>=? AND date(created_at)<=?`, ws, from, to).c;
+  const rehash = one(`SELECT COUNT(*) c FROM lead_events WHERE workspace_id=? AND type='state_changed' AND to_state='WORKING' AND payload LIKE '%reactivated%' AND date(created_at)>=? AND date(created_at)<=?`, ws, from, to).c;
+  const paperworkOut = one(`SELECT COUNT(*) c FROM documents d JOIN jobs j ON j.id=d.job_id WHERE d.workspace_id=? AND d.required=1 AND d.status!='received' AND j.stage NOT IN ('CLOSED')`, ws).c;
   const pct = (s: number, t: number) => t > 0 ? Math.round((s / t) * 100) : null;
   const r = {
     week_of: from, week_to: to,
@@ -43,6 +50,8 @@ export function weeklyReport(ws: string, week?: string) {
     inbox: { received: inboxIn, cleared: inboxDone, open_now: inboxOpen },
     scheduled: { assignments: sched.c, jobs: sched.jobs },
     handoffs_undelivered: undelivered,
+    jobs_completed: jobsDone, labor_variance_watch: variance.map(v => ({ service: v.service_requested, customer: v.customer, job_value: v.job_value, labor_cost: Math.round(v.labor_cost * 100) / 100, pct_of_value: v.job_value > 0 ? Math.round(1000 * v.labor_cost / v.job_value) / 10 : null })),
+    touches_made: touches, rehash_reactivations: rehash, paperwork_outstanding: paperworkOut,
   };
   const money = (n: number) => "$" + Math.round(n || 0).toLocaleString();
   const lines = [
@@ -51,6 +60,8 @@ export function weeklyReport(ws: string, week?: string) {
     `Proposals: ${r.proposals.count} created (${money(r.proposals.value)}) · Won: ${r.won.count} (${money(r.won.value)}) · Lost: ${r.lost.count} · No response: ${r.no_response}`,
     `Approvals: ${r.approvals.decided} decided (${r.approvals.rate ?? "—"}% approved) · ${r.approvals.pending} waiting`,
     `Field: reports ${r.field_reports.filed}/${r.field_reports.expected} (${r.field_reports.pct ?? "—"}%) · Timesheets ${r.timesheets.submitted}/${r.timesheets.expected} (${r.timesheets.pct ?? "—"}%) · Labor ${r.labor.hours}h (${money(r.labor.cost)}) across ${r.labor.jobs} jobs · ${r.scheduled.assignments} crew assignments`,
+    `Jobs completed: ${r.jobs_completed} · Paperwork outstanding: ${r.paperwork_outstanding} · Touches made: ${r.touches_made} · Rehash reactivations: ${r.rehash_reactivations}`,
+    ...(r.labor_variance_watch.length ? [`Labor variance watch: ` + r.labor_variance_watch.map(v => `${v.customer || v.service} — labor ${money(v.labor_cost)} = ${v.pct_of_value}% of ${money(v.job_value)} job`).join("; ")] : []),
     `Inbox: ${r.inbox.received} received · ${r.inbox.cleared} cleared · ${r.inbox.open_now} still open · Handoffs undelivered: ${r.handoffs_undelivered}`,
   ];
   return { ...r, text: lines.join("\n") };

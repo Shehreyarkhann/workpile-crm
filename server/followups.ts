@@ -7,11 +7,28 @@ import { db, uid, now } from "./db.ts";
 import { queueAndDeliver } from "./comms.ts";
 import { ensureSignToken } from "./sign.ts";
 
+// v3 slice 34: 12-touch persistence (Hatch pattern) — deals die from under-touching.
+// Days are BUSINESS days (follow-up timers never burn nights/weekends).
 export const DEFAULT_STEPS = [
-  { day: 2, channel: "email", template: "Hi {name}, just floating your proposal from {business} back to the top of your inbox — total {total}. Review & sign here: {link}" },
-  { day: 5, channel: "sms", template: "{business}: your proposal ({total}) is waiting — review & sign: {link}" },
-  { day: 10, channel: "email", template: "Hi {name}, last nudge from {business} — your proposal ({total}) is still open here: {link}. If the timing is wrong, just reply and tell us; no pressure either way." },
+  { day: 0, channel: "email", template: "Hi {name}, your proposal from {business} is ready — total {total}. Review & sign here: {link}" },
+  { day: 1, channel: "sms", template: "{business}: hi {name} — your proposal ({total}) is ready when you are: {link}" },
+  { day: 3, channel: "email", template: "Hi {name}, floating your {business} proposal ({total}) back up — any questions I can answer? {link}" },
+  { day: 5, channel: "sms", template: "{business}: still holding your slot, {name}. Proposal: {link}" },
+  { day: 8, channel: "email", template: "Hi {name} — quick check-in on the {business} proposal ({total}). If scope or timing needs adjusting, tell me and we'll rework it: {link}" },
+  { day: 12, channel: "sms", template: "{business}: {name}, want us to keep this proposal open? Reply YES and we will. {link}" },
+  { day: 18, channel: "email", template: "Hi {name}, checking in from {business} — your proposal ({total}) is still open here: {link}. No pressure either way; a reply helps us plan the schedule." },
+  { day: 26, channel: "sms", template: "{business}: last regular check-in, {name} — proposal {total}: {link}" },
+  { day: 35, channel: "email", template: "Hi {name} — seasons change schedules. If the work in your {business} proposal is still on your list, we're ready: {link}" },
+  { day: 45, channel: "sms", template: "{business}: {name}, closing the loop soon on your proposal — {link}" },
+  { day: 60, channel: "email", template: "Hi {name}, final note from {business} on this proposal ({total}): {link}. If it's a no for now, that's fine — we'll be here when it matters." },
+  { day: 75, channel: "email", template: "Hi {name} — archiving your {business} proposal after this note. Anything changes, one reply reopens it with the same pricing conversation: {link}" },
 ];
+export function addBusinessDays(from: Date, days: number): Date {
+  const d = new Date(from); let added = 0;
+  while (added < days) { d.setDate(d.getDate() + 1); const wd = d.getDay(); if (wd !== 0 && wd !== 6) added++; }
+  d.setHours(13, 0, 0, 0); // ~8am ET — start of the business day, never 2am
+  return d;
+}
 export function stepsFor(ws: any): any[] {
   try { const p = JSON.parse(ws.followup_steps || "null"); if (Array.isArray(p) && p.length) return p; } catch {}
   return DEFAULT_STEPS;
@@ -26,7 +43,7 @@ export function enrollFollowup(workspaceId: string, leadId: string, proposalId: 
   const steps = stepsFor(ws);
   const id = uid("fup");
   db.prepare("INSERT INTO followup_enrollments (id,workspace_id,lead_id,proposal_id,step_idx,next_due_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)")
-    .run(id, workspaceId, leadId, proposalId, 0, new Date(Date.now() + steps[0].day * 86400000).toISOString(), now(), now());
+    .run(id, workspaceId, leadId, proposalId, 0, addBusinessDays(new Date(), steps[0].day).toISOString(), now(), now());
   return id;
 }
 export function stopFollowups(leadId: string, reason: string) {
@@ -56,7 +73,7 @@ export async function processFollowups(baseUrl = ""): Promise<{ sent: number; st
       sent++;
     }
     const next = steps[e.step_idx + 1];
-    if (next) db.prepare("UPDATE followup_enrollments SET step_idx=?, next_due_at=?, updated_at=? WHERE id=?").run(e.step_idx + 1, new Date(Date.now() + (next.day - step.day) * 86400000).toISOString(), now(), e.id);
+    if (next) db.prepare("UPDATE followup_enrollments SET step_idx=?, next_due_at=?, updated_at=? WHERE id=?").run(e.step_idx + 1, addBusinessDays(new Date(), Math.max(1, next.day - step.day)).toISOString(), now(), e.id);
     else db.prepare("UPDATE followup_enrollments SET status='done', updated_at=? WHERE id=?").run(now(), e.id);
   }
   return { sent, stopped };

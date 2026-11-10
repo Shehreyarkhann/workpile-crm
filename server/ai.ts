@@ -3,7 +3,7 @@
 // and RECOMMEND; every mutation runs through an explicit human-approved apply call.
 import { db, uid, now } from "./db.ts";
 
-const OPEN = ["NEW", "TRIAGED", "QUALIFYING", "QUALIFIED", "READY_FOR_APPROVAL", "APPROVED", "PROPOSAL_DRAFTED", "PROPOSAL_SENT", "IN_FOLLOW_UP", "ON_HOLD"];
+const OPEN = ["NEW", "WORKING", "QUALIFIED", "PROPOSAL", "SENT", "FOLLOWUP"];
 
 export function scoreLead(l: any): { score: number; temperature: string; flags: string[] } {
   let score = 30; const flags: string[] = [];
@@ -86,10 +86,10 @@ export function reactivateStale(ws: string, actorId: string) {
 // ---------- slice 16: suggestions, richer insights, automations ----------
 export function nextBestAction(l: any, sentDays?: number): { kind: string; label: string; detail: string } {
   const sc = scoreLead(l); const ageDays = Math.floor((Date.now() - new Date(l.updated_at || l.created_at).getTime()) / 86400000);
-  if (l.state === "PROPOSAL_SENT" || l.state === "IN_FOLLOW_UP") { const d = sentDays ?? 0; return { kind: "nudge", label: d >= 4 ? "Nudge now — proposal going cold" : "Follow up on the proposal", detail: d >= 1 ? `Sent ${d} day${d === 1 ? "" : "s"} ago, still unsigned. A short personal nudge beats waiting for the cadence.` : "Proposal is out. Stay close while they decide." }; }
-  if (!l.first_response_at && ["NEW", "TRIAGED"].includes(l.state)) return { kind: "call", label: sc.temperature === "hot" ? "Call now — hot lead, never contacted" : "Make first contact today", detail: "Speed-to-lead decides win rates: leads contacted in the first hour convert multiples better." };
+  if (l.state === "SENT" || l.state === "FOLLOWUP") { const d = sentDays ?? 0; return { kind: "nudge", label: d >= 4 ? "Nudge now — proposal going cold" : "Follow up on the proposal", detail: d >= 1 ? `Sent ${d} day${d === 1 ? "" : "s"} ago, still unsigned. A short personal nudge beats waiting for the cadence.` : "Proposal is out. Stay close while they decide." }; }
+  if (!l.first_response_at && ["NEW", "WORKING"].includes(l.state)) return { kind: "call", label: sc.temperature === "hot" ? "Call now — hot lead, never contacted" : "Make first contact today", detail: "Speed-to-lead decides win rates: leads contacted in the first hour convert multiples better." };
   if (!l.next_action_due_at && OPEN.includes(l.state)) return { kind: "fix_step", label: "Set the next step", detail: "No owner action is scheduled. A lead without a next step is a lead being forgotten." };
-  if (l.state === "READY_FOR_APPROVAL") return { kind: "approve", label: "Send to the approver", detail: "The packet is the product here — run the completeness check, then submit." };
+  if (l.state === "PROPOSAL") return { kind: "approve", label: "Send the proposal", detail: "Readiness is a checklist, not a gate — check what is missing, then send. Big proposals may route to an approver by policy." };
   if (ageDays >= 14 && OPEN.includes(l.state)) return { kind: "reactivate", label: `Reactivate — untouched ${ageDays} days`, detail: "Cold, not dead. One call today decides whether this is pipeline or history." };
   if (!l.owner_id && OPEN.includes(l.state)) return { kind: "assign", label: "Assign an owner", detail: "Unowned leads don't get worked." };
   return { kind: "work", label: "Work the next step", detail: l.next_action ? `${l.next_action} — due ${String(l.next_action_due_at || "").slice(0, 10)}.` : "Move it one stage closer to a proposal." };
@@ -99,8 +99,8 @@ export function insightsV2(ws: string) {
   const out = insights(ws);
   const aging = db.prepare("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NULL AND julianday('now') - julianday(submitted_at) >= 1").get(ws) as any;
   if (aging.c) out.push({ kind: "approvals", icon: "⚖️", title: `${aging.c} approval packet${aging.c === 1 ? "" : "s"} waiting 24h+`, detail: "Approvals are the bottleneck this product exists to kill. Decide or delegate today.", action: "Review approvals" });
-  const cold = db.prepare(`SELECT l.id lead_id, c.name contact_name, CAST((julianday('now') - julianday(COALESCE(p.sent_at, p.created_at))) AS INTEGER) days FROM proposals p JOIN leads l ON l.id=p.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE p.workspace_id=? AND p.status='sent' AND l.state IN ('PROPOSAL_SENT','IN_FOLLOW_UP') AND julianday('now') - julianday(COALESCE(p.sent_at, p.created_at)) >= 4 ORDER BY days DESC LIMIT 1`).get(ws) as any;
-  const coldCount = db.prepare(`SELECT COUNT(*) c FROM proposals p JOIN leads l ON l.id=p.lead_id WHERE p.workspace_id=? AND p.status='sent' AND l.state IN ('PROPOSAL_SENT','IN_FOLLOW_UP') AND julianday('now') - julianday(COALESCE(p.sent_at, p.created_at)) >= 4`).get(ws) as any;
+  const cold = db.prepare(`SELECT l.id lead_id, c.name contact_name, CAST((julianday('now') - julianday(COALESCE(p.sent_at, p.created_at))) AS INTEGER) days FROM proposals p JOIN leads l ON l.id=p.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE p.workspace_id=? AND p.status='sent' AND l.state IN ('SENT','FOLLOWUP') AND julianday('now') - julianday(COALESCE(p.sent_at, p.created_at)) >= 4 ORDER BY days DESC LIMIT 1`).get(ws) as any;
+  const coldCount = db.prepare(`SELECT COUNT(*) c FROM proposals p JOIN leads l ON l.id=p.lead_id WHERE p.workspace_id=? AND p.status='sent' AND l.state IN ('SENT','FOLLOWUP') AND julianday('now') - julianday(COALESCE(p.sent_at, p.created_at)) >= 4`).get(ws) as any;
   if (coldCount.c) out.push({ kind: "cold", icon: "🧊", title: `${coldCount.c} proposal${coldCount.c === 1 ? "" : "s"} going cold`, detail: `Oldest: ${cold.contact_name}, waiting ${cold.days} days. The cadence nudges, but a human-sent nudge lands harder.`, action: "Nudge the oldest now", lead_id: cold.lead_id });
   return out;
 }

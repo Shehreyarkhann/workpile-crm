@@ -30,11 +30,11 @@ test("forecast: stage-weighted pipeline + at-risk cold proposals + intel", async
   const G = (globalThis as any).__; const { uid, now } = dbm;
   const c = await J("/api/leads", { method: "POST", body: { contact: { name: "Risky Rick", phone: "+15165550701", email: "rick@x.co" }, service_requested: "Mold remediation", message: "x", owner_id: G.owner } }, { Cookie: cookie });
   const leadId = c.j.lead.id;
-  dbm.db.prepare("UPDATE leads SET state='PROPOSAL_SENT', est_value=10000 WHERE id=?").run(leadId);
+  dbm.db.prepare("UPDATE leads SET state='SENT', est_value=10000 WHERE id=?").run(leadId);
   dbm.db.prepare("INSERT INTO proposals (id,workspace_id,lead_id,version,status,total,sent_at,created_at) VALUES (?,?,?,?,?,?,?,?)").run(uid("prop"), G.ws, leadId, 1, "sent", 10000, "2026-10-20T00:00:00.000Z", "2026-10-20T00:00:00.000Z");
   const f = await J("/api/forecast", {}, { Cookie: cookie });
   assert.equal(f.j.raw_pipeline, 10000);
-  assert.equal(f.j.weighted_pipeline, 8000); // PROPOSAL_SENT weight 0.80
+  assert.equal(f.j.weighted_pipeline, 8000); // SENT weight 0.80 (v3)
   assert.equal(f.j.at_risk.length, 1); assert.equal(f.j.at_risk[0].contact_name, "Risky Rick");
   assert.ok(f.j.at_risk[0].days_waiting >= 4);
 });

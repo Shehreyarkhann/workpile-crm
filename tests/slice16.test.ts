@@ -24,7 +24,7 @@ before(async () => {
   cookie = (await J("/api/auth/login", { method: "POST", body: { email: "o@t16.co", password: "password1" } })).cookie;
   const c = await J("/api/leads", { method: "POST", body: { contact: { name: "Cold Carl", phone: "+15165551101", email: "carl@x.co" }, service_requested: "Mold remediation", message: "x", owner_id: owner } }, { Cookie: cookie });
   coldLead = c.j.lead.id;
-  dbm.db.prepare("UPDATE leads SET state='PROPOSAL_SENT', est_value=8000 WHERE id=?").run(coldLead);
+  dbm.db.prepare("UPDATE leads SET state='SENT', est_value=8000 WHERE id=?").run(coldLead);
   dbm.db.prepare("INSERT INTO proposals (id,workspace_id,lead_id,version,status,total,sent_at,created_at) VALUES (?,?,?,?,?,?,?,?)").run(uid("prop"), ws, coldLead, 1, "sent", 8000, "2026-10-26T00:00:00.000Z", "2026-10-26T00:00:00.000Z");
   const h = await J("/api/leads", { method: "POST", body: { contact: { name: "Hot Hanna", phone: "+15165551102", email: "hanna@x.co" }, service_requested: "Water damage cleanup", message: "Flooded basement, need help this week please", urgency: "emergency", est_value: 12000 } }, { Cookie: cookie });
   hotLead = h.j.lead.id;

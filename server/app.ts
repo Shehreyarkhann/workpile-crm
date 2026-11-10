@@ -15,7 +15,7 @@ import { cleanupPreview, cleanupApply, insights, insightsV2, reactivateStale, sc
 import { emitEvent, EVENTS } from "./integrations.ts";
 import { queueAndDeliver, notify, notifyOwners, emailConfigured, smsConfigured } from "./comms.ts";
 import { weekStartOf, ensureWeek, chaseRow, sumDays } from "./timesheets.ts";
-import { rateFor, logTime, jobLabor, DEFAULT_CLASSES } from "./labor.ts";
+import { rateFor, logTime, jobLabor, DEFAULT_CLASSES, resolveWorker, listWorkers } from "./labor.ts";
 import { ensureDay, chaseReport, todayStr } from "./fieldreports.ts";
 import { weeklyReport } from "./statusreport.ts";
 import { enrollFollowup, stopFollowups } from "./followups.ts";
@@ -29,24 +29,22 @@ app.use((req: any, _res, next) => { // capture raw body for Stripe signature ver
 });
 app.use(express.json({ limit: "50mb" }));
 
-// ---------- state machine (§5.1) ----------
-export const TRANSITIONS: Record<string, string[]> = {
-  NEW: ["TRIAGED", "JUNK", "DUPLICATE", "UNSERVICEABLE"],
-  TRIAGED: ["QUALIFYING", "JUNK", "DUPLICATE", "UNSERVICEABLE"],
-  QUALIFYING: ["QUALIFIED", "UNSERVICEABLE", "JUNK", "DUPLICATE", "NO_RESPONSE"],
-  QUALIFIED: ["READY_FOR_APPROVAL", "ON_HOLD"],
-  READY_FOR_APPROVAL: ["APPROVED", "QUALIFIED", "ON_HOLD"],
-  APPROVED: ["PROPOSAL_DRAFTED", "PROPOSAL_SENT"],
-  PROPOSAL_DRAFTED: ["PROPOSAL_SENT"],
-  PROPOSAL_SENT: ["IN_FOLLOW_UP", "WON", "LOST"],
-  IN_FOLLOW_UP: ["WON", "LOST", "NO_RESPONSE"],
-  ON_HOLD: ["QUALIFYING", "QUALIFIED", "READY_FOR_APPROVAL"],
-  WON: [], LOST: [], NO_RESPONSE: ["QUALIFYING"], UNSERVICEABLE: [], JUNK: ["NEW"], DUPLICATE: [],
-};
+// ---------- flow v3 (spec v3 §4): free stage movement, soft guardrails ----------
+// Stages are labels a human moves freely (any -> any). Control comes from the audit
+// trail + finals discipline (reason required, WON confirmation), not a ratchet.
+export const STAGES = ["NEW", "WORKING", "QUALIFIED", "PROPOSAL", "SENT", "FOLLOWUP", "WON", "LOST", "NO_RESPONSE", "UNSERVICEABLE", "JUNK", "DUPLICATE"];
+export const OPEN_STAGES = ["NEW", "WORKING", "QUALIFIED", "PROPOSAL", "SENT", "FOLLOWUP"];
+// legacy v2 names accepted forever (old clients, bulk advance, integrations map in)
+export const LEGACY_STAGE: Record<string, string> = { TRIAGED: "WORKING", QUALIFYING: "WORKING", READY_FOR_APPROVAL: "PROPOSAL", APPROVED: "PROPOSAL", PROPOSAL_DRAFTED: "PROPOSAL", PROPOSAL_SENT: "SENT", IN_FOLLOW_UP: "FOLLOWUP", ON_HOLD: "QUALIFIED" };
+export const normStage = (s: string) => LEGACY_STAGE[s] || s;
+// kept for import compatibility — v3 has no transition table; any move is allowed
+export const TRANSITIONS: Record<string, string[]> = Object.fromEntries(STAGES.map(s => [s, STAGES.filter(x => x !== s)]));
 export const FINAL_STATES = ["WON", "LOST", "NO_RESPONSE", "UNSERVICEABLE", "JUNK", "DUPLICATE"];
 const OUTCOME_OF: Record<string, string> = { WON: "won", LOST: "lost", NO_RESPONSE: "no_response", UNSERVICEABLE: "na_unserviceable", JUNK: "junk", DUPLICATE: "duplicate" };
+const REASON_FINALS = ["LOST", "NO_RESPONSE"];
 
 function dedupeKey(phone?: string, email?: string) { return (phone || "").replace(/\D/g, "") || (email || "").toLowerCase().trim() || ""; }
+const moneyFmt = (n: number) => "$" + Math.round(n || 0).toLocaleString("en-US");
 function leadView(l: any) {
   if (!l) return null;
   const c = db.prepare("SELECT name,phone,email FROM contacts WHERE id=?").get(l.contact_id) as any;
@@ -82,6 +80,13 @@ function createLead(workspaceId: string, actor: string, input: any) {
   if (owner) notify(workspaceId, [owner], "lead.created", "New lead assigned to you", `${input.contact?.name || "New lead"} — ${input.service_requested || "service request"}`, id);
   if (owner) db.prepare("INSERT INTO tasks (id,workspace_id,lead_id,assignee_id,type,title,due_at,created_at) VALUES (?,?,?,?,?,?,?,?)")
     .run(uid("tsk"), workspaceId, id, owner, "follow_up", "First contact", new Date(Date.now() + 4 * 3600000).toISOString(), now());
+  // v3 slice 34: speed-to-lead — instant first touch inside a minute when automations are on (pre-approved template only)
+  try { const wsx: any = db.prepare("SELECT * FROM workspaces WHERE id=?").get(workspaceId);
+    if (wsx?.followup_enabled && (input.contact?.email || input.contact?.phone)) {
+      const ch = input.contact?.phone && input.consent?.contact_ok ? "sms" : (input.contact?.email ? "email" : "sms");
+      const to = ch === "sms" ? input.contact?.phone : input.contact?.email;
+      if (to) queueAndDeliver(workspaceId, { lead_id: id, channel: ch, to, subject: `We got your request — ${wsx.name}`, body: `Hi ${(input.contact?.name || "there").split(" ")[0]} — thanks for reaching out to ${wsx.name} about ${triage.service_guess || input.service_requested || "your project"}. We've got it, and a real person will call you shortly during business hours (Mon–Fri 8:00–5:30). Reply here any time.` }).catch(() => {});
+    } } catch { /* first touch never blocks lead creation */ }
   return { lead: leadView(db.prepare("SELECT * FROM leads WHERE id=?").get(id)), duplicate: false };
 }
 
@@ -119,28 +124,90 @@ export function outcomePayload(lead: any) {
   };
 }
 
-function transition(workspaceId: string, actor: string, lead: any, toState: string, extra: any = {}) {
-  const allowed = TRANSITIONS[lead.state] || [];
-  if (!allowed.includes(toState)) return { error: `Invalid transition ${lead.state} → ${toState}. Allowed: ${allowed.join(", ") || "none"}`, status: 422 };
-  if (toState === "READY_FOR_APPROVAL") {
-    const prop = db.prepare("SELECT * FROM proposals WHERE lead_id=? ORDER BY version DESC").get(lead.id) as any;
-    const check = packetCheck({ ...leadView(lead), pm_id: lead.pm_id }, prop);
-    if (!check.complete) return { error: "Completeness Gate failed", missing: check.missing, status: 422 };
-    const approver = lead.approver_id || (db.prepare("SELECT id FROM users WHERE workspace_id=? AND role IN ('OWNER','APPROVER') ORDER BY role LIMIT 1").get(workspaceId) as any)?.id;
-    db.prepare("INSERT INTO approvals (id,workspace_id,lead_id,proposal_id,submitted_by,approver_id,tier,submitted_at) VALUES (?,?,?,?,?,?,?,?)")
-      .run(uid("apr"), workspaceId, lead.id, prop?.id, actor, approver, (prop?.total || 0) > 25000 ? "ceo" : "manager", now());
-    notify(workspaceId, [approver], "approval.requested", "Approval waiting on you", `${leadView(lead).contact_name || "Lead"} — proposal $${prop?.total ?? ""} needs your decision`, lead.id);
+// ---- v3 approval policy (§4.4): off | amount (default, threshold) | always ----
+export function approvalRequiredFor(workspaceId: string, total: number): boolean {
+  const ws = db.prepare("SELECT approval_policy, approval_threshold FROM workspaces WHERE id=?").get(workspaceId) as any;
+  const policy = ws?.approval_policy || "amount";
+  if (policy === "off") return false;
+  if (policy === "always") return true;
+  return (total || 0) > (ws?.approval_threshold ?? 25000);
+}
+export function pendingApprovalFor(workspaceId: string, proposalId: string) {
+  return db.prepare("SELECT * FROM approvals WHERE workspace_id=? AND proposal_id=? AND decision IS NULL ORDER BY submitted_at DESC").get(workspaceId, proposalId);
+}
+export function approvedApprovalFor(workspaceId: string, proposalId: string) {
+  return db.prepare("SELECT * FROM approvals WHERE workspace_id=? AND proposal_id=? AND decision='approved' ORDER BY decided_at DESC").get(workspaceId, proposalId);
+}
+export function maybeRequestApproval(workspaceId: string, actor: string, lead: any, proposal: any) {
+  if (!proposal) return null;
+  if (!approvalRequiredFor(workspaceId, proposal.total || 0)) return null;
+  const pend = pendingApprovalFor(workspaceId, proposal.id);
+  if (pend) return pend;
+  const appr = approvedApprovalFor(workspaceId, proposal.id);
+  if (appr) return appr;
+  const approver = lead.approver_id || (db.prepare("SELECT id FROM users WHERE workspace_id=? AND role IN ('OWNER','APPROVER') ORDER BY role LIMIT 1").get(workspaceId) as any)?.id;
+  const id = uid("apr");
+  db.prepare("INSERT INTO approvals (id,workspace_id,lead_id,proposal_id,submitted_by,approver_id,tier,submitted_at) VALUES (?,?,?,?,?,?,?,?)")
+    .run(id, workspaceId, lead.id, proposal.id, actor, approver, (proposal.total || 0) > 25000 ? "ceo" : "manager", now());
+  notify(workspaceId, [approver], "approval.requested", "Approval waiting on you", `${leadView(lead).contact_name || "Lead"} — proposal $${proposal.total ?? ""} needs your decision`, lead.id);
+  return db.prepare("SELECT * FROM approvals WHERE id=?").get(id);
+}
+
+// ---- setStage: the v3 movement engine. Any stage -> any stage; finals discipline only ----
+export function setStage(workspaceId: string, actor: string, lead: any, toRaw: string, extra: any = {}) {
+  const toState = normStage(toRaw);
+  if (!STAGES.includes(toState)) return { error: `Unknown stage: ${toRaw}`, status: 422 };
+  const fromState = normStage(lead.state);
+  const wasFinal = FINAL_STATES.includes(fromState);
+  const isFinal = FINAL_STATES.includes(toState);
+  if (fromState === toState && !extra.force) return { lead: leadView(lead) };
+  const force = !!extra.force || actor === "api";
+  if (isFinal && !wasFinal && !force) {
+    if (REASON_FINALS.includes(toState) && !(extra.lost_reason || lead.lost_reason)) return { error: `${toState} needs a reason — pick one so the loss teaches the team something.`, code: "reason_required", status: 422 };
+    if (toState === "WON") {
+      const signed = db.prepare("SELECT id FROM proposals WHERE lead_id=? AND signed_at IS NOT NULL").get(lead.id);
+      if (!signed && !extra.confirm_no_proposal) return { error: "Marking WON without a signed proposal — confirm this is a verbal/legacy win.", code: "won_needs_confirmation", status: 422 };
+    }
   }
-  if (toState === "QUALIFIED") extra.qualified_at = now();
-  const sets = ["state=?", "updated_at=?", ...Object.keys(extra).map(k => `${k}=?`)];
-  db.prepare(`UPDATE leads SET ${sets.join(",")} WHERE id=?`).run(toState, now(), ...Object.values(extra), lead.id);
+  if (toState === "QUALIFIED" && !lead.qualified_at) extra.qualified_at = now();
+  const WRITABLE = ["lost_reason", "outcome_reason_detail", "competitor", "hold_reason", "pm_id", "owner_id", "approver_id", "qualified_at", "next_action", "next_action_due_at"];
+  const sets = ["state=?", "stage_changed_at=?", "updated_at=?", ...Object.keys(extra).filter(k => WRITABLE.includes(k)).map(k => `${k}=?`)];
+  const vals = Object.entries(extra).filter(([k]) => WRITABLE.includes(k)).map(([, v]) => v);
+  db.prepare(`UPDATE leads SET ${sets.join(",")} WHERE id=?`).run(toState, now(), now(), ...vals, lead.id);
   const updated = db.prepare("SELECT * FROM leads WHERE id=?").get(lead.id) as any;
-  logEvent(workspaceId, lead.id, actor, "state_changed", lead.state, toState, extra);
-  emitEvent(workspaceId, "lead.state_changed", { lead_id: lead.id, from_state: lead.state, to_state: toState });
-  if (FINAL_STATES.includes(toState)) { finalizeLead(workspaceId, actor, updated, toState); stopFollowups(lead.id, "finalized"); notifyOwners(workspaceId, "outcome.final", `Lead finalized: ${toState}`, `${leadView(updated).contact_name || lead.id} is now ${toState}`, lead.id); if (actor !== "api") emitEvent(workspaceId, "outcome.final", { lead_id: lead.id, outcome: OUTCOME_OF[toState], state: toState });
-    if (toState === "WON") { const wsx: any = db.prepare("SELECT * FROM workspaces WHERE id=?").get(workspaceId); const cv = leadView(updated);
+  if (wasFinal && !isFinal) { // reopen: supersede the outcome delivery, keep the audit trail
+    db.prepare("UPDATE outcome_deliveries SET superseded_at=? WHERE lead_id=? AND superseded_at IS NULL").run(now(), lead.id);
+    logEvent(workspaceId, lead.id, actor, "reopened", fromState, toState, { reason: extra.note || null });
+  }
+  logEvent(workspaceId, lead.id, actor, "state_changed", fromState, toState, extra);
+  emitEvent(workspaceId, "lead.state_changed", { lead_id: lead.id, from_state: fromState, to_state: toState });
+  if (toState === "PROPOSAL") { const prop = db.prepare("SELECT * FROM proposals WHERE lead_id=? ORDER BY version DESC").get(lead.id) as any; if (prop) maybeRequestApproval(workspaceId, actor, updated, prop); }
+  if (toState === "SENT") { const prop = db.prepare("SELECT * FROM proposals WHERE lead_id=? ORDER BY version DESC").get(lead.id) as any; if (prop) enrollFollowup(workspaceId, lead.id, prop.id); }
+  if (isFinal && !wasFinal) { finalizeLead(workspaceId, actor, updated, toState); stopFollowups(lead.id, "finalized"); notifyOwners(workspaceId, "outcome.final", `Lead finalized: ${toState}`, `${leadView(updated).contact_name || lead.id} is now ${toState}`, lead.id); if (actor !== "api") emitEvent(workspaceId, "outcome.final", { lead_id: lead.id, outcome: OUTCOME_OF[toState], state: toState });
+    if (toState === "WON") { ensureJobForLead(workspaceId, actor, updated); const wsx: any = db.prepare("SELECT * FROM workspaces WHERE id=?").get(workspaceId); const cv = leadView(updated);
       if (wsx?.review_on_won && wsx?.review_url && cv.contact_email) queueAndDeliver(workspaceId, { lead_id: lead.id, channel: "email", to: cv.contact_email, subject: `Thanks from ${wsx.name} — how did we do?`, body: `Hi ${cv.contact_name || "there"},\n\nThanks for choosing ${wsx.name}. If we earned it, a quick Google review helps a local business like ours more than any ad: ${wsx.review_url}\n\nAnd if a neighbor ever needs the same help, we'd be grateful for the referral.` }).catch(() => {}); } }
   return { lead: leadView(updated) };
+}
+// v2 name kept as a shim — every internal caller now gets v3 semantics
+function transition(workspaceId: string, actor: string, lead: any, toState: string, extra: any = {}) {
+  return setStage(workspaceId, actor, lead, toState, extra);
+}
+// ---- jobs (slice 30 core): a WON lead gets an operational Job exactly once ----
+export function ensureJobForLead(workspaceId: string, actor: string, lead: any) {
+  const existing = db.prepare("SELECT * FROM jobs WHERE lead_id=?").get(lead.id) as any;
+  if (existing) return existing;
+  const prop = db.prepare("SELECT * FROM proposals WHERE lead_id=? ORDER BY (signed_at IS NOT NULL) DESC, version DESC").get(lead.id) as any;
+  let value = lead.est_value || 0;
+  if (prop) { try { const opts = JSON.parse(prop.options || "null"); const sel = opts && prop.selected_option ? opts.find((o: any) => o.name === prop.selected_option) : null; value = sel ? sel.total : prop.total; } catch { value = prop.total; } }
+  const id = uid("job");
+  db.prepare("INSERT INTO jobs (id,workspace_id,lead_id,proposal_id,stage,value,sector,created_from,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
+    .run(id, workspaceId, lead.id, prop?.id || null, "SCHEDULED", value || 0, lead.sector || "private", prop?.signed_at ? "sign" : "manual", now(), now());
+  // the job inherits the lead's paperwork checklist (documents carry both ids)
+  db.prepare("UPDATE documents SET job_id=? WHERE lead_id=? AND (job_id IS NULL OR job_id='')").run(id, lead.id);
+  logEvent(workspaceId, lead.id, actor, "job_created", null, null, { job_id: id, value });
+  db.prepare("INSERT INTO tasks (id,workspace_id,lead_id,assignee_id,type,title,due_at,created_at) VALUES (?,?,?,?,?,?,?,?)")
+    .run(uid("tsk"), workspaceId, lead.id, lead.pm_id || lead.owner_id || null, "schedule_job", "Schedule the job + assign crew", new Date(Date.now() + 86400000).toISOString(), now());
+  return db.prepare("SELECT * FROM jobs WHERE id=?").get(id);
 }
 
 // ---------- auth ----------
@@ -205,7 +272,7 @@ app.get("/api/leads", requireAuth, (req: any, res) => {
   let rows = (db.prepare("SELECT * FROM leads WHERE workspace_id=? ORDER BY created_at DESC").all(ws) as any[]).map(leadView);
   if (scopeOwn(req.user)) rows = rows.filter(l => mine(req.user, l));
   if (req.query.state) rows = rows.filter(l => l.state === req.query.state);
-  if (req.query.bucket) { const B: Record<string, string[]> = { new: ["NEW", "TRIAGED"], working: ["QUALIFYING", "QUALIFIED", "IN_FOLLOW_UP"], approver: ["READY_FOR_APPROVAL"], proposal: ["APPROVED", "PROPOSAL_DRAFTED", "PROPOSAL_SENT"], won: ["WON"], closed: ["LOST", "NO_RESPONSE", "UNSERVICEABLE", "JUNK", "DUPLICATE", "ON_HOLD"] }; rows = rows.filter(l => (B[String(req.query.bucket)] || []).includes(l.state)); }
+  if (req.query.bucket) { const B: Record<string, string[]> = { new: ["NEW"], working: ["WORKING", "QUALIFIED", "FOLLOWUP"], proposal: ["PROPOSAL", "SENT"], won: ["WON"], closed: ["LOST", "NO_RESPONSE", "UNSERVICEABLE", "JUNK", "DUPLICATE"] }; rows = rows.filter(l => (B[String(req.query.bucket)] || []).includes(l.state)); }
   if (req.query.owner_id) rows = rows.filter(l => l.owner_id === req.query.owner_id);
   if (req.query.service) rows = rows.filter(l => l.service_requested === req.query.service);
   if (req.query.overdue) rows = rows.filter(l => l.next_action_due_at && l.next_action_due_at < now() && !FINAL_STATES.includes(l.state));
@@ -230,15 +297,44 @@ app.get("/api/leads/:id", requireAuth, (req: any, res) => {
   const approvals = db.prepare("SELECT * FROM approvals WHERE lead_id=? ORDER BY submitted_at DESC").all(l.id);
   res.json({ lead: leadView(l), events, tasks, proposals, documents: docs, site_visits: visits, activities, approvals });
 });
-app.post("/api/leads/:id/transition", requireAuth, (req: any, res) => {
+app.post("/api/leads/:id/transition", requireAuth, (req: any, res) => { // v2 route name, v3 engine.
+  // This compat/system route forces (internal flows, automations, older clients);
+  // interactive finals discipline (reason / WON confirmation) is enforced on /stage, the UI's route.
   const l = db.prepare("SELECT * FROM leads WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!l) return res.status(404).json({ error: { code: "not_found" } });
-  const extra: any = {};
-  for (const k of ["lost_reason", "outcome_reason_detail", "competitor", "hold_reason", "pm_id", "owner_id", "approver_id"]) if (req.body[k] !== undefined) extra[k] = req.body[k];
-  const r: any = transition(req.user.workspace_id, req.user.id, l, req.body.to_state, extra);
-  if (r.error) return res.status(r.status || 400).json({ error: { code: "transition_failed", message: r.error }, missing: r.missing });
-  audit(req.user.workspace_id, req.user.id, "lead.transition", "lead", l.id, { to: req.body.to_state });
+  const extra: any = { force: true };
+  for (const k of ["lost_reason", "outcome_reason_detail", "competitor", "hold_reason", "pm_id", "owner_id", "approver_id", "confirm_no_proposal", "note"]) if (req.body[k] !== undefined) extra[k] = req.body[k];
+  const r: any = setStage(req.user.workspace_id, req.user.id, l, req.body.to_state, extra);
+  if (r.error) return res.status(r.status || 400).json({ error: { code: r.code || "stage_failed", message: r.error }, missing: r.missing });
+  audit(req.user.workspace_id, req.user.id, "lead.stage", "lead", l.id, { to: req.body.to_state });
   res.json(r);
+});
+app.post("/api/leads/:id/stage", requireAuth, (req: any, res) => {
+  const l = db.prepare("SELECT * FROM leads WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!l) return res.status(404).json({ error: { code: "not_found" } });
+  if (scopeOwn(req.user) && !mine(req.user, l)) return res.status(404).json({ error: { code: "not_found" } });
+  const extra: any = {};
+  for (const k of ["lost_reason", "outcome_reason_detail", "competitor", "confirm_no_proposal", "note"]) if (req.body[k] !== undefined) extra[k] = req.body[k];
+  const r: any = setStage(req.user.workspace_id, req.user.id, l, req.body.to, extra);
+  if (r.error) return res.status(r.status || 400).json({ error: { code: r.code || "stage_failed", message: r.error } });
+  audit(req.user.workspace_id, req.user.id, "lead.stage", "lead", l.id, { to: req.body.to });
+  res.json(r);
+});
+app.post("/api/leads/:id/reopen", requireAuth, (req: any, res) => {
+  const l = db.prepare("SELECT * FROM leads WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!l) return res.status(404).json({ error: { code: "not_found" } });
+  if (!FINAL_STATES.includes(l.state)) return res.status(422).json({ error: { code: "not_final" } });
+  const to = req.body.to || (l.legacy_state && OPEN_STAGES.includes(normStage(l.legacy_state)) ? normStage(l.legacy_state) : "WORKING");
+  const r: any = setStage(req.user.workspace_id, req.user.id, l, to, { note: req.body.reason || "reopened" });
+  if (r.error) return res.status(r.status || 400).json({ error: { code: "reopen_failed", message: r.error } });
+  res.json(r);
+});
+app.post("/api/leads/:id/hold", requireAuth, (req: any, res) => {
+  const l = db.prepare("SELECT * FROM leads WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!l) return res.status(404).json({ error: { code: "not_found" } });
+  if (req.body.clear) { db.prepare("UPDATE leads SET hold_flag=0, hold_reason=NULL, hold_until=NULL, updated_at=? WHERE id=?").run(now(), l.id); logEvent(req.user.workspace_id, l.id, req.user.id, "hold_cleared", null, null, {}); }
+  else { db.prepare("UPDATE leads SET hold_flag=1, hold_reason=?, hold_until=?, updated_at=? WHERE id=?").run(req.body.reason || "On hold", req.body.until || null, now(), l.id); logEvent(req.user.workspace_id, l.id, req.user.id, "hold_set", null, null, { reason: req.body.reason, until: req.body.until }); }
+  res.json({ lead: leadView(db.prepare("SELECT * FROM leads WHERE id=?").get(l.id)) });
 });
 app.post("/api/leads/:id/contact", requireAuth, (req: any, res) => {
   const l = db.prepare("SELECT * FROM leads WHERE id=?").get(req.params.id) as any;
@@ -260,21 +356,46 @@ app.get("/api/templates", requireAuth, (req: any, res) => res.json(db.prepare("S
 app.post("/api/leads/:id/proposals", requireAuth, (req: any, res) => {
   const l = db.prepare("SELECT * FROM leads WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!l) return res.status(404).json({ error: { code: "not_found" } });
+  const priceItems = (arr: any[]) => { // price-book-only invariant (§26) applies to base lines AND every option
+    let total = 0, below = false;
+    for (const it of arr) {
+      const pb = db.prepare("SELECT * FROM price_book_items WHERE id=? AND workspace_id=?").get(it.price_book_item_id, req.user.workspace_id) as any;
+      if (!pb) return { error: `Line item must come from the price book: ${it.price_book_item_id || it.name || "?"}` };
+      const price = it.unit_price !== undefined ? it.unit_price : pb.standard_price;
+      if (price < pb.floor_price) below = true;
+      total += price * (it.qty || 1);
+      it.name = pb.name; it.unit_price = price;
+    }
+    return { total, below };
+  };
   const items = req.body.line_items || [];
-  let total = 0, below = false;
-  for (const it of items) {
-    const pb = db.prepare("SELECT * FROM price_book_items WHERE id=? AND workspace_id=?").get(it.price_book_item_id, req.user.workspace_id) as any;
-    if (!pb) return res.status(422).json({ error: { code: "price_book_only", message: `Line item must come from the price book: ${it.price_book_item_id || it.name || "?"}` } });
-    const price = it.unit_price !== undefined ? it.unit_price : pb.standard_price;
-    if (price < pb.floor_price) below = true;
-    total += price * (it.qty || 1);
-    it.name = pb.name; it.unit_price = price;
+  const base = priceItems(items); if ((base as any).error) return res.status(422).json({ error: { code: "price_book_only", message: (base as any).error } });
+  let options: any = null, below = (base as any).below;
+  if (Array.isArray(req.body.options) && req.body.options.length) {
+    options = [];
+    for (const o of req.body.options.slice(0, 3)) { const its = o.line_items || []; const r = priceItems(its); if ((r as any).error) return res.status(422).json({ error: { code: "price_book_only", message: (r as any).error } }); if ((r as any).below) below = true; options.push({ name: String(o.name || "Option"), line_items: its, total: (r as any).total }); }
   }
+  const total = (base as any).total;
   const count = (db.prepare("SELECT COUNT(*) c FROM proposals WHERE lead_id=?").get(l.id) as any).c;
   const id = uid("prop");
-  db.prepare("INSERT INTO proposals (id,workspace_id,lead_id,template_id,version,status,line_items,total,margin_band,win_prob_band,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
-    .run(id, req.user.workspace_id, l.id, req.body.template_id || null, count + 1, "draft", JSON.stringify(items), total, below ? "below_floor" : "in_band", total > 25000 ? "review" : "standard", now());
-  if (l.state === "APPROVED") transition(req.user.workspace_id, "system", l, "PROPOSAL_DRAFTED");
+  const expires = req.body.valid_days ? new Date(Date.now() + Number(req.body.valid_days) * 86400000).toISOString() : null;
+  db.prepare("INSERT INTO proposals (id,workspace_id,lead_id,template_id,version,status,line_items,total,margin_band,win_prob_band,options,expires_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
+    .run(id, req.user.workspace_id, l.id, req.body.template_id || null, count + 1, "draft", JSON.stringify(items), total, below ? "below_floor" : "in_band", total > 25000 ? "review" : "standard", options ? JSON.stringify(options) : null, expires, now());
+  const created = db.prepare("SELECT * FROM proposals WHERE id=?").get(id) as any;
+  if (["PROPOSAL", "SENT", "FOLLOWUP"].includes(l.state)) maybeRequestApproval(req.user.workspace_id, req.user.id, l, created);
+  res.status(201).json(created);
+});
+app.post("/api/proposals/:id/clone", requireAuth, (req: any, res) => { // v3 §8: new proposal from an existing one (same or another lead)
+  const src = db.prepare("SELECT * FROM proposals WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!src) return res.status(404).json({ error: { code: "not_found" } });
+  const leadId = String(req.body.lead_id || src.lead_id);
+  const l = db.prepare("SELECT * FROM leads WHERE id=? AND workspace_id=?").get(leadId, req.user.workspace_id) as any;
+  if (!l) return res.status(404).json({ error: { code: "lead_not_found" } });
+  const count = (db.prepare("SELECT COUNT(*) c FROM proposals WHERE lead_id=?").get(leadId) as any).c;
+  const id = uid("prop");
+  const expires = req.body.valid_days ? new Date(Date.now() + Number(req.body.valid_days) * 86400000).toISOString() : (src.expires_at && new Date(src.expires_at) > new Date() ? src.expires_at : new Date(Date.now() + 30 * 86400000).toISOString());
+  db.prepare("INSERT INTO proposals (id,workspace_id,lead_id,template_id,version,status,line_items,total,margin_band,win_prob_band,options,expires_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
+    .run(id, req.user.workspace_id, leadId, src.template_id, count + 1, "draft", src.line_items, src.total, src.margin_band, src.win_prob_band, src.options, expires, now());
   res.status(201).json(db.prepare("SELECT * FROM proposals WHERE id=?").get(id));
 });
 
@@ -304,8 +425,9 @@ app.post("/api/approvals/:id/decide", requireAuth, (req: any, res) => {
   emitEvent(req.user.workspace_id, "approval.decided", { lead_id: a.lead_id, approval_id: a.id, decision });
   notify(req.user.workspace_id, [a.submitted_by], "approval.decided", `Your proposal was ${decision}`, `Lead ${a.lead_id} — decision: ${decision}${reason_code ? " (" + reason_code + ")" : ""}`, a.lead_id);
   const l = db.prepare("SELECT * FROM leads WHERE id=?").get(a.lead_id) as any;
-  if (decision === "approved" && l.state === "READY_FOR_APPROVAL") transition(req.user.workspace_id, req.user.id, l, "APPROVED");
-  if (decision !== "approved" && l.state === "READY_FOR_APPROVAL") transition(req.user.workspace_id, req.user.id, l, "QUALIFIED");
+  // v3: a decision never traps the lead in a stage. Changes/rejected hand the submitter a fix task in place.
+  if (decision !== "approved") db.prepare("INSERT INTO tasks (id,workspace_id,lead_id,assignee_id,type,title,due_at,created_at) VALUES (?,?,?,?,?,?,?,?)")
+    .run(uid("tsk"), req.user.workspace_id, a.lead_id, a.submitted_by, "approval_fix", `Approval ${decision}: ${reason_code} — revise and resubmit`, new Date(Date.now() + 86400000).toISOString(), now());
   audit(req.user.workspace_id, req.user.id, "approval.decide", "approval", a.id, { decision, reason_code });
   res.json({ ok: true });
 });
@@ -336,23 +458,29 @@ app.get("/api/timesheets", requireAuth, (req: any, res) => {
   const ws = req.user.workspace_id;
   const week = String(req.query.week || weekStartOf(new Date()));
   ensureWeek(ws, week);
-  const rows = db.prepare("SELECT t.*, u.name manager FROM timesheets t LEFT JOIN users u ON u.id=t.manager_id WHERE t.workspace_id=? AND t.week_of=? ORDER BY u.name").all(ws, week) as any[];
+  const rows = db.prepare("SELECT t.*, COALESCE(w.name, u.name) manager, w.id worker_row FROM timesheets t LEFT JOIN users u ON u.id=t.manager_id LEFT JOIN workers w ON w.id=t.worker_id WHERE t.workspace_id=? AND t.week_of=? ORDER BY manager").all(ws, week) as any[];
   const wkEnd = new Date(new Date(week + "T12:00:00").getTime() + 6 * 86400000).toISOString().slice(0, 10);
   for (const r of rows) { try { r.days = r.days ? JSON.parse(r.days) : null; } catch { r.days = null; } r.overdue = r.status === "missing" && week < weekStartOf(new Date());
-    const j = db.prepare("SELECT COALESCE(SUM(hours),0) h, COALESCE(SUM(amount),0) a FROM time_entries WHERE workspace_id=? AND user_id=? AND entry_date>=? AND entry_date<=?").get(ws, r.manager_id, week, wkEnd) as any;
+    const j = db.prepare("SELECT COALESCE(SUM(hours),0) h, COALESCE(SUM(amount),0) a FROM time_entries WHERE workspace_id=? AND (worker_id=? OR user_id=?) AND entry_date>=? AND entry_date<=?").get(ws, r.worker_id || "__none__", r.manager_id || "__none__", week, wkEnd) as any;
     r.job_hours = j.h; r.job_cost = Math.round(j.a * 100) / 100; }
   const summary = { submitted: rows.filter(r => r.status === "submitted").length, missing: rows.filter(r => r.status === "missing").length, total_hours: rows.reduce((a, r) => a + (r.hours || 0), 0), job_hours: rows.reduce((a, r) => a + (r.job_hours || 0), 0), job_cost: Math.round(rows.reduce((a, r) => a + (r.job_cost || 0), 0) * 100) / 100 };
   res.json({ week_of: week, rows, summary });
 });
 app.post("/api/timesheets", requireAuth, (req: any, res) => {
   const ws = req.user.workspace_id; const b = req.body || {};
-  const managerId = b.manager_id || req.user.id;
-  const mgr = db.prepare("SELECT * FROM users WHERE id=? AND workspace_id=?").get(managerId, ws) as any;
-  if (!mgr) return res.status(422).json({ error: { code: "bad_manager" } });
   const week = String(b.week_of || weekStartOf(new Date()));
   ensureWeek(ws, week);
   const days = b.days && typeof b.days === "object" ? b.days : null;
   const hours = days ? sumDays(days) : (Number(b.hours) || 0);
+  if (b.worker_id) { // v3: office files a sheet for a roster worker (no login needed)
+    const row = db.prepare("SELECT * FROM timesheets WHERE workspace_id=? AND worker_id=? AND week_of=?").get(ws, b.worker_id, week) as any;
+    if (!row) return res.status(422).json({ error: { code: "bad_worker" } });
+    db.prepare("UPDATE timesheets SET status='submitted', submitted_at=?, hours=?, days=?, notes=? WHERE id=?").run(now(), hours, days ? JSON.stringify(days) : null, String(b.notes || ""), row.id);
+    return res.json(db.prepare("SELECT * FROM timesheets WHERE id=?").get(row.id));
+  }
+  const managerId = b.manager_id || req.user.id;
+  const mgr = db.prepare("SELECT * FROM users WHERE id=? AND workspace_id=?").get(managerId, ws) as any;
+  if (!mgr) return res.status(422).json({ error: { code: "bad_manager" } });
   db.prepare("UPDATE timesheets SET status='submitted', submitted_at=?, hours=?, days=?, notes=? WHERE workspace_id=? AND manager_id=? AND week_of=?")
     .run(now(), hours, days ? JSON.stringify(days) : null, String(b.notes || ""), ws, managerId, week);
   res.json(db.prepare("SELECT * FROM timesheets WHERE workspace_id=? AND manager_id=? AND week_of=?").get(ws, managerId, week));
@@ -369,7 +497,7 @@ app.get("/api/timesheets/export", requireAuth, needPerm("can_export"), (req: any
   const rows = db.prepare("SELECT t.*, u.name manager, u.email FROM timesheets t LEFT JOIN users u ON u.id=t.manager_id WHERE t.workspace_id=? AND t.week_of=? ORDER BY u.name").all(ws, week) as any[];
   const head = "manager,email,week_of,mon,tue,wed,thu,fri,sat,sun,grid_hours,job_hours,total_hours,labor_cost,status,notes";
   const wkEnd2 = new Date(new Date(week + "T12:00:00").getTime() + 6 * 86400000).toISOString().slice(0, 10);
-  const lines = rows.map(r => { let d: any = {}; try { d = r.days ? JSON.parse(r.days) : {}; } catch { d = {}; } const esc = (v: any) => `"${String(v ?? "").replaceAll('"', '""')}"`; const j = db.prepare("SELECT COALESCE(SUM(hours),0) h, COALESCE(SUM(amount),0) a FROM time_entries WHERE workspace_id=? AND user_id=? AND entry_date>=? AND entry_date<=?").get(ws, r.manager_id, week, wkEnd2) as any; return [esc(r.manager), esc(r.email), r.week_of, d.mon || "", d.tue || "", d.wed || "", d.thu || "", d.fri || "", d.sat || "", d.sun || "", r.hours ?? "", j.h, (Number(r.hours) || 0) + j.h, Math.round(j.a * 100) / 100, r.status, esc(r.notes || "")].join(","); });
+  const lines = rows.map(r => { let d: any = {}; try { d = r.days ? JSON.parse(r.days) : {}; } catch { d = {}; } const esc = (v: any) => `"${String(v ?? "").replaceAll('"', '""')}"`; const j = db.prepare("SELECT COALESCE(SUM(hours),0) h, COALESCE(SUM(amount),0) a FROM time_entries WHERE workspace_id=? AND (worker_id=? OR user_id=?) AND entry_date>=? AND entry_date<=?").get(ws, r.worker_id || "__none__", r.manager_id || "__none__", week, wkEnd2) as any; return [esc(r.manager), esc(r.email), r.week_of, d.mon || "", d.tue || "", d.wed || "", d.thu || "", d.fri || "", d.sat || "", d.sun || "", r.hours ?? "", j.h, (Number(r.hours) || 0) + j.h, Math.round(j.a * 100) / 100, r.status, esc(r.notes || "")].join(","); });
   res.setHeader("Content-Type", "text/csv"); res.setHeader("Content-Disposition", `attachment; filename="timesheets-${week}.csv"`);
   res.send([head, ...lines].join("\n"));
 });
@@ -378,7 +506,7 @@ app.get("/api/field-reports", requireAuth, (req: any, res) => {
   const ws = req.user.workspace_id;
   const date = String(req.query.date || todayStr());
   ensureDay(ws, date);
-  const rows = db.prepare("SELECT f.*, u.name manager, l.service_requested job_service, c.name job_customer FROM field_reports f LEFT JOIN users u ON u.id=f.manager_id LEFT JOIN leads l ON l.id=f.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE f.workspace_id=? AND f.report_date=? ORDER BY u.name").all(ws, date) as any[];
+  const rows = db.prepare("SELECT f.*, COALESCE(w.name, u.name) manager, l.service_requested job_service, c.name job_customer FROM field_reports f LEFT JOIN users u ON u.id=f.manager_id LEFT JOIN workers w ON w.id=f.worker_id LEFT JOIN leads l ON l.id=f.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE f.workspace_id=? AND f.report_date=? ORDER BY manager").all(ws, date) as any[];
   for (const r of rows) r.overdue = r.status === "missing" && date < todayStr();
   res.json({ report_date: date, rows, summary: { submitted: rows.filter(r => r.status === "submitted").length, missing: rows.filter(r => r.status === "missing").length } });
 });
@@ -397,28 +525,29 @@ app.post("/api/field-reports/:id/chase", requireAuth, (req: any, res) => {
 });
 // ---------- slice 23: crew scheduling ----------
 app.get("/api/schedule/jobs", requireAuth, (req: any, res) => {
-  const rows = db.prepare("SELECT l.id, l.service_requested, l.state, c.name contact_name FROM leads l LEFT JOIN contacts c ON c.id=l.contact_id WHERE l.workspace_id=? AND l.state IN ('APPROVED','PROPOSAL_SENT','WON') ORDER BY l.created_at DESC LIMIT 100").all(req.user.workspace_id);
+  const rows = db.prepare("SELECT l.id, l.service_requested, l.state, c.name contact_name FROM leads l LEFT JOIN contacts c ON c.id=l.contact_id WHERE l.workspace_id=? AND l.state IN ('PROPOSAL','SENT','WON') ORDER BY l.created_at DESC LIMIT 100").all(req.user.workspace_id);
   res.json(rows);
 });
 app.get("/api/schedule", requireAuth, (req: any, res) => {
   const ws = req.user.workspace_id;
   const week = String(req.query.week || weekStartOf(new Date()));
   const wkEnd = new Date(new Date(week + "T12:00:00").getTime() + 6 * 86400000).toISOString().slice(0, 10);
-  const rows = db.prepare("SELECT s.*, u.name worker, l.service_requested, c.name contact_name FROM job_schedule s LEFT JOIN users u ON u.id=s.user_id LEFT JOIN leads l ON l.id=s.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE s.workspace_id=? AND s.work_date>=? AND s.work_date<=? ORDER BY s.work_date, u.name").all(ws, week, wkEnd) as any[];
+  const rows = db.prepare("SELECT s.*, COALESCE(w.name, u.name) worker, l.service_requested, c.name contact_name FROM job_schedule s LEFT JOIN users u ON u.id=s.user_id LEFT JOIN workers w ON w.id=s.worker_id LEFT JOIN leads l ON l.id=s.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE s.workspace_id=? AND s.work_date>=? AND s.work_date<=? ORDER BY s.work_date, worker").all(ws, week, wkEnd) as any[];
   const byUserDay: Record<string, Set<string>> = {};
-  for (const r of rows) { const k = r.user_id + "|" + r.work_date; (byUserDay[k] = byUserDay[k] || new Set()).add(r.lead_id); }
-  for (const r of rows) r.conflict = (byUserDay[r.user_id + "|" + r.work_date]?.size || 0) > 1;
+  for (const r of rows) { const k = (r.worker_id || r.user_id) + "|" + r.work_date; (byUserDay[k] = byUserDay[k] || new Set()).add(r.lead_id); }
+  for (const r of rows) r.conflict = (byUserDay[(r.worker_id || r.user_id) + "|" + r.work_date]?.size || 0) > 1;
   res.json({ week_of: week, rows });
 });
 app.post("/api/schedule", requireAuth, (req: any, res) => {
   const ws = req.user.workspace_id; const b = req.body || {};
   const lead = db.prepare("SELECT id FROM leads WHERE id=? AND workspace_id=?").get(String(b.lead_id || ""), ws) as any;
-  const user = db.prepare("SELECT id FROM users WHERE id=? AND workspace_id=?").get(String(b.user_id || ""), ws) as any;
-  if (!lead || !user) return res.status(422).json({ error: { code: "bad_job_or_user" } });
+  const w = resolveWorker(ws, b); // user_id | worker_id | worker_name — roster workers schedule without accounts
+  if (!lead || !w) return res.status(422).json({ error: { code: "bad_job_or_worker" } });
+  const dupe = db.prepare("SELECT id FROM job_schedule WHERE lead_id=? AND work_date=? AND (worker_id=? OR user_id=?)").get(lead.id, String(b.work_date || todayStr()), w.id, w.linked_user_id || "__none__");
+  if (dupe) return res.status(409).json({ error: { code: "already_scheduled" } });
   const id = uid("sch");
-  try { db.prepare("INSERT INTO job_schedule (id,workspace_id,lead_id,user_id,work_date,note,created_by,created_at) VALUES (?,?,?,?,?,?,?,?)").run(id, ws, lead.id, user.id, String(b.work_date || todayStr()), String(b.note || ""), req.user.id, now()); }
-  catch { return res.status(409).json({ error: { code: "already_scheduled" } }); }
-  notify(ws, [user.id], "scheduled", `🗓 You're scheduled — ${String(b.work_date || todayStr())}`, "You've been assigned to a job that day. Open Ops Console → Crew schedule for details.");
+  db.prepare("INSERT INTO job_schedule (id,workspace_id,lead_id,user_id,worker_id,work_date,note,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?)").run(id, ws, lead.id, w.linked_user_id || null, w.id, String(b.work_date || todayStr()), String(b.note || ""), req.user.id, now());
+  if (w.linked_user_id) notify(ws, [w.linked_user_id], "scheduled", `🗓 You're scheduled — ${String(b.work_date || todayStr())}`, "You've been assigned to a job that day. Open Ops Console → Crew schedule for details.");
   res.json(db.prepare("SELECT * FROM job_schedule WHERE id=?").get(id));
 });
 app.delete("/api/schedule/:id", requireAuth, (req: any, res) => {
@@ -456,14 +585,62 @@ app.get("/api/leads/:id/labor", requireAuth, (req: any, res) => {
 });
 app.post("/api/leads/:id/crew", requireAuth, (req: any, res) => {
   const ws = req.user.workspace_id;
-  const u = db.prepare("SELECT id FROM users WHERE id=? AND workspace_id=?").get(String(req.body.user_id || ""), ws) as any;
-  if (!u) return res.status(422).json({ error: { code: "bad_user" } });
-  try { db.prepare("INSERT INTO job_crew (id,workspace_id,lead_id,user_id,created_at) VALUES (?,?,?,?,?)").run(uid("crew"), ws, req.params.id, u.id, now()); } catch { /* already on crew */ }
+  const w = resolveWorker(ws, req.body || {}); // user_id | worker_id | worker_name (type-to-create)
+  if (!w) return res.status(422).json({ error: { code: "bad_worker" } });
+  const onCrew = db.prepare("SELECT id FROM job_crew WHERE lead_id=? AND (worker_id=? OR user_id=?)").get(req.params.id, w.id, w.linked_user_id || "__none__");
+  if (!onCrew) { try { db.prepare("INSERT INTO job_crew (id,workspace_id,lead_id,user_id,worker_id,created_at) VALUES (?,?,?,?,?,?)").run(uid("crew"), ws, req.params.id, w.linked_user_id || null, w.id, now()); } catch { /* already on crew */ } }
   res.json(jobLabor(ws, req.params.id));
 });
 app.delete("/api/leads/:id/crew/:userId", requireAuth, (req: any, res) => {
-  db.prepare("DELETE FROM job_crew WHERE lead_id=? AND user_id=? AND workspace_id=?").run(req.params.id, req.params.userId, req.user.workspace_id);
+  db.prepare("DELETE FROM job_crew WHERE lead_id=? AND (user_id=? OR worker_id=?) AND workspace_id=?").run(req.params.id, req.params.userId, req.params.userId, req.user.workspace_id);
   res.json(jobLabor(req.user.workspace_id, req.params.id));
+});
+// ---------- v3 slice 29: roster workers + log time from anywhere ----------
+app.get("/api/workers", requireAuth, (req: any, res) => res.json(listWorkers(req.user.workspace_id)));
+app.post("/api/workers", requireAuth, (req: any, res) => {
+  const ws = req.user.workspace_id; const b = req.body || {};
+  if (b.user_id) { const w = resolveWorker(ws, { user_id: b.user_id }); return w ? res.status(201).json(w) : res.status(422).json({ error: { code: "bad_user" } }); }
+  if (!String(b.name || "").trim()) return res.status(422).json({ error: { code: "name_required" } });
+  const w = resolveWorker(ws, { worker_name: b.name, phone: b.phone, labor_class_id: b.labor_class_id });
+  if (b.labor_class_id || b.phone) db.prepare("UPDATE workers SET labor_class_id=COALESCE(?,labor_class_id), phone=COALESCE(NULLIF(?,''),phone) WHERE id=?").run(b.labor_class_id || null, b.phone || "", w.id);
+  res.status(201).json(db.prepare("SELECT * FROM workers WHERE id=?").get(w.id));
+});
+app.post("/api/workers/bulk", requireAuth, (req: any, res) => {
+  const names = (Array.isArray(req.body?.names) ? req.body.names : String(req.body?.text || "").split("\n")).map((n: any) => String(n).trim()).filter(Boolean).slice(0, 200);
+  const out = names.map((n: string) => resolveWorker(req.user.workspace_id, { worker_name: n }));
+  res.status(201).json({ created_or_found: out.length, workers: out });
+});
+app.patch("/api/workers/:id", requireAuth, (req: any, res) => {
+  const w = db.prepare("SELECT * FROM workers WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!w) return res.status(404).json({ error: { code: "not_found" } });
+  const b = req.body || {};
+  db.prepare("UPDATE workers SET name=COALESCE(?,name), phone=COALESCE(?,phone), labor_class_id=?, active=COALESCE(?,active) WHERE id=?")
+    .run(b.name || null, b.phone ?? null, b.labor_class_id !== undefined ? b.labor_class_id : w.labor_class_id, b.active !== undefined ? (b.active ? 1 : 0) : null, w.id);
+  if (w.linked_user_id && b.labor_class_id !== undefined) db.prepare("UPDATE users SET labor_class_id=? WHERE id=?").run(b.labor_class_id, w.linked_user_id);
+  res.json(db.prepare("SELECT * FROM workers WHERE id=?").get(w.id));
+});
+app.post("/api/time", requireAuth, (req: any, res) => { // global quick-log: job_id or lead_id + worker by id/name/user
+  const ws = req.user.workspace_id; const b = req.body || {};
+  let leadId = b.lead_id || null;
+  if (!leadId && b.job_id) { const j = db.prepare("SELECT lead_id FROM jobs WHERE id=? AND workspace_id=?").get(b.job_id, ws) as any; leadId = j?.lead_id || null; }
+  if (!leadId) return res.status(422).json({ error: { code: "job_required" } });
+  const r = logTime(ws, leadId, req.user.id, b);
+  if ((r as any).error) return res.status(422).json({ error: { code: (r as any).error } });
+  res.status(201).json(r);
+});
+app.get("/api/time/grid", requireAuth, (req: any, res) => { // weekly workers x jobs matrix for office entry
+  const ws = req.user.workspace_id; const week = String(req.query.week || weekStartOf(new Date()));
+  const wkEnd = new Date(new Date(week + "T12:00:00").getTime() + 6 * 86400000).toISOString().slice(0, 10);
+  const entries = db.prepare("SELECT t.*, l.service_requested FROM time_entries t JOIN leads l ON l.id=t.lead_id WHERE t.workspace_id=? AND t.entry_date>=? AND t.entry_date<=? ORDER BY t.entry_date").all(ws, week, wkEnd) as any[];
+  const workers = listWorkers(ws).filter((w: any) => w.active);
+  const jobs = db.prepare("SELECT DISTINCT t.lead_id, l.service_requested, c.name contact_name FROM time_entries t JOIN leads l ON l.id=t.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE t.workspace_id=? AND t.entry_date>=? AND t.entry_date<=?").all(ws, week, wkEnd);
+  res.json({ week_of: week, workers, jobs, entries });
+});
+app.post("/api/time/grid", requireAuth, (req: any, res) => { // bulk save: [{lead_id, worker_name|worker_id, entry_date, hours, note}]
+  const rows = Array.isArray(req.body?.rows) ? req.body.rows.slice(0, 300) : [];
+  let ok = 0; const errs: any[] = [];
+  for (const r of rows) { if (!(Number(r.hours) > 0)) continue; const x = logTime(req.user.workspace_id, r.lead_id, req.user.id, r); if ((x as any).error) errs.push({ row: r, error: (x as any).error }); else ok++; }
+  res.json({ saved: ok, errors: errs });
 });
 app.post("/api/leads/:id/time", requireAuth, (req: any, res) => {
   const r = logTime(req.user.workspace_id, req.params.id, req.user.id, req.body || {});
@@ -476,6 +653,100 @@ app.delete("/api/time-entries/:id", requireAuth, (req: any, res) => {
   db.prepare("DELETE FROM time_entries WHERE id=?").run(e.id);
   res.json(jobLabor(req.user.workspace_id, e.lead_id));
 });
+// ---------- v3 slice 30: jobs — the operational half of a won lead ----------
+export const JOB_STAGES = ["SCHEDULED", "IN_PROGRESS", "FIELD_DONE", "PAPERWORK", "INVOICED", "PAID", "CLOSED", "ON_HOLD"];
+function backfillJobs(ws: string) { const won = db.prepare("SELECT * FROM leads WHERE workspace_id=? AND state='WON'").all(ws) as any[]; for (const l of won) ensureJobForLead(ws, "system", l); }
+function jobView(j: any) {
+  const l = db.prepare("SELECT * FROM leads WHERE id=?").get(j.lead_id) as any;
+  const v = l ? leadView(l) : null;
+  const lab = db.prepare("SELECT COALESCE(SUM(hours),0) h, COALESCE(SUM(amount),0) a FROM time_entries WHERE workspace_id=? AND lead_id=?").get(j.workspace_id, j.lead_id) as any;
+  const docs = db.prepare("SELECT COUNT(*) t, SUM(CASE WHEN status='received' THEN 1 ELSE 0 END) r FROM documents WHERE job_id=? OR (lead_id=? AND job_id IS NULL)").get(j.id, j.lead_id) as any;
+  return { ...j, service_requested: v?.service_requested || "", contact_name: v?.contact_name || "", contact_phone: v?.contact_phone || "", contact_email: v?.contact_email || "", location: v?.location || "", owner_id: l?.owner_id || null, pm_id: l?.pm_id || null, labor_hours: lab.h, labor_cost: Math.round(lab.a * 100) / 100, labor_pct: j.value > 0 ? Math.round(1000 * lab.a / j.value) / 10 : null, docs_total: docs.t || 0, docs_received: docs.r || 0 };
+}
+app.get("/api/jobs", requireAuth, (req: any, res) => {
+  const ws = req.user.workspace_id; backfillJobs(ws);
+  let rows = (db.prepare("SELECT * FROM jobs WHERE workspace_id=? ORDER BY created_at DESC").all(ws) as any[]).map(jobView);
+  if (req.query.stage) rows = rows.filter(j => j.stage === req.query.stage);
+  if (req.query.q) { const q = String(req.query.q).toLowerCase(); rows = rows.filter(j => JSON.stringify(j).toLowerCase().includes(q)); }
+  res.json(rows);
+});
+app.post("/api/jobs", requireAuth, (req: any, res) => { // manual job from a lead (legacy/offline wins)
+  const l = db.prepare("SELECT * FROM leads WHERE id=? AND workspace_id=?").get(String(req.body.lead_id || ""), req.user.workspace_id) as any;
+  if (!l) return res.status(404).json({ error: { code: "not_found" } });
+  const j = ensureJobForLead(req.user.workspace_id, req.user.id, l);
+  res.status(201).json(jobView(j));
+});
+app.get("/api/jobs/:id", requireAuth, (req: any, res) => {
+  const j = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!j) return res.status(404).json({ error: { code: "not_found" } });
+  const labor = jobLabor(req.user.workspace_id, j.lead_id);
+  const schedule = db.prepare("SELECT s.*, COALESCE(w.name, u.name) worker FROM job_schedule s LEFT JOIN workers w ON w.id=s.worker_id LEFT JOIN users u ON u.id=s.user_id WHERE s.lead_id=? ORDER BY s.work_date").all(j.lead_id);
+  const documents = db.prepare("SELECT * FROM documents WHERE job_id=? OR lead_id=?").all(j.id, j.lead_id);
+  const reports = db.prepare("SELECT f.*, COALESCE(w.name,u.name) manager FROM field_reports f LEFT JOIN workers w ON w.id=f.worker_id LEFT JOIN users u ON u.id=f.manager_id WHERE f.lead_id=? ORDER BY f.report_date DESC LIMIT 20").all(j.lead_id);
+  const changeOrders = db.prepare("SELECT * FROM change_orders WHERE job_id=? OR lead_id=? ORDER BY created_at DESC").all(j.id, j.lead_id);
+  res.json({ job: jobView(j), labor, schedule, documents, field_reports: reports, change_orders: changeOrders });
+});
+app.post("/api/jobs/:id/stage", requireAuth, (req: any, res) => {
+  const j = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!j) return res.status(404).json({ error: { code: "not_found" } });
+  const to = String(req.body.to || "");
+  if (!JOB_STAGES.includes(to)) return res.status(422).json({ error: { code: "bad_stage" } });
+  db.prepare("UPDATE jobs SET stage=?, closed_at=?, updated_at=? WHERE id=?").run(to, to === "CLOSED" ? now() : j.closed_at, now(), j.id);
+  logEvent(req.user.workspace_id, j.lead_id, req.user.id, "job_stage", j.stage, to, { job_id: j.id });
+  res.json(jobView(db.prepare("SELECT * FROM jobs WHERE id=?").get(j.id)));
+});
+app.patch("/api/jobs/:id", requireAuth, (req: any, res) => {
+  const j = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!j) return res.status(404).json({ error: { code: "not_found" } });
+  const b = req.body || {}; const sets: string[] = []; const vals: any[] = [];
+  for (const k of ["scheduled_start", "scheduled_end", "invoice_status", "value", "sector"]) if (b[k] !== undefined) { sets.push(`${k}=?`); vals.push(b[k]); }
+  if (sets.length) { db.prepare(`UPDATE jobs SET ${sets.join(",")}, updated_at=? WHERE id=?`).run(...vals, now(), j.id); }
+  res.json(jobView(db.prepare("SELECT * FROM jobs WHERE id=?").get(j.id)));
+});
+// ---------- v3 slice 35 (server core): job packet + change orders + invoice handoff ----------
+app.post("/api/jobs/:id/packet", requireAuth, async (req: any, res) => {
+  const j = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!j) return res.status(404).json({ error: { code: "not_found" } });
+  const v = jobView(j);
+  const docs = db.prepare("SELECT name, status FROM documents WHERE job_id=? OR lead_id=?").all(j.id, j.lead_id) as any[];
+  const sched = db.prepare("SELECT work_date FROM job_schedule WHERE lead_id=? ORDER BY work_date LIMIT 3").all(j.lead_id) as any[];
+  const channel = req.body.channel === "sms" ? "sms" : "email";
+  const to = String(req.body.to || (channel === "sms" ? v.contact_phone : v.contact_email) || "");
+  if (!to) return res.status(422).json({ error: { code: "no_destination" } });
+  const ws = db.prepare("SELECT name FROM workspaces WHERE id=?").get(req.user.workspace_id) as any;
+  const body = `${ws.name} — job packet for ${v.contact_name}\nService: ${v.service_requested}\nSite: ${v.location || "—"}\nJob value: $${v.value}\nScheduled: ${sched.map(s => s.work_date).join(", ") || "to be scheduled"}\nPaperwork: ${docs.length ? docs.map(d => `${d.name} (${d.status})`).join("; ") : "none outstanding"}\nQuestions? Reply here and we'll take care of it.`;
+  const r: any = await queueAndDeliver(req.user.workspace_id, { lead_id: j.lead_id, channel, to, subject: `Your job with ${ws.name} — ${v.service_requested}`, body });
+  db.prepare("UPDATE jobs SET packet_sent_at=?, updated_at=? WHERE id=?").run(now(), now(), j.id);
+  res.status(201).json({ status: r.status, channel, to });
+});
+app.post("/api/jobs/:id/change-orders", requireAuth, (req: any, res) => {
+  const j = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!j) return res.status(404).json({ error: { code: "not_found" } });
+  const id = uid("co");
+  db.prepare("INSERT INTO change_orders (id,workspace_id,job_id,lead_id,delta_scope,delta_total,status,created_at) VALUES (?,?,?,?,?,?,?,?)")
+    .run(id, req.user.workspace_id, j.id, j.lead_id, String(req.body.delta_scope || ""), Number(req.body.delta_total) || 0, req.body.status || "draft", now());
+  res.status(201).json(db.prepare("SELECT * FROM change_orders WHERE id=?").get(id));
+});
+app.post("/api/change-orders/:id/status", requireAuth, (req: any, res) => {
+  const co = db.prepare("SELECT * FROM change_orders WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!co) return res.status(404).json({ error: { code: "not_found" } });
+  const to = String(req.body.status || "");
+  if (!["draft", "sent", "approved", "rejected"].includes(to)) return res.status(422).json({ error: { code: "bad_status" } });
+  db.prepare("UPDATE change_orders SET status=? WHERE id=?").run(to, co.id);
+  if (to === "approved" && co.job_id) db.prepare("UPDATE jobs SET value=COALESCE(value,0)+?, updated_at=? WHERE id=?").run(co.delta_total || 0, now(), co.job_id);
+  res.json(db.prepare("SELECT * FROM change_orders WHERE id=?").get(co.id));
+});
+app.post("/api/documents/:id/chase", requireAuth, async (req: any, res) => {
+  const d = db.prepare("SELECT * FROM documents WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!d) return res.status(404).json({ error: { code: "not_found" } });
+  const l = db.prepare("SELECT * FROM leads WHERE id=?").get(d.lead_id) as any; const v = l ? leadView(l) : null;
+  const to = String(req.body.to || v?.contact_email || "");
+  if (!to) return res.status(422).json({ error: { code: "no_destination", message: "No email on file for the document holder — add one or pass `to`." } });
+  const ws = db.prepare("SELECT name FROM workspaces WHERE id=?").get(req.user.workspace_id) as any;
+  const r: any = await queueAndDeliver(req.user.workspace_id, { lead_id: d.lead_id, channel: "email", to, subject: `Document needed: ${d.name}`, body: `Hi ${v?.contact_name || "there"},\n\nTo keep your job with ${ws.name} moving, we still need: ${d.name}. Reply to this email with the document attached and we'll mark it received.\n\nThanks!` });
+  res.status(201).json({ status: r.status, to });
+});
+
 app.get("/api/setup-status", requireAuth, (req: any, res) => {
   const ws = req.user.workspace_id;
   const one = (sql: string) => (db.prepare(sql).get(ws) as any).c > 0;
@@ -604,6 +875,7 @@ function ingestBatch(ws: string, actorId: string, emails: any[]): { results: any
 app.post("/api/inbox/ingest", requireAuth, (req: any, res) => {
   const emails = Array.isArray(req.body.emails) ? req.body.emails : [req.body];
   const r = ingestBatch(req.user.workspace_id, req.user.id, emails);
+  applyInboxRules(req.user.workspace_id);
   res.json({ ingested: r.results.length, results: r.results });
 });
 // slice 18: bulk email backlog import (mbox / email CSV / JSON) — the 3,000-email front door
@@ -615,6 +887,7 @@ app.post("/api/imports/email", requireAuth, (req: any, res) => {
   else emails = parseMbox(String(req.body.content || ""));
   if (!emails.length) return res.status(422).json({ error: { code: "no_messages", message: "No messages could be parsed from that file." } });
   const r = ingestBatch(req.user.workspace_id, req.user.id, emails);
+  applyInboxRules(req.user.workspace_id);
   const id = uid("imp");
   db.prepare("INSERT INTO imports (id,workspace_id,filename,mapping,totals,status,created_at) VALUES (?,?,?,?,?,?,?)").run(id, req.user.workspace_id, req.body.filename || "email-backlog", JSON.stringify({ kind: "email", format }), JSON.stringify({ created: r.leads_created, dupes: r.duplicates, received: emails.length, by_category: r.by_category }), "committed", now());
   res.json({ import_id: id, received: emails.length, leads_created: r.leads_created, duplicates: r.duplicates, by_category: r.by_category });
@@ -659,6 +932,52 @@ app.post("/api/inbox/:id/convert-lead", requireAuth, (req: any, res) => {
   db.prepare("UPDATE inbox_items SET status='done', completed_at=?, lead_id=? WHERE id=?").run(now(), r.lead.id, it.id);
   res.json({ lead_id: r.lead.id, duplicate: r.duplicate });
 });
+// ---------- v3 slice 33: inbox collaboration — comments, claim, canned replies, rules ----------
+export function applyInboxRules(ws: string) {
+  const rules = db.prepare("SELECT * FROM inbox_rules WHERE workspace_id=? AND active=1").all(ws) as any[];
+  if (!rules.length) return { applied: 0 };
+  const items = db.prepare("SELECT * FROM inbox_items WHERE workspace_id=? AND status='open'").all(ws) as any[];
+  let applied = 0;
+  for (const it of items) for (const r of rules) {
+    const hay = r.match_field === "sender" ? `${it.from_name} ${it.from_email}` : r.match_field === "subject" ? it.subject : r.match_field === "category" ? it.category : `${it.subject} ${it.body}`;
+    if (!String(hay || "").toLowerCase().includes(String(r.match_value || "").toLowerCase())) continue;
+    if (r.action === "assign" && r.action_value) { db.prepare("UPDATE inbox_items SET owner_id=? WHERE id=?").run(r.action_value, it.id); applied++; }
+    else if (r.action === "mark_done") { db.prepare("UPDATE inbox_items SET status='done', completed_at=? WHERE id=?").run(now(), it.id); applied++; }
+    else if (r.action === "snooze_days" && r.action_value) { db.prepare("UPDATE inbox_items SET next_action_due_at=? WHERE id=?").run(new Date(Date.now() + Number(r.action_value) * 86400000).toISOString(), it.id); applied++; }
+  }
+  return { applied };
+}
+app.get("/api/inbox/:id/comments", requireAuth, (req: any, res) => res.json(db.prepare("SELECT c.*, u.name user_name FROM inbox_comments c LEFT JOIN users u ON u.id=c.user_id WHERE c.inbox_item_id=? AND c.workspace_id=? ORDER BY c.created_at").all(req.params.id, req.user.workspace_id)));
+app.post("/api/inbox/:id/comments", requireAuth, (req: any, res) => {
+  const it = db.prepare("SELECT * FROM inbox_items WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!it) return res.status(404).json({ error: { code: "not_found" } });
+  const body = String(req.body.body || "").trim(); if (!body) return res.status(422).json({ error: { code: "empty_comment" } });
+  const id = uid("cm");
+  db.prepare("INSERT INTO inbox_comments (id,workspace_id,inbox_item_id,user_id,body,created_at) VALUES (?,?,?,?,?,?)").run(id, req.user.workspace_id, it.id, req.user.id, body, now());
+  res.status(201).json(db.prepare("SELECT * FROM inbox_comments WHERE id=?").get(id));
+});
+app.post("/api/inbox/:id/claim", requireAuth, (req: any, res) => {
+  const it = db.prepare("SELECT * FROM inbox_items WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!it) return res.status(404).json({ error: { code: "not_found" } });
+  if (req.body.release) db.prepare("UPDATE inbox_items SET claimed_by=NULL, claimed_at=NULL WHERE id=?").run(it.id);
+  else db.prepare("UPDATE inbox_items SET claimed_by=?, claimed_at=? WHERE id=?").run(req.user.id, now(), it.id);
+  res.json(db.prepare("SELECT * FROM inbox_items WHERE id=?").get(it.id));
+});
+app.get("/api/canned-replies", requireAuth, (req: any, res) => {
+  let rows = db.prepare("SELECT * FROM canned_replies WHERE workspace_id=? ORDER BY category, title").all(req.user.workspace_id) as any[];
+  if (!rows.length) { // seed a starter library once
+    const seed = [["lead_request", "Got it — next steps", "Hi {name}, thanks for reaching out to {business} about {service}. We've got your request and will call you shortly during business hours (Mon–Fri 8:00–5:30) to talk through scope and timing. — {business}"], ["paperwork", "Document received", "Hi {name}, we received your document — thank you. We'll verify it and update your job file today. — {business}"], ["paperwork", "Document still needed", "Hi {name}, we're still missing one item to keep your job moving: {document}. Reply to this email with it attached and we'll take it from there. — {business}"], ["client_job", "Scheduling your job", "Hi {name}, good news — your job is scheduled. Our crew will confirm the day before. Anything changes on your end, just reply here. — {business}"]];
+    for (const [category, title, body] of seed) db.prepare("INSERT INTO canned_replies (id,workspace_id,category,title,body,created_at) VALUES (?,?,?,?,?,?)").run(uid("can"), req.user.workspace_id, category, title, body, now());
+    rows = db.prepare("SELECT * FROM canned_replies WHERE workspace_id=? ORDER BY category, title").all(req.user.workspace_id) as any[];
+  }
+  res.json(rows);
+});
+app.post("/api/canned-replies", requireAuth, (req: any, res) => { const id = uid("can"); db.prepare("INSERT INTO canned_replies (id,workspace_id,category,title,body,created_at) VALUES (?,?,?,?,?,?)").run(id, req.user.workspace_id, String(req.body.category || "general"), String(req.body.title || "Untitled"), String(req.body.body || ""), now()); res.status(201).json(db.prepare("SELECT * FROM canned_replies WHERE id=?").get(id)); });
+app.delete("/api/canned-replies/:id", requireAuth, (req: any, res) => { db.prepare("DELETE FROM canned_replies WHERE id=? AND workspace_id=?").run(req.params.id, req.user.workspace_id); res.json({ ok: true }); });
+app.get("/api/inbox-rules", requireAuth, (req: any, res) => res.json(db.prepare("SELECT * FROM inbox_rules WHERE workspace_id=? ORDER BY created_at").all(req.user.workspace_id)));
+app.post("/api/inbox-rules", requireAuth, (req: any, res) => { const id = uid("rul"); db.prepare("INSERT INTO inbox_rules (id,workspace_id,name,match_field,match_value,action,action_value,active,created_at) VALUES (?,?,?,?,?,?,?,1,?)").run(id, req.user.workspace_id, String(req.body.name || "Rule"), String(req.body.match_field || "sender"), String(req.body.match_value || ""), String(req.body.action || "assign"), req.body.action_value || null, now()); const r = applyInboxRules(req.user.workspace_id); res.status(201).json({ rule: db.prepare("SELECT * FROM inbox_rules WHERE id=?").get(id), applied_now: r.applied }); });
+app.delete("/api/inbox-rules/:id", requireAuth, (req: any, res) => { db.prepare("DELETE FROM inbox_rules WHERE id=? AND workspace_id=?").run(req.params.id, req.user.workspace_id); res.json({ ok: true }); });
+
 app.post("/api/inbox/:id/convert-task", requireAuth, (req: any, res) => {
   const it = db.prepare("SELECT * FROM inbox_items WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!it) return res.status(404).json({ error: { code: "not_found" } });
@@ -680,13 +999,19 @@ app.get("/sign/:token", (req, res) => {
   const ctx = getByToken(req.params.token);
   if (!ctx) return res.status(404).send("Link not found");
   const { proposal: p, lead, contact, workspace: ws, signature: s } = ctx;
+  if (!s.signed_at) { db.prepare("UPDATE proposals SET view_count=COALESCE(view_count,0)+1, first_viewed_at=COALESCE(first_viewed_at,?), viewed_at=? WHERE id=?").run(now(), now(), p.id); p.view_count = (p.view_count || 0) + 1; }
   const items = JSON.parse(p.line_items || "[]").map((i: any) => `<tr><td>${i.name}</td><td>${i.qty || 1}</td><td>$${i.unit_price}</td></tr>`).join("");
+  let opts: any[] = []; try { opts = JSON.parse(p.options || "[]"); } catch { opts = []; }
+  const optionsHtml = opts.length ? `<h3>Choose your option</h3>` + opts.map((o: any, ix: number) => `<label style="display:block;border:1px solid #ddd;border-radius:10px;padding:12px;margin:8px 0"><input type="radio" name="option" value="${String(o.name).replaceAll('"', "")}" ${ix === 0 ? "checked" : ""} style="width:auto"> <strong>${o.name} — $${Number(o.total).toFixed(2)}</strong><table>${(o.line_items || []).map((i: any) => `<tr><td>${i.name}</td><td>${i.qty || 1}</td><td>$${i.unit_price}</td></tr>`).join("")}</table></label>`).join("") : "";
+  const expired = p.expires_at && new Date(p.expires_at) < new Date() && !s.signed_at;
   res.type("html").send(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><title>Proposal — ${ws.name}</title>
   <style>body{font-family:sans-serif;max-width:640px;margin:24px auto;padding:0 16px}table{width:100%;border-collapse:collapse}td{border-bottom:1px solid #ddd;padding:6px}input{width:100%;padding:10px;margin:6px 0}button{background:#14532d;color:#fff;border:0;padding:12px 20px;border-radius:8px;width:100%}</style>
   <h1>${ws.name}</h1><h2>Proposal — ${lead.service_requested}</h2><p>Prepared for ${contact.name} · ${lead.location || ""}</p>
-  <p>${lead.notes || ""}</p><table>${items}</table><p><strong>Total: $${Number(p.total).toFixed(2)}</strong> · Payment status: ${p.payment_status || "—"}</p>
+  ${expired ? `<p style="background:#fef3c7;padding:10px;border-radius:8px">⏰ This proposal expired on ${new Date(p.expires_at).toLocaleDateString()} — contact us and we'll re-issue it with the same scope.</p>` : ""}${p.expires_at && !s.signed_at && !expired ? `<p class="muted">Valid until ${new Date(p.expires_at).toLocaleDateString()}</p>` : ""}
+  <p>${lead.notes || ""}</p>${opts.length ? "" : `<table>${items}</table><p><strong>Total: $${Number(p.total).toFixed(2)}</strong> · Payment status: ${p.payment_status || "—"}</p>`}
   ${s.signed_at ? `<p>✅ Signed by ${s.signer_name} on ${new Date(s.signed_at).toLocaleString()}</p>` : `
   <form method="POST" action="/sign/${req.params.token}">
+    ${optionsHtml}
     <input name="signer_name" placeholder="Your full name" required>
     <input name="signer_email" type="email" placeholder="Email">
     <input name="typed_signature" placeholder="Type your name to sign" required>
@@ -694,14 +1019,95 @@ app.get("/sign/:token", (req, res) => {
     <button>Sign Proposal</button></form>`}`);
 });
 app.post("/sign/:token", express.urlencoded({ extended: false }), (req: any, res) => {
+  const ctx = getByToken(req.params.token);
+  if (ctx?.proposal?.options && req.body.option) { try { const opts = JSON.parse(ctx.proposal.options); if (opts.some((o: any) => o.name === req.body.option)) db.prepare("UPDATE proposals SET selected_option=? WHERE id=?").run(req.body.option, ctx.proposal.id); } catch { /* bad options json */ } }
   const r = sign(req.params.token, { signer_name: req.body.signer_name, signer_email: req.body.signer_email, typed_signature: req.body.typed_signature, consent: req.body.consent === "1", ip: req.ip, user_agent: req.get("user-agent") });
   if (!r.ok) return res.status(422).send(`Signing failed: ${r.error}. Go back and check your entry.`);
-  res.type("html").send(`<!doctype html><h1>Signed ✅</h1><p>Evidence certificate: ${r.certificate.signature_id} · Document hash ${r.certificate.doc_hash.slice(0, 16)}… · ${r.certificate.signed_at}</p>`);
+  // v3 §8: signing completes the chain — lead WON (guard passes: a signed proposal exists) + Job auto-created
+  try { const l2 = db.prepare("SELECT * FROM leads WHERE id=?").get(ctx.lead.id) as any; if (l2 && !FINAL_STATES.includes(l2.state)) setStage(ctx.workspace.id, "system", l2, "WON", {}); } catch { /* chain completion never blocks the signature */ }
+  res.type("html").send(`<!doctype html><h1>Signed ✅</h1><p>Evidence certificate: ${r.certificate.signature_id} · Document hash ${r.certificate.doc_hash.slice(0, 16)}… · ${r.certificate.signed_at}</p><p>Thank you — we've created your job and will be in touch to schedule.</p>`);
 });
 app.get("/api/proposals/:id/certificate", requireAuth, (req: any, res) => {
   const s = db.prepare("SELECT * FROM signatures WHERE proposal_id=? AND signed_at IS NOT NULL").get(req.params.id) as any;
   if (!s) return res.status(404).json({ error: { code: "not_signed" } });
   res.json({ signature_id: s.id, signer: s.signer_name, signed_at: s.signed_at, doc_hash: s.doc_hash, ip: s.ip });
+});
+
+// ---------- v3 slice 31: THE WORK QUEUE — one worst-first pile, everything actionable ----------
+app.get("/api/queue", requireAuth, (req: any, res) => {
+  const ws = req.user.workspace_id; const t = now(); const items: any[] = [];
+  const ageH = (iso: string) => Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 360000) / 10);
+  const mine2 = (l: any) => !scopeOwn(req.user) || mine(req.user, l);
+  for (const d of db.prepare("SELECT * FROM outcome_deliveries WHERE workspace_id=? AND last_status IN ('failed','dead') AND superseded_at IS NULL ORDER BY created_at LIMIT 10").all(ws) as any[])
+    items.push({ id: "q_handoff_" + d.id, type: "handoff_failed", score: 95, title: "Outcome handoff failed", subtitle: `${d.outcome} · ${d.last_error || "delivery failed"} — replay from Handoffs`, lead_id: d.lead_id, age_hours: ageH(d.created_at), primary: { kind: "open_lead", label: "Open lead" } });
+  for (const a of db.prepare("SELECT a.*, c.name contact_name FROM approvals a JOIN leads l ON l.id=a.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE a.workspace_id=? AND a.decision IS NULL ORDER BY a.submitted_at").all(ws) as any[])
+    items.push({ id: "q_appr_" + a.id, type: "approval", score: 90 + Math.min(20, ageH(a.submitted_at)), title: `Approval waiting — ${a.contact_name || "lead"}`, subtitle: `Submitted ${ageH(a.submitted_at)}h ago · tier ${a.tier}`, lead_id: a.lead_id, approval_id: a.id, age_hours: ageH(a.submitted_at), primary: { kind: "open_approval", label: "Decide" } });
+  for (const cb of db.prepare("SELECT cb.*, c.name contact_name FROM callbacks cb JOIN leads l ON l.id=cb.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE cb.workspace_id=? AND cb.status='open' AND cb.due_at<=? ORDER BY cb.due_at LIMIT 25").all(ws, t) as any[])
+    items.push({ id: "q_cb_" + cb.id, type: "callback", score: 88, title: `Callback due — ${cb.contact_name || "customer"}`, subtitle: cb.note || "Promised callback", lead_id: cb.lead_id, callback_id: cb.id, primary: { kind: "open_lead", label: "Open & call" } });
+  for (const l of db.prepare("SELECT * FROM leads WHERE workspace_id=? AND state NOT IN ('WON','LOST','NO_RESPONSE','UNSERVICEABLE','JUNK','DUPLICATE') AND next_action_due_at IS NOT NULL AND next_action_due_at<? ORDER BY next_action_due_at LIMIT 60").all(ws, t) as any[]) {
+    if (!mine2(l)) continue; const v = leadView(l);
+    items.push({ id: "q_over_" + l.id, type: "followup_overdue", score: 85 + Math.min(15, ageH(l.next_action_due_at)), title: `${v.contact_name || "Lead"} — ${l.next_action || "Follow up"}`, subtitle: `${l.service_requested} · due ${ageH(l.next_action_due_at)}h ago · ${moneyFmt(l.est_value)}`, lead_id: l.id, age_hours: ageH(l.next_action_due_at), primary: { kind: "open_lead", label: "Work it" } });
+  }
+  for (const l of db.prepare("SELECT * FROM leads WHERE workspace_id=? AND state='NEW' AND first_response_at IS NULL ORDER BY created_at LIMIT 60").all(ws) as any[]) {
+    if (!mine2(l)) continue; const v = leadView(l);
+    items.push({ id: "q_new_" + l.id, type: "lead_untouched", score: 80 + Math.min(18, ageH(l.created_at) / 4), title: `Untouched lead — ${v.contact_name || "New lead"}`, subtitle: `${l.service_requested} · arrived ${ageH(l.created_at)}h ago · ${moneyFmt(l.est_value)}`, lead_id: l.id, age_hours: ageH(l.created_at), primary: { kind: "open_lead", label: "First touch" } });
+  }
+  for (const p of db.prepare("SELECT p.*, c.name contact_name FROM proposals p JOIN leads l ON l.id=p.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE p.workspace_id=? AND p.view_count>0 AND p.signed_at IS NULL AND p.status='sent' AND l.state IN ('SENT','FOLLOWUP') ORDER BY p.viewed_at DESC LIMIT 15").all(ws) as any[])
+    items.push({ id: "q_view_" + p.id, type: "proposal_viewed", score: 78, title: `${p.contact_name || "Customer"} viewed the proposal — unsigned`, subtitle: `Viewed ${p.view_count}× · total ${moneyFmt(p.total)} · viewed ${ageH(p.viewed_at)}h ago`, lead_id: p.lead_id, primary: { kind: "open_lead", label: "Call them" } });
+  for (const it of db.prepare("SELECT * FROM inbox_items WHERE workspace_id=? AND status='open' ORDER BY created_at LIMIT 60").all(ws) as any[])
+    items.push({ id: "q_inb_" + it.id, type: "inbox", score: 70 + Math.min(15, ageH(it.created_at) / 4), title: `${it.category.replaceAll("_", " ")} — ${it.subject || "(no subject)"}`, subtitle: `From ${it.from_name || it.from_email} · ${ageH(it.created_at)}h old${it.owner_id ? "" : " · unassigned"}`, inbox_id: it.id, lead_id: it.lead_id || null, age_hours: ageH(it.created_at), primary: { kind: "open_inbox", label: "Handle" } });
+  for (const p of db.prepare("SELECT p.*, c.name contact_name, CAST((julianday('now') - julianday(COALESCE(p.sent_at, p.created_at))) AS INTEGER) days FROM proposals p JOIN leads l ON l.id=p.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE p.workspace_id=? AND p.status='sent' AND p.signed_at IS NULL AND l.state IN ('SENT','FOLLOWUP') AND julianday('now') - julianday(COALESCE(p.sent_at, p.created_at)) >= 4 ORDER BY days DESC LIMIT 15").all(ws) as any[])
+    items.push({ id: "q_cold_" + p.id, type: "proposal_cold", score: 66 + Math.min(10, p.days), title: `Proposal going cold — ${p.contact_name || "customer"}`, subtitle: `Sent ${p.days} days ago · ${moneyFmt(p.total)} · unsigned`, lead_id: p.lead_id, primary: { kind: "open_lead", label: "Nudge" } });
+  backfillJobs(ws);
+  for (const j of db.prepare("SELECT * FROM jobs WHERE workspace_id=? AND stage='SCHEDULED'").all(ws) as any[]) {
+    const crew = (db.prepare("SELECT COUNT(*) c FROM job_crew WHERE lead_id=?").get(j.lead_id) as any).c;
+    if (!crew) { const v = jobView(j); items.push({ id: "q_crew_" + j.id, type: "job_crew", score: 62, title: `Job needs crew — ${v.contact_name}`, subtitle: `${v.service_requested} · ${moneyFmt(j.value)} · no one assigned`, job_id: j.id, lead_id: j.lead_id, primary: { kind: "open_job", label: "Assign crew" } }); }
+    const docs = db.prepare("SELECT COUNT(*) t, SUM(CASE WHEN status='received' THEN 1 ELSE 0 END) r FROM documents WHERE (job_id=? OR lead_id=?) AND required=1").get(j.id, j.lead_id) as any;
+    if ((docs.t || 0) > (docs.r || 0) && ["FIELD_DONE", "PAPERWORK"].includes(j.stage)) { const v = jobView(j); items.push({ id: "q_docs_" + j.id, type: "paperwork", score: 58, title: `Paperwork missing — ${v.contact_name}`, subtitle: `${(docs.t || 0) - (docs.r || 0)} required document(s) outstanding on ${v.service_requested}`, job_id: j.id, lead_id: j.lead_id, primary: { kind: "open_job", label: "Chase docs" } }); }
+  }
+  for (const f of db.prepare("SELECT f.*, COALESCE(w.name,u.name) who FROM field_reports f LEFT JOIN workers w ON w.id=f.worker_id LEFT JOIN users u ON u.id=f.manager_id WHERE f.workspace_id=? AND f.status='missing' AND f.report_date<? ORDER BY f.report_date LIMIT 20").all(ws, todayStr()) as any[])
+    items.push({ id: "q_fr_" + f.id, type: "field_report", score: 52, title: `Field report missing — ${f.who || "worker"}`, subtitle: `Report for ${f.report_date} not filed`, lead_id: f.lead_id || null, primary: { kind: "open_ops", label: "Chase" } });
+  for (const s2 of db.prepare("SELECT t.*, COALESCE(w.name,u.name) who FROM timesheets t LEFT JOIN workers w ON w.id=t.worker_id LEFT JOIN users u ON u.id=t.manager_id WHERE t.workspace_id=? AND t.status='missing' AND t.week_of<? ORDER BY t.week_of LIMIT 20").all(ws, weekStartOf(new Date())) as any[])
+    items.push({ id: "q_ts_" + s2.id, type: "timesheet", score: 48, title: `Timesheet missing — ${s2.who || "worker"}`, subtitle: `Week of ${s2.week_of} not submitted`, primary: { kind: "open_ops", label: "Chase" } });
+  items.sort((a, b) => b.score - a.score);
+  res.json({ items: items.slice(0, 100), total: items.length, by_type: items.reduce((m: any, i: any) => { m[i.type] = (m[i.type] || 0) + 1; return m; }, {}) });
+});
+// ---------- v3 slice 36 (server): board stats — metrics ON the work surface ----------
+app.get("/api/board-stats", requireAuth, (req: any, res) => {
+  const ws = req.user.workspace_id;
+  const leads = db.prepare("SELECT * FROM leads WHERE workspace_id=?").all(ws) as any[];
+  const median = (a: number[]) => a.length ? a.sort((x, y) => x - y)[Math.floor(a.length / 2)] : 0;
+  const stages: any = {};
+  for (const st of [...OPEN_STAGES, "WON"]) {
+    const rows = leads.filter(l => l.state === st);
+    const ages = rows.map(l => (Date.now() - new Date(l.stage_changed_at || l.updated_at || l.created_at).getTime()) / 86400000);
+    stages[st] = { count: rows.length, value: Math.round(rows.reduce((s, l) => s + (l.est_value || 0), 0)), median_age_days: Math.round(median(ages) * 10) / 10, rotting: ages.filter(a => a > 5).length };
+  }
+  const finals = leads.filter(l => ["LOST", "NO_RESPONSE", "UNSERVICEABLE", "JUNK", "DUPLICATE"].includes(l.state));
+  stages["CLOSED"] = { count: finals.length, value: 0, median_age_days: 0, rotting: 0 };
+  const jobs = db.prepare("SELECT stage, COUNT(*) c FROM jobs WHERE workspace_id=? GROUP BY stage").all(ws) as any[];
+  res.json({ stages, jobs: Object.fromEntries(jobs.map(j => [j.stage, j.c])) });
+});
+
+// ---------- v3 slice 34 (server): callbacks + manual reactivation ----------
+app.post("/api/leads/:id/callback", requireAuth, (req: any, res) => {
+  const l = db.prepare("SELECT * FROM leads WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!l) return res.status(404).json({ error: { code: "not_found" } });
+  const id = uid("cbk");
+  db.prepare("INSERT INTO callbacks (id,workspace_id,lead_id,due_at,note,status,created_by,created_at) VALUES (?,?,?,?,?,'open',?,?)")
+    .run(id, req.user.workspace_id, l.id, String(req.body.due_at || new Date(Date.now() + 86400000).toISOString()), String(req.body.note || "Callback requested"), req.user.id, now());
+  db.prepare("UPDATE leads SET next_action='Callback', next_action_due_at=? WHERE id=?").run(String(req.body.due_at || ""), l.id);
+  res.status(201).json(db.prepare("SELECT * FROM callbacks WHERE id=?").get(id));
+});
+app.post("/api/callbacks/:id/done", requireAuth, (req: any, res) => { db.prepare("UPDATE callbacks SET status='done', completed_at=? WHERE id=? AND workspace_id=?").run(now(), req.params.id, req.user.workspace_id); res.json({ ok: true }); });
+app.post("/api/reactivate", requireAuth, (req: any, res) => {
+  const ws = req.user.workspace_id; let rows = db.prepare("SELECT * FROM leads WHERE workspace_id=? AND state IN ('NO_RESPONSE','LOST')").all(ws) as any[];
+  if (Array.isArray(req.body?.lead_ids) && req.body.lead_ids.length) rows = rows.filter(l => req.body.lead_ids.includes(l.id));
+  let revived = 0;
+  for (const l of rows) { if (l.state === "LOST" && !["price", "timing", "Price", "Timing"].includes(String(l.lost_reason || "")) && !req.body?.lead_ids) continue;
+    const r: any = setStage(ws, req.user.id, l, "WORKING", { note: "reactivated (rehash)" });
+    if (!r.error) { db.prepare("UPDATE leads SET next_action='Rehash — check in', next_action_due_at=? WHERE id=?").run(new Date(Date.now() + 86400000).toISOString(), l.id); revived++; } }
+  res.json({ revived });
 });
 
 // ---------- slice 3: deposits (Stripe live / explicit test mode) ----------
@@ -919,6 +1325,11 @@ app.post("/api/proposals/:id/send", requireAuth, async (req: any, res) => {
   const p = db.prepare("SELECT * FROM proposals WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!p) return res.status(404).json({ error: { code: "not_found" } });
   const l = db.prepare("SELECT * FROM leads WHERE id=?").get(p.lead_id) as any; const v = leadView(l);
+  // v3 §4.4: the only hard send-gate left is a policy-required approval that hasn't happened
+  if (approvalRequiredFor(req.user.workspace_id, p.total || 0) && !approvedApprovalFor(req.user.workspace_id, p.id)) {
+    const pend = maybeRequestApproval(req.user.workspace_id, req.user.id, l, p);
+    return res.status(422).json({ error: { code: "approval_required", message: `Workspace policy requires approval before sending a $${p.total} proposal — it's in the approver's queue now.`, approval_id: pend?.id || null } });
+  }
   const token = ensureSignToken(p.id);
   const base = `${req.protocol}://${req.get("host")}`;
   const link = `${base}/sign/${token}`;
@@ -931,8 +1342,8 @@ app.post("/api/proposals/:id/send", requireAuth, async (req: any, res) => {
     ? `${ws.name}: your proposal ($${p.total}) is ready to review & sign: ${link}`
     : `Hi ${v.contact_name || "there"},\n\nYour proposal from ${ws.name} is ready — total $${p.total}.\nReview and sign securely here: ${link}\n\nQuestions? Just reply to this email.`;
   const r: any = await queueAndDeliver(req.user.workspace_id, { lead_id: l.id, channel, to, subject: `Your proposal from ${ws.name} — $${p.total}`, body });
-  db.prepare("UPDATE proposals SET status='sent' WHERE id=?").run(p.id);
-  if (l.state === "APPROVED") { const t: any = transition(req.user.workspace_id, req.user.id, l, "PROPOSAL_SENT"); if (t.error) { /* stay APPROVED */ } }
+  db.prepare("UPDATE proposals SET status='sent', sent_at=? WHERE id=?").run(now(), p.id);
+  if (["NEW", "WORKING", "QUALIFIED", "PROPOSAL"].includes(l.state)) setStage(req.user.workspace_id, req.user.id, l, "SENT");
   enrollFollowup(req.user.workspace_id, l.id, p.id);
   logEvent(req.user.workspace_id, l.id, req.user.id, "proposal_sent", null, null, { channel, status: r.status });
   res.status(201).json({ status: r.status, channel, to, sign_link: link });
@@ -1014,6 +1425,7 @@ app.post("/v1/leads/:id/outcome", requireApiKey(["outcomes:write"]), (req: any, 
   const updated = db.prepare("SELECT * FROM leads WHERE id=?").get(l.id) as any;
   logEvent(req.workspace_id, l.id, "api", "state_changed", l.state, to, { origin: "api_outcome_push" });
   finalizeLead(req.workspace_id, "api", updated, to);
+  if (to === "WON") ensureJobForLead(req.workspace_id, "api", updated);
   emitEvent(req.workspace_id, "lead.state_changed", { lead_id: l.id, from_state: l.state, to_state: to, origin: "api" });
   res.json({ ok: true, lead_id: l.id, state: to, origin: "api" });
 });
@@ -1114,7 +1526,7 @@ app.get("/api/dashboard", requireAuth, (req: any, res) => {
   const leads = db.prepare("SELECT * FROM leads WHERE workspace_id=?").all(ws) as any[];
   const days: any[] = [];
   for (let i = 13; i >= 0; i--) { const d = new Date(Date.now() - i * 86400000); const key = d.toISOString().slice(0, 10); days.push({ day: key.slice(5), created: leads.filter(l => String(l.created_at).slice(0, 10) === key).length, won: leads.filter(l => l.state === "WON" && String(l.updated_at).slice(0, 10) === key).length }); }
-  const funnelOrder = ["NEW", "TRIAGED", "QUALIFYING", "QUALIFIED", "READY_FOR_APPROVAL", "APPROVED", "PROPOSAL_SENT", "WON"];
+  const funnelOrder = ["NEW", "WORKING", "QUALIFIED", "PROPOSAL", "SENT", "FOLLOWUP", "WON"];
   const funnel = funnelOrder.map(s => ({ state: s, count: m.by_state[s] || 0, value: leads.filter(l => l.state === s).reduce((x, l) => x + (l.est_value || 0), 0) }));
   const wonValue = leads.filter(l => l.state === "WON").reduce((x, l) => x + (l.est_value || 0), 0);
   const byService = (db.prepare("SELECT service_requested service, COUNT(*) leads, SUM(CASE WHEN state='WON' THEN 1 ELSE 0 END) won, SUM(est_value) value FROM leads WHERE workspace_id=? GROUP BY service_requested ORDER BY leads DESC LIMIT 8").all(ws));
@@ -1148,14 +1560,14 @@ app.get("/api/reports/export", requireAuth, needPerm("can_export"), (req: any, r
 });
 
 // ---------- slice 13 (Tier 3): forecast, at-risk, win/loss intel, speed-to-lead ----------
-const STAGE_WEIGHTS: Record<string, number> = { NEW: 0.05, TRIAGED: 0.10, QUALIFYING: 0.20, QUALIFIED: 0.35, READY_FOR_APPROVAL: 0.50, APPROVED: 0.65, PROPOSAL_DRAFTED: 0.70, PROPOSAL_SENT: 0.80, IN_FOLLOW_UP: 0.85, ON_HOLD: 0.10 };
+const STAGE_WEIGHTS: Record<string, number> = { NEW: 0.05, WORKING: 0.20, QUALIFIED: 0.35, PROPOSAL: 0.60, SENT: 0.80, FOLLOWUP: 0.85, WON: 1 };
 app.get("/api/forecast", requireAuth, (req: any, res) => {
   const ws = req.user.workspace_id;
   const open = db.prepare("SELECT state, COUNT(*) c, COALESCE(SUM(est_value),0) v FROM leads WHERE workspace_id=? AND state NOT IN ('WON','LOST','NO_RESPONSE','UNSERVICEABLE','JUNK','DUPLICATE') GROUP BY state").all(ws) as any[];
   const by_stage = open.map(r => ({ state: r.state, count: r.c, value: r.v, weight: STAGE_WEIGHTS[r.state] ?? 0.05, weighted: Math.round(r.v * (STAGE_WEIGHTS[r.state] ?? 0.05)) }));
   const weighted_pipeline = by_stage.reduce((a, r) => a + r.weighted, 0);
   const raw_pipeline = by_stage.reduce((a, r) => a + r.value, 0);
-  const at_risk = db.prepare(`SELECT l.id lead_id, c.name contact_name, l.service_requested, p.total, p.sent_at, CAST((julianday('now') - julianday(COALESCE(p.sent_at, p.created_at))) AS INTEGER) days_waiting FROM proposals p JOIN leads l ON l.id=p.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE p.workspace_id=? AND p.status='sent' AND l.state IN ('PROPOSAL_SENT','IN_FOLLOW_UP') AND julianday('now') - julianday(COALESCE(p.sent_at, p.created_at)) >= 4 ORDER BY days_waiting DESC LIMIT 8`).all(ws);
+  const at_risk = db.prepare(`SELECT l.id lead_id, c.name contact_name, l.service_requested, p.total, p.sent_at, CAST((julianday('now') - julianday(COALESCE(p.sent_at, p.created_at))) AS INTEGER) days_waiting FROM proposals p JOIN leads l ON l.id=p.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE p.workspace_id=? AND p.status='sent' AND l.state IN ('SENT','FOLLOWUP') AND julianday('now') - julianday(COALESCE(p.sent_at, p.created_at)) >= 4 ORDER BY days_waiting DESC LIMIT 8`).all(ws);
   const since = new Date(Date.now() - 30 * 86400000).toISOString();
   const decided = db.prepare("SELECT COUNT(*) c, SUM(CASE WHEN state='WON' THEN 1 ELSE 0 END) w FROM leads WHERE workspace_id=? AND state IN ('WON','LOST') AND updated_at>=?").get(ws, since) as any;
   const topLost = db.prepare("SELECT COALESCE(lost_reason,'UNSPECIFIED') r, COUNT(*) c FROM leads WHERE workspace_id=? AND state IN ('LOST','NO_RESPONSE') AND updated_at>=? GROUP BY r ORDER BY c DESC LIMIT 1").get(ws, since) as any;
@@ -1189,7 +1601,7 @@ app.get("/api/ai/suggest/:leadId", requireAuth, (req: any, res) => {
 app.post("/api/ai/autofix-next-steps", requireAuth, (req: any, res) => {
   const ws = req.user.workspace_id;
   const rows = db.prepare("SELECT * FROM leads WHERE workspace_id=? AND next_action_due_at IS NULL AND state NOT IN ('WON','LOST','NO_RESPONSE','UNSERVICEABLE','JUNK','DUPLICATE')").all(ws) as any[];
-  const defaults: Record<string, string> = { NEW: "First contact", TRIAGED: "Qualify the request", QUALIFYING: "Qualify the request", QUALIFIED: "Book the site visit", READY_FOR_APPROVAL: "Submit for approval", APPROVED: "Draft the proposal", PROPOSAL_DRAFTED: "Send the proposal", PROPOSAL_SENT: "Proposal follow-up", IN_FOLLOW_UP: "Follow up", ON_HOLD: "Check the hold reason" };
+  const defaults: Record<string, string> = { NEW: "First contact", WORKING: "Qualify the request", QUALIFIED: "Book the site visit", PROPOSAL: "Send the proposal", SENT: "Proposal follow-up", FOLLOWUP: "Follow up" };
   let fixed = 0;
   for (const l of rows) { db.prepare("UPDATE leads SET next_action=?, next_action_due_at=?, updated_at=? WHERE id=?").run(defaults[l.state] || "Follow up", new Date(Date.now() + 86400000).toISOString(), now(), l.id); logEvent(ws, l.id, req.user.id, "ai_autofix_next_step", null, null, {}); fixed++; }
   res.json({ fixed });
@@ -1278,7 +1690,7 @@ app.patch("/api/team/:id", requireAuth, needPerm("can_manage_team"), (req: any, 
   res.json({ user: { id: u.id, name: u.name, email: u.email, role: u.role, approval_limit: u.approval_limit, permissions: permsOf(u), has_overrides: !!u.permissions } });
 });
 // ---------- slice 11 (Tier 1): bulk actions, two-way texting, push ----------
-const NEXT_STATE: Record<string, string> = { NEW: "TRIAGED", TRIAGED: "QUALIFYING", QUALIFYING: "QUALIFIED", QUALIFIED: "READY_FOR_APPROVAL", APPROVED: "PROPOSAL_DRAFTED", PROPOSAL_SENT: "IN_FOLLOW_UP" };
+const NEXT_STATE: Record<string, string> = { NEW: "WORKING", WORKING: "QUALIFIED", QUALIFIED: "PROPOSAL", PROPOSAL: "SENT", SENT: "FOLLOWUP" };
 app.post("/api/leads/bulk", requireAuth, (req: any, res) => {
   const ids: string[] = (req.body.ids || []).slice(0, 200); const action = String(req.body.action || "");
   const results = { ok: 0, skipped: 0, details: [] as any[] };

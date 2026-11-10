@@ -16,11 +16,19 @@ export function ensureWeek(ws: string, weekOf: string): number {
     const exists = db.prepare("SELECT id FROM timesheets WHERE workspace_id=? AND manager_id=? AND week_of=?").get(ws, m.id, weekOf);
     if (!exists) { db.prepare("INSERT INTO timesheets (id,workspace_id,manager_id,week_of,status) VALUES (?,?,?,?, 'missing')").run(uid("ts"), ws, m.id, weekOf); created++; }
   }
+  // v3 slice 29: a sheet for every active ROSTER worker too (they have no login; the office files for them)
+  const workers = db.prepare("SELECT * FROM workers WHERE workspace_id=? AND active=1").all(ws) as any[];
+  for (const w of workers) {
+    if (w.linked_user_id && managers.some(m => m.id === w.linked_user_id)) { // linked PM/owner already has a user sheet — link it instead
+      db.prepare("UPDATE timesheets SET worker_id=? WHERE workspace_id=? AND manager_id=? AND week_of=? AND worker_id IS NULL").run(w.id, ws, w.linked_user_id, weekOf); continue; }
+    const exists = db.prepare("SELECT id FROM timesheets WHERE workspace_id=? AND worker_id=? AND week_of=?").get(ws, w.id, weekOf);
+    if (!exists) { db.prepare("INSERT INTO timesheets (id,workspace_id,manager_id,worker_id,week_of,status) VALUES (?,?,?,?,?, 'missing')").run(uid("ts"), ws, w.linked_user_id || null, w.id, weekOf); created++; }
+  }
   return created;
 }
 export function chaseRow(row: any) {
-  notify(row.workspace_id, [row.manager_id], "timesheet_missing", `⏱ Timesheet missing — week of ${row.week_of}`, "Your timesheet for that week hasn't been logged. Open Workpile → Ops Console → Timesheets to log your hours.");
-  notifyOwners(row.workspace_id, "timesheet_missing", `⏱ Timesheet still missing: week of ${row.week_of}`, "A field manager's timesheet is outstanding — it was just chased automatically.");
+  if (row.manager_id) notify(row.workspace_id, [row.manager_id], "timesheet_missing", `⏱ Timesheet missing — week of ${row.week_of}`, "Your timesheet for that week hasn't been logged. Open Workpile → Ops Console → Timesheets to log your hours.");
+  notifyOwners(row.workspace_id, "timesheet_missing", `⏱ Timesheet still missing: week of ${row.week_of}`, "A worker's timesheet is outstanding — it was just chased automatically.");
   db.prepare("UPDATE timesheets SET chased_at=? WHERE id=?").run(now(), row.id);
 }
 export function chaseMissing(): { chased: number } {

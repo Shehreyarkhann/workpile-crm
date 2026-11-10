@@ -28,7 +28,7 @@ console.log("Demo API key:", key);
 const samples: any[] = [
   { name: "Jane Alvarez", phone: "+15165550101", email: "jane@example.com", service: "Water damage cleanup", value: 5400, state: "NEW", days: 1, msg: "Basement flooded yesterday, need help this week" },
   { name: "Tom Becker", phone: "+15165550102", email: "tom@example.com", service: "Mold remediation", value: 4800, state: "NEW", days: 45, msg: "Musty smell in bathroom, thinking mold" },
-  { name: "Rita Chen", phone: "+15165550103", email: "rita@example.com", service: "Fire & smoke restoration", value: 12000, state: "QUALIFYING", days: 3, msg: "Kitchen fire, smoke damage throughout first floor" },
+  { name: "Rita Chen", phone: "+15165550103", email: "rita@example.com", service: "Fire & smoke restoration", value: 12000, state: "WORKING", days: 3, msg: "Kitchen fire, smoke damage throughout first floor" },
   { name: "Omar Diaz", phone: "+15165550104", email: "omar@example.com", service: "Septic inspection", value: 900, state: "UNSERVICEABLE", days: 10, msg: "Do you do septic inspections?" },
   { name: "Kay Fox", phone: "+15165550105", email: "kay@example.com", service: "Septic inspection", value: 900, state: "UNSERVICEABLE", days: 20, msg: "Need a septic inspection before sale" },
   { name: "Leo Grant", phone: "+15165550106", email: "leo@example.com", service: "24/7 emergency cleanup", value: 3000, state: "UNSERVICEABLE", days: 5, msg: "Need emergency cleanup tonight" },

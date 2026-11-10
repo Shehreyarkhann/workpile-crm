@@ -7,7 +7,7 @@ const owners = users.filter(u => ["LEAD_OWNER", "OWNER", "PM"].includes(u.role))
 const first = ["James", "Maria", "Robert", "Susan", "David", "Angela", "Michael", "Sarah", "Kevin", "Laura", "Brian", "Nicole", "Chris", "Amanda", "Steven", "Jessica", "Mark", "Emily", "Daniel", "Karen"];
 const last = ["Smith", "Johnson", "Brown", "Garcia", "Miller", "Davis", "Wilson", "Moore", "Taylor", "Anderson", "Thomas", "Lee", "Walker", "Hall", "Allen", "Young", "King", "Wright", "Scott", "Torres"];
 const services = ["Water damage cleanup", "Mold remediation", "Fire & smoke restoration", "Water damage cleanup", "Mold remediation", "Roofing replacement", "Sewer backup cleanup", "Storm damage repair"];
-const plan: [string, number][] = [["WON", 2000], ["LOST", 220], ["NEW", 90], ["UNSERVICEABLE", 60], ["QUALIFYING", 60], ["NO_RESPONSE", 40], ["TRIAGED", 40], ["JUNK", 30], ["QUALIFIED", 30], ["PROPOSAL_SENT", 25], ["ON_HOLD", 5]];
+const plan: [string, number][] = [["WON", 2000], ["LOST", 220], ["NEW", 90], ["UNSERVICEABLE", 60], ["WORKING", 100], ["NO_RESPONSE", 40],  ["JUNK", 30], ["QUALIFIED", 30], ["SENT", 25], ["FOLLOWUP", 5]];
 const insC = db.prepare("INSERT INTO contacts (id,workspace_id,name,phone,email) VALUES (?,?,?,?,?)");
 const insL = db.prepare(`INSERT INTO leads (id,workspace_id,contact_id,dedupe_key,service_requested,state,urgency,value_band,est_value,owner_id,pm_id,approver_id,next_action,next_action_due_at,first_response_at,notes,location,lost_reason,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
 let n = 0;
