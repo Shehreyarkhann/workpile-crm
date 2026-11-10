@@ -33,3 +33,51 @@ export function parseEmail(e: InboundEmail) {
   const phone = e.phone || extractPhone(e.body || "");
   return { category, phone, is_lead: category === "lead" };
 }
+
+// ---------- slice 18: bulk email parsers (mbox / email CSV) ----------
+export function parseMbox(text: string): InboundEmail[] {
+  const blocks = String(text).split(/\nFrom [^\n]*\n/).map(b => b.trim()).filter(b => b.length > 20);
+  const out: InboundEmail[] = [];
+  for (const block of blocks) {
+    const splitAt = block.search(/\r?\n\r?\n/);
+    const head = splitAt >= 0 ? block.slice(0, splitAt) : block.slice(0, 2000);
+    const body = splitAt >= 0 ? block.slice(splitAt).trim().slice(0, 4000) : "";
+    const header = (name: string) => { const m = head.match(new RegExp("^" + name + ":\\s*(.*)$", "mi")); return m ? m[1].trim() : ""; };
+    const from = header("From"); const fm = from.match(/^(.*?)\s*<([^>]+)>$/) || from.match(/(\S+@\S+)/);
+    const from_name = fm && fm[2] ? fm[1].replace(/"/g, "").trim() : "";
+    const from_email = fm ? (fm[2] || fm[1]) : "";
+    const dateRaw = header("Date"); const d = Date.parse(dateRaw);
+    out.push({ from_name, from_email, subject: header("Subject"), body, received_at: isNaN(d) ? undefined : new Date(d).toISOString() });
+    if (out.length >= 10000) break;
+  }
+  return out;
+}
+
+export function parseCsvRows(text: string): string[][] {
+  const rows: string[][] = []; let row: string[] = [], cell = "", quoted = false;
+  const s = String(text);
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (quoted) { if (c === '"') { if (s[i + 1] === '"') { cell += '"'; i++; } else quoted = false; } else cell += c; }
+    else if (c === '"') quoted = true;
+    else if (c === ",") { row.push(cell); cell = ""; }
+    else if (c === "\n" || c === "\r") { if (c === "\r" && s[i + 1] === "\n") i++; row.push(cell); cell = ""; if (row.length > 1 || row[0] !== "") rows.push(row); row = []; }
+    else cell += c;
+  }
+  row.push(cell); if (row.length > 1 || row[0] !== "") rows.push(row);
+  return rows;
+}
+
+export function parseEmailCsv(text: string): InboundEmail[] {
+  const rows = parseCsvRows(text);
+  if (rows.length < 2) return [];
+  const headers = rows[0].map(h => h.trim().toLowerCase());
+  const idx = (names: string[]) => headers.findIndex(h => names.includes(h));
+  const mi = { email: idx(["from_email", "from", "sender", "email", "from address"]), name: idx(["from_name", "sender name", "name"]), subject: idx(["subject", "title"]), body: idx(["body", "message", "text", "snippet", "content"]), date: idx(["date", "received_at", "received", "time"]) };
+  return rows.slice(1).filter(r => r.some(c => c.trim())).slice(0, 10000).map(r => {
+    const rawFrom = (mi.email >= 0 ? r[mi.email] : "") || "";
+    const fm = rawFrom.match(/^(.*?)\s*<([^>]+)>$/) || rawFrom.match(/(\S+@\S+)/);
+    const d = mi.date >= 0 ? Date.parse(r[mi.date]) : NaN;
+    return { from_name: (mi.name >= 0 ? r[mi.name] : "") || (fm && fm[2] ? fm[1].replace(/"/g, "").trim() : ""), from_email: fm ? (fm[2] || fm[1]) : rawFrom, subject: mi.subject >= 0 ? r[mi.subject] : "", body: (mi.body >= 0 ? r[mi.body] : "").slice(0, 4000), received_at: isNaN(d) ? undefined : new Date(d).toISOString() };
+  });
+}

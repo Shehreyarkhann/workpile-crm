@@ -261,6 +261,8 @@ function Imports() {
   useEffect(load, []);
   const run = async () => { try { const r = await api("/api/imports/csv", { method: "POST", body: { csv, filename: "web-import.csv", format } }); setRes(r); load(); } catch (e: any) { setMsg(e.message); } };
   const onFile = (f: File) => f.text().then(t => setCsv(t));
+  const [eFmt, setEFmt] = useState("mbox"); const [eContent, setEContent] = useState(""); const [eRes, setERes] = useState<any>(null); const [eBusy, setEBusy] = useState(false);
+  const runEmail = async () => { setEBusy(true); try { const r = await api("/api/imports/email", { method: "POST", body: { format: eFmt, content: eContent, filename: "email-backlog." + eFmt } }); setERes(r); load(); } catch (e: any) { setMsg(e.message); } setEBusy(false); };
   return (<div><h2 className="pt">Import Leads</h2><p className="sub">Bring the backlog in — CSV from any source. Columns are auto-mapped (name, phone, email, service, value, location); duplicates are detected by phone/email and skipped, never double-created.</p>
     {msg && <div className="err">{msg}</div>}
     <div className="card"><h3>1 · Choose file or paste CSV</h3>
@@ -270,6 +272,15 @@ function Imports() {
       <div className="rowflex" style={{ marginTop: 10 }}><button className="btn" onClick={run}>Import {csv.split("\n").filter(Boolean).length - 1 > 0 ? `(${csv.split("\n").filter(Boolean).length - 1} rows)` : ""}</button>
       {res && <span className="ok" style={{ margin: 0 }}>Created {res.created} · duplicates skipped {res.duplicates}</span>}</div>
       <p className="muted">Every imported lead lands owned, with a first-contact task and a 4-hour SLA — nothing enters unowned.</p></div>
+    <div className="card"><h3>2 · Email backlog — import the whole inbox, auto-triaged</h3>
+      <p className="muted">Export the pile once and drop it here: a <b>Gmail Takeout .mbox</b>, an email CSV, or JSON. Every message is triaged on arrival — quote requests become leads (deduped by phone/email), and proposals, field reports, active-job mail, vendor, finance, and admin each land as owned inbox items with a next step. Nothing needs reading one-by-one first.</p>
+      <div className="rowflex" style={{ marginBottom: 8 }}><label className="f" style={{ margin: 0 }}>Format</label><select style={{ width: 230 }} value={eFmt} onChange={e => setEFmt(e.target.value)}><option value="mbox">Gmail Takeout (.mbox)</option><option value="csv">Email CSV</option><option value="json">JSON</option></select>
+      <input type="file" accept=".mbox,.csv,.txt,.json" onChange={e => e.target.files && e.target.files[0].text().then(t => setEContent(t))} /></div>
+      <textarea rows={5} placeholder={eFmt === "mbox" ? "…or paste the .mbox contents here" : eFmt === "csv" ? "from_email,from_name,subject,body,date\n…" : "[{\"from_email\": \"…\", \"subject\": \"…\", \"body\": \"…\"}]"} value={eContent} onChange={e => setEContent(e.target.value)} />
+      <div className="rowflex" style={{ marginTop: 10 }}><button className="btn" disabled={eBusy || !eContent.trim()} onClick={runEmail}>{eBusy ? "Triaging…" : "Import & triage email backlog"}</button>
+      {eRes && <span className="ok" style={{ margin: 0 }}>{eRes.received} messages → {eRes.leads_created} new leads · {eRes.duplicates} duplicates skipped</span>}</div>
+      {eRes && <div className="rowflex" style={{ marginTop: 8 }}>{Object.entries(eRes.by_category).map(([k, v]: any) => <span className="st info" key={k}>{k.replaceAll("_", " ")}: {v}</span>)}</div>}
+    </div>
     <div className="card"><h3>Import history</h3><table><thead><tr><th>File</th><th>When</th><th>Created</th><th>Duplicates</th><th>Status</th></tr></thead><tbody>
       {hist.map(h => { let t: any = {}; try { t = JSON.parse(h.totals || "{}"); } catch { t = {}; } return <tr key={h.id}><td>{h.filename}</td><td>{dt(h.created_at)}</td><td>{t.created ?? "—"}</td><td>{t.dupes ?? "—"}</td><td>{h.status}</td></tr>; })}
       {hist.length === 0 && <tr><td colSpan={5} className="muted">No imports yet.</td></tr>}</tbody></table></div>

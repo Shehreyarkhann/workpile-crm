@@ -4,7 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { db, uid, now, hashPassword, verifyPassword, apiKeyHash, logEvent, audit } from "./db.ts";
 import { triageLead, packetCheck, demandGap, demandPool, injectionScan } from "./agents.ts";
 import { metrics, morningBrief } from "./metrics.ts";
-import { parseEmail } from "./inbox.ts";
+import { parseEmail, parseMbox, parseEmailCsv } from "./inbox.ts";
 import { proposalDocx } from "./docx.ts";
 import { getTemplate, proposalDocument, sanitizeHtml } from "./proptemplate.ts";
 import { ensureSignToken, getByToken, sign } from "./sign.ts";
@@ -23,7 +23,7 @@ app.use((req: any, _res, next) => { // capture raw body for Stripe signature ver
   if (req.path === "/webhooks/stripe") { let raw = ""; req.on("data", (c: any) => raw += c); req.on("end", () => { req.rawBody = raw; try { req.body = JSON.parse(raw || "{}"); } catch { req.body = {}; } next(); }); }
   else next();
 });
-app.use(express.json({ limit: "5mb" }));
+app.use(express.json({ limit: "50mb" }));
 
 // ---------- state machine (§5.1) ----------
 export const TRANSITIONS: Record<string, string[]> = {
@@ -415,23 +415,42 @@ app.get("/api/proposals/:id/docx", requireAuth, async (req: any, res) => {
 });
 
 // ---------- slice 2: inbox ingestion + triage (§25 P0-2) ----------
-app.post("/api/inbox/ingest", requireAuth, (req: any, res) => {
-  const emails = Array.isArray(req.body.emails) ? req.body.emails : [req.body];
-  const results: any[] = [];
-  const ops = db.prepare("SELECT id FROM users WHERE workspace_id=? AND role='OPS_ADMIN' AND active=1").get(req.user.workspace_id) as any;
+function ingestBatch(ws: string, actorId: string, emails: any[]): { results: any[]; by_category: Record<string, number>; leads_created: number; duplicates: number } {
+  const results: any[] = []; const by_category: Record<string, number> = {}; let leads_created = 0, duplicates = 0;
+  const ops = db.prepare("SELECT id FROM users WHERE workspace_id=? AND role='OPS_ADMIN' AND active=1").get(ws) as any;
   for (const e of emails) {
     const parsed = parseEmail(e);
+    by_category[parsed.category] = (by_category[parsed.category] || 0) + 1;
     if (parsed.is_lead) {
-      const r = createLead(req.user.workspace_id, "inbox", { contact: { name: e.from_name || "", phone: parsed.phone, email: e.from_email || "" }, service_requested: "", message: `${e.subject || ""}\n${e.body || ""}`, source: "email-inbox", created_at: e.received_at });
+      const r = createLead(ws, "inbox", { contact: { name: e.from_name || "", phone: parsed.phone, email: e.from_email || "" }, service_requested: "", message: `${e.subject || ""}\n${e.body || ""}`, source: "email-inbox", created_at: e.received_at });
+      if (r.duplicate) duplicates++; else leads_created++;
       results.push({ category: "lead", lead_id: r.lead.id, duplicate: r.duplicate });
     } else {
       const id = uid("inb");
       db.prepare("INSERT INTO inbox_items (id,workspace_id,category,from_name,from_email,subject,body,owner_id,next_action_due_at,received_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
-        .run(id, req.user.workspace_id, parsed.category, e.from_name || "", e.from_email || "", e.subject || "", e.body || "", ops?.id || req.user.id, new Date(Date.now() + 86400000).toISOString(), e.received_at || now(), now());
+        .run(id, ws, parsed.category, e.from_name || "", e.from_email || "", e.subject || "", e.body || "", ops?.id || actorId, new Date(Date.now() + 86400000).toISOString(), e.received_at || now(), now());
       results.push({ category: parsed.category, inbox_item_id: id });
     }
   }
-  res.json({ ingested: results.length, results });
+  return { results, by_category, leads_created, duplicates };
+}
+app.post("/api/inbox/ingest", requireAuth, (req: any, res) => {
+  const emails = Array.isArray(req.body.emails) ? req.body.emails : [req.body];
+  const r = ingestBatch(req.user.workspace_id, req.user.id, emails);
+  res.json({ ingested: r.results.length, results: r.results });
+});
+// slice 18: bulk email backlog import (mbox / email CSV / JSON) — the 3,000-email front door
+app.post("/api/imports/email", requireAuth, (req: any, res) => {
+  const format = String(req.body.format || "mbox");
+  let emails: any[] = [];
+  if (format === "json") { try { const j = JSON.parse(String(req.body.content || "[]")); emails = Array.isArray(j) ? j : []; } catch { return res.status(422).json({ error: { code: "bad_json" } }); } }
+  else if (format === "csv") emails = parseEmailCsv(String(req.body.content || ""));
+  else emails = parseMbox(String(req.body.content || ""));
+  if (!emails.length) return res.status(422).json({ error: { code: "no_messages", message: "No messages could be parsed from that file." } });
+  const r = ingestBatch(req.user.workspace_id, req.user.id, emails);
+  const id = uid("imp");
+  db.prepare("INSERT INTO imports (id,workspace_id,filename,mapping,totals,status,created_at) VALUES (?,?,?,?,?,?,?)").run(id, req.user.workspace_id, req.body.filename || "email-backlog", JSON.stringify({ kind: "email", format }), JSON.stringify({ created: r.leads_created, dupes: r.duplicates, received: emails.length, by_category: r.by_category }), "committed", now());
+  res.json({ import_id: id, received: emails.length, leads_created: r.leads_created, duplicates: r.duplicates, by_category: r.by_category });
 });
 app.get("/api/inbox", requireAuth, (req: any, res) => res.json(db.prepare("SELECT * FROM inbox_items WHERE workspace_id=? ORDER BY created_at DESC").all(req.user.workspace_id)));
 
