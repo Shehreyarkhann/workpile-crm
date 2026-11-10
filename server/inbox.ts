@@ -8,10 +8,10 @@ export type InboxCategory = "lead" | "proposal" | "field" | "client_active_job" 
 
 const RULES: [InboxCategory, RegExp][] = [
   ["finance", /invoice|payment|bill|receipt|payroll|timesheet attached/i],
-  ["field", /field report|daily report|site photos|job complete|crew/i],
-  ["proposal", /signed (proposal|contract)|proposal (attached|sent|ready|approved)|accept(ed)? (the |your )?proposal|contract attached/i],
-  ["vendor", /supplier|order confirmation|delivery scheduled|material/i],
   ["client_active_job", /my job|our project|scheduled visit|technician|appointment/i],
+  ["proposal", /signed (proposal|contract)|proposal (attached|sent|ready|approved)|accept(ed)? (the |your )?proposal|contract attached/i],
+  ["field", /field report|daily report|site photos|job complete|crew (report|update|finished|completed)/i],
+  ["vendor", /supplier|order confirmation|delivery scheduled|material/i],
   ["admin", /insurance|license|permit|renewal|certificate/i],
   ["lead", /quote|estimate|need|looking for|interested|price|service|help with|flood|mold|damage|repair/i],
 ];
