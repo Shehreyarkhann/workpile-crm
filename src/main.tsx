@@ -314,7 +314,33 @@ function Ops() {
   </div>);
 }
 
-function Settings({ users, setUsers, priceBook, setPriceBook, onJump }: any) {
+function AccessModal({ member, close, done }: any) {
+  const [p, setP] = useState<any>({ ...member.permissions }); const [limit, setLimit] = useState(member.approval_limit || 0); const [err, setErr] = useState("");
+  const T2 = ({ k, label, hint }: any) => <label className="check" style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "7px 0", borderBottom: "1px solid #eef2f7" }}><input type="checkbox" style={{ width: "auto", marginTop: 2 }} checked={!!p[k]} onChange={e => setP({ ...p, [k]: e.target.checked })} /><span><b>{label}</b><br /><span className="muted">{hint}</span></span></label>;
+  const save = async () => { try { await api(`/api/team/${member.id}`, { method: "PATCH", body: { permissions: p, approval_limit: Number(limit) || 0 } }); done(); } catch (e: any) { setErr(e.message); } };
+  return (<div className="modalWrap"><div className="modal" style={{ maxWidth: 520 }}>
+    <div className="rowflex" style={{ justifyContent: "space-between" }}><h3 style={{ margin: 0 }}>Access — {member.name}</h3><button className="btn ghost small" onClick={close}>✕ Close</button></div>
+    <p className="muted">Role: {member.role}. These restrictions apply on top of the role and are enforced by the server — not just hidden in the interface.</p>
+    {err && <div className="err">{err}</div>}
+    <label className="f">Which leads can they see?</label>
+    <select value={p.leads_scope || "own"} onChange={e => setP({ ...p, leads_scope: e.target.value })}><option value="all">All leads in the business</option><option value="own">Only leads they own or PM</option></select>
+    <div style={{ marginTop: 10 }}>
+      <T2 k="can_approve" label="Can approve proposals" hint="Decide approval packets (still bounded by their approval limit below)." />
+      <T2 k="can_billing" label="Can see billing" hint="Subscription, plan and invoices. Money screens stay owner-only unless this is on." />
+      <T2 k="can_settings" label="Can change settings" hint="Workspace settings, price book, templates, services and integrations." />
+      <T2 k="can_export" label="Can export reports" hint="Download CSV exports from Reports." />
+      <T2 k="can_manage_team" label="Can manage team access" hint="Change other members' roles and restrictions. Powerful — grant sparingly." />
+    </div>
+    <label className="f" style={{ marginTop: 12 }}>Approval limit ($) — proposals above this need a higher approver</label>
+    <input type="number" value={limit} onChange={e => setLimit(e.target.value)} />
+    <div className="rowflex" style={{ marginTop: 14 }}><button className="btn" onClick={save}>Save access</button>
+      <button className="btn ghost" onClick={async () => { try { await api(`/api/team/${member.id}`, { method: "PATCH", body: { permissions: {} } }); done(); } catch (e: any) { setErr(e.message); } }}>Reset to role defaults</button></div>
+  </div></div>);
+}
+
+function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any) {
+  const myPerms = me?.permissions; const canSettings = !myPerms || myPerms.can_settings; const canTeam = !myPerms || myPerms.can_manage_team;
+  const [accessFor, setAccessFor] = useState<any>(null);
   const [tab, setTab] = useState("workspace");
   const [s, setS] = useState<any>(null); const [msg, setMsg] = useState("");
   const [tpls, setTpls] = useState<any[]>([]); const [svcs, setSvcs] = useState<any[]>([]);
@@ -327,8 +353,9 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump }: any) {
   const T = ({ id, children }: any) => <button className={tab === id ? "on" : ""} onClick={() => setTab(id)}>{children}</button>;
   return (<div><h2 className="pt">Settings</h2><p className="sub">Everything configurable, in the product — no engineer required.</p>
     {msg && <div className="ok">{msg}</div>}
-    <div className="tabs"><T id="workspace">Workspace</T><T id="pricebook">Price Book</T><T id="templates">Templates</T><T id="services">Services</T><T id="team">Team</T><T id="integrations">Integrations</T></div>
-    {tab === "workspace" && s && <div className="card"><div className="formgrid">
+    <div className="tabs">{canSettings && <><T id="workspace">Workspace</T><T id="pricebook">Price Book</T><T id="templates">Templates</T><T id="services">Services</T></>}{canTeam && <T id="team">Team</T>}{canSettings && <T id="integrations">Integrations</T>}</div>
+    {!canSettings && !canTeam && <div className="card">Your access doesn't include settings or team management. Ask an owner or admin if you need something changed.</div>}
+    {tab === "workspace" && canSettings && s && <div className="card"><div className="formgrid">
       <div><label className="f">Business name</label><input value={s.workspace.name || ""} onChange={e => setS({ ...s, workspace: { ...s.workspace, name: e.target.value } })} /></div>
       <div><label className="f">Vertical</label><input value={s.workspace.vertical || ""} onChange={e => setS({ ...s, workspace: { ...s.workspace, vertical: e.target.value } })} /></div>
       <div><label className="f">Timezone</label><input value={s.workspace.timezone || ""} onChange={e => setS({ ...s, workspace: { ...s.workspace, timezone: e.target.value } })} /></div>
@@ -341,23 +368,24 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump }: any) {
       <div><label className="f">Slack webhook URL (new-lead + approval alerts)</label><input value={s.workspace.slack_webhook_url || ""} placeholder="https://hooks.slack.com/services/…" onChange={e => setS({ ...s, workspace: { ...s.workspace, slack_webhook_url: e.target.value } })} /></div>
       <div><label className="f">Lead source API key (if required)</label><input value={s.workspace.source_api_key || ""} placeholder="Bearer key for your source system" onChange={e => setS({ ...s, workspace: { ...s.workspace, source_api_key: e.target.value } })} /></div>
     </div><button className="btn" style={{ marginTop: 14 }} onClick={async () => { await api("/api/settings", { method: "PATCH", body: s.workspace }); setMsg("Workspace settings saved ✓"); }}>Save workspace</button></div>}
-    {tab === "workspace" && s && <FollowupSettings key={s.workspace.id} ws={s.workspace} />}
-    {tab === "workspace" && s && <BookingSettings key={"bk" + s.workspace.id} ws={s.workspace} />}
-    {tab === "pricebook" && <div className="card"><table><thead><tr><th>Item</th><th>Unit</th><th>Standard</th><th>Floor</th><th></th></tr></thead><tbody>
+    {tab === "workspace" && canSettings && s && <FollowupSettings key={s.workspace.id} ws={s.workspace} />}
+    {tab === "workspace" && canSettings && s && <BookingSettings key={"bk" + s.workspace.id} ws={s.workspace} />}
+    {tab === "pricebook" && canSettings && <div className="card"><table><thead><tr><th>Item</th><th>Unit</th><th>Standard</th><th>Floor</th><th></th></tr></thead><tbody>
       {priceBook.map((p: any) => <tr key={p.id}><td>{p.name}</td><td>{p.unit}</td><td>{money(p.standard_price)}</td><td>{money(p.floor_price)}</td><td><button className="btn ghost small" onClick={async () => { const v = prompt("New standard price ($)", p.standard_price); if (v) { await api(`/api/price-book/${p.id}`, { method: "PATCH", body: { standard_price: Number(v) } }); loadAll(); } }}>Edit price</button> <button className="btn ghost small" onClick={async () => { await api(`/api/price-book/${p.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></td></tr>)}
     </tbody></table>
       <div className="rowflex" style={{ marginTop: 12 }}><input style={{ flex: 2 }} placeholder="New item name" value={nb.name} onChange={e => setNb({ ...nb, name: e.target.value })} /><input style={{ width: 90 }} placeholder="unit" value={nb.unit} onChange={e => setNb({ ...nb, unit: e.target.value })} /><input style={{ width: 120 }} type="number" placeholder="standard $" value={nb.standard_price} onChange={e => setNb({ ...nb, standard_price: e.target.value })} /><input style={{ width: 120 }} type="number" placeholder="floor $" value={nb.floor_price} onChange={e => setNb({ ...nb, floor_price: e.target.value })} /><button className="btn" onClick={async () => { await api("/api/price-book", { method: "POST", body: { ...nb, standard_price: Number(nb.standard_price) || 0, floor_price: Number(nb.floor_price) || 0 } }); setNb({ name: "", unit: "job", standard_price: "", floor_price: "" }); loadAll(); }}>Add item</button></div>
       <p className="muted">Proposals can only price from this book — the floor is the margin guardrail the Approval Gate enforces.</p></div>}
-    {tab === "templates" && <div className="card">{tpls.map(t => <div key={t.id} style={{ borderBottom: "1px solid #eef2f7", padding: "10px 0" }}><b>{t.name}</b> <span className="muted">· {t.kind} · v{t.version} · {t.active ? "active" : "inactive"}</span><p className="muted" style={{ whiteSpace: "pre-wrap" }}>{t.body}</p><button className="btn ghost small" onClick={async () => { const v = prompt("Edit template body", t.body); if (v !== null) { await api(`/api/templates/${t.id}`, { method: "PATCH", body: { body: v } }); loadAll(); } }}>Edit</button> <button className="btn ghost small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></div>)}
+    {tab === "templates" && canSettings && <div className="card">{tpls.map(t => <div key={t.id} style={{ borderBottom: "1px solid #eef2f7", padding: "10px 0" }}><b>{t.name}</b> <span className="muted">· {t.kind} · v{t.version} · {t.active ? "active" : "inactive"}</span><p className="muted" style={{ whiteSpace: "pre-wrap" }}>{t.body}</p><button className="btn ghost small" onClick={async () => { const v = prompt("Edit template body", t.body); if (v !== null) { await api(`/api/templates/${t.id}`, { method: "PATCH", body: { body: v } }); loadAll(); } }}>Edit</button> <button className="btn ghost small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></div>)}
       <div className="formgrid" style={{ marginTop: 12 }}><div><label className="f">New template name</label><input value={nt.name} onChange={e => setNt({ ...nt, name: e.target.value })} /></div><div className="full"><label className="f">Body (merge fields: {"{{contact_name}} {{service}} {{total}}"})</label><textarea rows={4} value={nt.body} onChange={e => setNt({ ...nt, body: e.target.value })} /></div></div>
       <button className="btn" style={{ marginTop: 10 }} onClick={async () => { await api("/api/templates", { method: "POST", body: nt }); setNt({ name: "", body: "" }); loadAll(); }}>Add template</button></div>}
-    {tab === "services" && <div className="card">{svcs.map(sv => <div className="check" key={sv.id}><span className={`st ${sv.active ? "pass" : "fail"}`}>{sv.active ? "✓" : "✗"}</span><span style={{ flex: 1 }}>{sv.name} {sv.is_catalog ? "" : "(not in catalog — Demand Gap territory)"}</span><button className="btn ghost small" onClick={async () => { await api(`/api/services/${sv.id}`, { method: "PATCH", body: { active: !sv.active } }); loadAll(); }}>{sv.active ? "Deactivate" : "Activate"}</button></div>)}
+    {tab === "services" && canSettings && <div className="card">{svcs.map(sv => <div className="check" key={sv.id}><span className={`st ${sv.active ? "pass" : "fail"}`}>{sv.active ? "✓" : "✗"}</span><span style={{ flex: 1 }}>{sv.name} {sv.is_catalog ? "" : "(not in catalog — Demand Gap territory)"}</span><button className="btn ghost small" onClick={async () => { await api(`/api/services/${sv.id}`, { method: "PATCH", body: { active: !sv.active } }); loadAll(); }}>{sv.active ? "Deactivate" : "Activate"}</button></div>)}
       <div className="rowflex" style={{ marginTop: 10 }}><input style={{ flex: 1 }} placeholder="New service name" id="nsvc" /><button className="btn" onClick={async () => { const el = document.getElementById("nsvc") as HTMLInputElement; await api("/api/services", { method: "POST", body: { name: el.value } }); el.value = ""; loadAll(); }}>Add service</button></div></div>}
-    {tab === "team" && <div className="card"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Approval limit</th><th></th></tr></thead><tbody>
-      {users.map((u: any) => <tr key={u.id}><td>{u.name}</td><td>{u.email}</td><td><select value={u.role} onChange={async e => { await api(`/api/users/${u.id}`, { method: "PATCH", body: { role: e.target.value } }); loadAll(); }}><option>OWNER</option><option>APPROVER</option><option>OPS_ADMIN</option><option>LEAD_OWNER</option><option>PM</option><option>ADMIN</option></select></td><td>{money(u.approval_limit)}</td><td></td></tr>)}
+    {tab === "team" && canTeam && <div className="card"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Approval limit</th><th></th></tr></thead><tbody>
+      {users.map((u: any) => <tr key={u.id}><td>{u.name}{u.has_overrides ? <span className="tinyBadge" style={{ marginLeft: 6, background: "#fef9c3", color: "#854d0e" }}>custom access</span> : null}</td><td>{u.email}</td><td><select value={u.role} onChange={async e => { await api(`/api/team/${u.id}`, { method: "PATCH", body: { role: e.target.value } }); loadAll(); }}><option>OWNER</option><option>APPROVER</option><option>OPS_ADMIN</option><option>LEAD_OWNER</option><option>PM</option><option>ADMIN</option></select></td><td>{money(u.approval_limit)}</td><td>{u.role === "OWNER" ? <span className="muted">Full access</span> : <button className="btn ghost small" onClick={() => setAccessFor(u)}>Access…</button>}</td></tr>)}
     </tbody></table>
-      <div className="rowflex" style={{ marginTop: 12 }}><input style={{ flex: 1 }} placeholder="Name" value={nu.name} onChange={e => setNu({ ...nu, name: e.target.value })} /><input style={{ flex: 1 }} placeholder="Email" value={nu.email} onChange={e => setNu({ ...nu, email: e.target.value })} /><input style={{ flex: 1 }} placeholder="Temp password" value={nu.password} onChange={e => setNu({ ...nu, password: e.target.value })} /><select style={{ width: 150 }} value={nu.role} onChange={e => setNu({ ...nu, role: e.target.value })}><option>LEAD_OWNER</option><option>PM</option><option>APPROVER</option><option>OPS_ADMIN</option></select><button className="btn" onClick={async () => { await api("/api/users", { method: "POST", body: nu }); setNu({ name: "", email: "", role: "LEAD_OWNER", password: "" }); loadAll(); setMsg("Team member added ✓"); }}>Add member</button></div></div>}
-    {tab === "integrations" && <div>
+      <div className="rowflex" style={{ marginTop: 12 }}><input style={{ flex: 1 }} placeholder="Name" value={nu.name} onChange={e => setNu({ ...nu, name: e.target.value })} /><input style={{ flex: 1 }} placeholder="Email" value={nu.email} onChange={e => setNu({ ...nu, email: e.target.value })} /><input style={{ flex: 1 }} placeholder="Temp password" value={nu.password} onChange={e => setNu({ ...nu, password: e.target.value })} /><select style={{ width: 150 }} value={nu.role} onChange={e => setNu({ ...nu, role: e.target.value })}><option>LEAD_OWNER</option><option>PM</option><option>APPROVER</option><option>OPS_ADMIN</option></select><button className="btn" onClick={async () => { await api("/api/users", { method: "POST", body: nu }); setNu({ name: "", email: "", role: "LEAD_OWNER", password: "" }); loadAll(); setMsg("Team member added ✓"); }}>Add member</button></div>
+      {accessFor && <AccessModal member={accessFor} close={() => setAccessFor(null)} done={() => { setAccessFor(null); loadAll(); setMsg("Access updated ✓"); }} />}</div>}
+    {tab === "integrations" && canSettings && <div>
       <div className="card"><h3 style={{ marginTop: 0 }}>Integration catalog — every way data moves in and out</h3>
       <div className="featGrid">{catalog.map((c: any) => <div className="feat clickable" key={c.id} onClick={() => { setCfg(c.id); setCfgMsg(""); }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><b>{c.name}</b><span className="tinyBadge" style={c.status === "connected" ? { background: "#dcfce7", color: "#166534" } : c.status === "test_mode" || c.status === "demo_source" ? { background: "#fef9c3", color: "#854d0e" } : {}}>{c.status.replaceAll("_", " ")}</span></div><p>{c.detail}</p><span className="cfgHint">Configure →</span></div>)}</div></div>
       <div className="card"><h3>API keys</h3>{keys.map(k => <p key={k.id} className="muted" style={{ margin: "6px 0" }}>{k.label} · scopes {k.scopes} · {k.revoked_at ? "revoked" : "active"} {k.revoked_at ? "" : <button className="btn ghost small" onClick={async () => { await api(`/api/api-keys/${k.id}`, { method: "DELETE" }); loadAll(); }}>Revoke</button>}</p>)}
@@ -731,7 +759,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       <select className="wsSwitch" value={user.workspace_id} onChange={async e => { if (e.target.value === "__new") { const name = prompt("New business / workspace name"); if (name) { await api("/api/workspaces", { method: "POST", body: { name } }); location.reload(); } return; } await api("/api/workspaces/switch", { method: "POST", body: { workspace_id: e.target.value } }); location.reload(); }}>
         {workspaces.map((w: any) => <option key={w.workspace_id} value={w.workspace_id}>{w.name} ({w.role})</option>)}
         <option value="__new">+ New workspace…</option></select>
-      <NavB v="myday" short="MY">My Day</NavB><NavB v="dashboard" short="DA">Dashboard</NavB><NavB v="pulse" short="PU">Pulse</NavB><NavB v="leads" short="LE">Leads</NavB><NavB v="reports" short="RE">Reports</NavB><NavB v="approvals" short="AP" cnt={pending || undefined}>Approvals</NavB><NavB v="ai" short="AI">AI Assistant</NavB><NavB v="imports" short="IM">Import CSV</NavB><NavB v="demand" short="DG">Demand Gap</NavB><NavB v="handoffs" short="HA">Handoffs</NavB><NavB v="ops" short="OP">Ops Console</NavB><NavB v="settings" short="SE">Settings</NavB><NavB v="billing" short="BI">Billing</NavB>
+      <NavB v="myday" short="MY">My Day</NavB><NavB v="dashboard" short="DA">Dashboard</NavB><NavB v="pulse" short="PU">Pulse</NavB><NavB v="leads" short="LE">Leads</NavB><NavB v="reports" short="RE">Reports</NavB><NavB v="approvals" short="AP" cnt={pending || undefined}>Approvals</NavB><NavB v="ai" short="AI">AI Assistant</NavB><NavB v="imports" short="IM">Import CSV</NavB><NavB v="demand" short="DG">Demand Gap</NavB><NavB v="handoffs" short="HA">Handoffs</NavB><NavB v="ops" short="OP">Ops Console</NavB><NavB v="settings" short="SE">Settings</NavB>{(!user?.permissions || user.permissions.can_billing) && <NavB v="billing" short="BI">Billing</NavB>}
       {user.is_platform_admin ? <NavB v="admin" short="AD">Platform Admin</NavB> : null}
       <div className="sideFoot"><button title="Sign out" onClick={async () => { await fetch("/api/auth/logout", { method: "POST" }).catch(() => {}); setUser(null); }}><span className="nshort">⏻</span><span className="nlab">Sign out</span></button></div>
     </aside>
@@ -757,7 +785,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       {nav.view === "demand" && <Demand />}
       {nav.view === "handoffs" && <Handoffs />}
       {nav.view === "ops" && <Ops />}
-      {nav.view === "settings" && <Settings users={users} setUsers={setUsers} priceBook={priceBook} setPriceBook={setPriceBook} onJump={(v: string) => go({ view: v as any })} />}
+      {nav.view === "settings" && <Settings users={users} setUsers={setUsers} priceBook={priceBook} setPriceBook={setPriceBook} onJump={(v: string) => go({ view: v as any })} me={user} />}
       {nav.view === "billing" && <Billing />}
       {nav.view === "admin" && <Admin />}
       </EB>

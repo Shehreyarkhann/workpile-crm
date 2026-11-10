@@ -92,6 +92,7 @@ export function initSchema() {
     "ALTER TABLE workspaces ADD COLUMN review_url TEXT",
     "ALTER TABLE workspaces ADD COLUMN review_on_won INTEGER DEFAULT 0",
     "ALTER TABLE messages_outbox ADD COLUMN direction TEXT DEFAULT 'out'",
+    "ALTER TABLE users ADD COLUMN permissions TEXT",
     "ALTER TABLE workspaces ADD COLUMN booking_slug TEXT",
     "ALTER TABLE workspaces ADD COLUMN booking_enabled INTEGER DEFAULT 0",
     "ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0",
