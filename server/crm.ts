@@ -1,0 +1,251 @@
+// Workpile v4 — Salesforce-parity CRM layer (spec v4, slices 37-46).
+// Accounts/Customers + Contacts, lead conversion, Chatter feed, custom fields,
+// campaigns, assignment rules, duplicates + merge, notes, files, tasks app,
+// calendar, global search, favorites, report builder + dashboard pins.
+// Everything here works on the real tables — no dummy data paths.
+import { db, uid, now, audit } from "./db.ts";
+import { notify } from "./comms.ts";
+
+const J = (s: any, fb: any = null) => { try { return JSON.parse(s ?? ""); } catch { return fb; } };
+const alter = (sql: string) => { try { db.exec(sql); } catch { /* column exists */ } };
+
+export function initCrmSchema() {
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, workspace_id TEXT, name TEXT, phone TEXT, email TEXT, address TEXT, website TEXT, industry TEXT, notes TEXT, custom TEXT DEFAULT '{}', created_at TEXT, updated_at TEXT);
+  CREATE TABLE IF NOT EXISTS feed_posts (id TEXT PRIMARY KEY, workspace_id TEXT, entity_type TEXT, entity_id TEXT, user_id TEXT, body TEXT, created_at TEXT);
+  CREATE TABLE IF NOT EXISTS follows (id TEXT PRIMARY KEY, workspace_id TEXT, user_id TEXT, entity_type TEXT, entity_id TEXT, created_at TEXT, UNIQUE(user_id, entity_type, entity_id));
+  CREATE TABLE IF NOT EXISTS custom_fields (id TEXT PRIMARY KEY, workspace_id TEXT, object_type TEXT, key TEXT, label TEXT, field_type TEXT DEFAULT 'text', options TEXT DEFAULT '[]', active INTEGER DEFAULT 1, sort INTEGER DEFAULT 0, created_at TEXT, UNIQUE(workspace_id, object_type, key));
+  CREATE TABLE IF NOT EXISTS campaigns (id TEXT PRIMARY KEY, workspace_id TEXT, name TEXT, type TEXT DEFAULT 'outreach', status TEXT DEFAULT 'active', starts_on TEXT, ends_on TEXT, cost REAL DEFAULT 0, notes TEXT, created_at TEXT, updated_at TEXT);
+  CREATE TABLE IF NOT EXISTS campaign_members (id TEXT PRIMARY KEY, workspace_id TEXT, campaign_id TEXT, lead_id TEXT, status TEXT DEFAULT 'member', created_at TEXT, UNIQUE(campaign_id, lead_id));
+  CREATE TABLE IF NOT EXISTS assignment_rules (id TEXT PRIMARY KEY, workspace_id TEXT, name TEXT, active INTEGER DEFAULT 1, sort INTEGER DEFAULT 0, field TEXT, op TEXT DEFAULT 'contains', value TEXT, assign_mode TEXT DEFAULT 'user', assign_user_id TEXT, pool TEXT DEFAULT '[]', created_at TEXT);
+  CREATE TABLE IF NOT EXISTS notes (id TEXT PRIMARY KEY, workspace_id TEXT, entity_type TEXT, entity_id TEXT, user_id TEXT, title TEXT, body TEXT, created_at TEXT, updated_at TEXT);
+  CREATE TABLE IF NOT EXISTS favorites (id TEXT PRIMARY KEY, workspace_id TEXT, user_id TEXT, entity_type TEXT, entity_id TEXT, created_at TEXT, UNIQUE(user_id, entity_type, entity_id));
+  CREATE TABLE IF NOT EXISTS dashboard_pins (id TEXT PRIMARY KEY, workspace_id TEXT, title TEXT, object_type TEXT, group_by TEXT, metric TEXT, created_by TEXT, created_at TEXT);
+  `);
+  alter("ALTER TABLE leads ADD COLUMN account_id TEXT");
+  alter("ALTER TABLE leads ADD COLUMN converted_at TEXT");
+  alter("ALTER TABLE leads ADD COLUMN campaign_id TEXT");
+  alter("ALTER TABLE leads ADD COLUMN custom TEXT DEFAULT '{}'");
+  alter("ALTER TABLE leads ADD COLUMN merged_into_id TEXT");
+  alter("ALTER TABLE contacts ADD COLUMN account_id TEXT");
+  alter("ALTER TABLE contacts ADD COLUMN title TEXT");
+  alter("ALTER TABLE jobs ADD COLUMN custom TEXT DEFAULT '{}'");
+}
+
+// ---------- slice 37: conversion (Salesforce Lead -> Account + Contact + Opportunity/Job) ----------
+export function convertLeadToCustomer(workspaceId: string, lead: any) {
+  if (!lead) return null;
+  const contact = db.prepare("SELECT * FROM contacts WHERE id=?").get(lead.contact_id) as any;
+  let accountId = lead.account_id || contact?.account_id || null;
+  if (!accountId) {
+    const name = (contact?.name || "").trim();
+    if (name) {
+      const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      const existing = (db.prepare("SELECT * FROM accounts WHERE workspace_id=?").all(workspaceId) as any[]).find(a => norm(a.name) === norm(name));
+      if (existing) accountId = existing.id;
+    }
+    if (!accountId) {
+      accountId = uid("acc");
+      db.prepare("INSERT INTO accounts (id,workspace_id,name,phone,email,address,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)")
+        .run(accountId, workspaceId, contact?.name || "Customer", contact?.phone || "", contact?.email || "", contact?.address || lead.location || "", now(), now());
+    }
+  }
+  if (contact) db.prepare("UPDATE contacts SET account_id=?, is_customer=1 WHERE id=?").run(accountId, contact.id);
+  db.prepare("UPDATE leads SET account_id=?, converted_at=COALESCE(converted_at, ?) WHERE id=?").run(accountId, now(), lead.id);
+  return db.prepare("SELECT * FROM accounts WHERE id=?").get(accountId);
+}
+export function backfillConversions(workspaceId: string) {
+  const won = db.prepare("SELECT * FROM leads WHERE workspace_id=? AND state='WON' AND account_id IS NULL").all(workspaceId) as any[];
+  for (const l of won) { try { convertLeadToCustomer(workspaceId, l); } catch { /* keep listing resilient */ } }
+  return won.length;
+}
+
+// ---------- slice 43: assignment rules ----------
+export function applyAssignmentRules(workspaceId: string, leadish: any): string | null {
+  const rules = db.prepare("SELECT * FROM assignment_rules WHERE workspace_id=? AND active=1 ORDER BY sort ASC, created_at ASC").all(workspaceId) as any[];
+  const fieldVal = (f: string) => f === "service" ? (leadish.service_requested || leadish.service || "") : f === "source" ? (leadish.source || "") : f === "urgency" ? (leadish.urgency || "") : f === "value" ? String(leadish.est_value || 0) : "";
+  for (const r of rules) {
+    const v = fieldVal(r.field); let hit = false;
+    if (r.field === "value") { const n = Number(leadish.est_value || 0); hit = r.op === "gte" ? n >= Number(r.value) : r.op === "lte" ? n <= Number(r.value) : n === Number(r.value); }
+    else if (r.op === "equals") hit = v.toLowerCase() === String(r.value || "").toLowerCase();
+    else hit = v.toLowerCase().includes(String(r.value || "").toLowerCase());
+    if (!hit) continue;
+    if (r.assign_mode === "round_robin") {
+      const pool = (J(r.pool, []) as string[]).filter(id => db.prepare("SELECT id FROM users WHERE id=? AND active=1").get(id));
+      if (!pool.length) continue;
+      let best: string | null = null, bestN = Infinity;
+      for (const pid of pool) { const n = (db.prepare("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND owner_id=? AND state IN ('NEW','WORKING','QUALIFIED','PROPOSAL','SENT','FOLLOWUP')").get(workspaceId, pid) as any).c; if (n < bestN) { bestN = n; best = pid; } }
+      if (best) return best;
+    } else if (r.assign_user_id) return r.assign_user_id;
+  }
+  return null;
+}
+export function onLeadCreated(workspaceId: string, leadId: string, input: any) {
+  if (input?.campaign_id) {
+    const c = db.prepare("SELECT id FROM campaigns WHERE id=? AND workspace_id=?").get(input.campaign_id, workspaceId);
+    if (c) { db.prepare("INSERT OR IGNORE INTO campaign_members (id,workspace_id,campaign_id,lead_id,status,created_at) VALUES (?,?,?,?,?,?)").run(uid("cm"), workspaceId, input.campaign_id, leadId, "member", now()); db.prepare("UPDATE leads SET campaign_id=? WHERE id=?").run(input.campaign_id, leadId); }
+  }
+}
+
+// ---------- shared lookups ----------
+function leadLabel(ws: string, leadId: string) { const l = db.prepare("SELECT l.service_requested, c.name cn FROM leads l LEFT JOIN contacts c ON c.id=l.contact_id WHERE l.id=?").get(leadId) as any; return l ? `${l.cn || "Lead"} — ${l.service_requested || ""}` : leadId; }
+function entityLabel(ws: string, type: string, id: string) {
+  if (type === "lead") return leadLabel(ws, id);
+  if (type === "job") { const j = db.prepare("SELECT lead_id FROM jobs WHERE id=?").get(id) as any; return j ? "Job: " + leadLabel(ws, j.lead_id) : id; }
+  if (type === "account") { const a = db.prepare("SELECT name FROM accounts WHERE id=?").get(id) as any; return a?.name || id; }
+  return id;
+}
+
+export function registerCrm(app: any, requireAuth: any) {
+  initCrmSchema();
+  const ws = (req: any) => req.user.workspace_id;
+  const err = (res: any, code: number, msg: string) => res.status(code).json({ error: { code: "crm", message: msg } });
+
+  // ----- Accounts / Customers -----
+  app.get("/api/accounts", requireAuth, (req: any, res: any) => {
+    backfillConversions(ws(req));
+    const rows = db.prepare(`SELECT a.*, (SELECT COUNT(*) FROM leads l WHERE l.account_id=a.id) leads_count,
+      (SELECT COUNT(*) FROM jobs j JOIN leads l2 ON l2.id=j.lead_id WHERE l2.account_id=a.id) jobs_count,
+      (SELECT COALESCE(SUM(j3.value),0) FROM jobs j3 JOIN leads l3 ON l3.id=j3.lead_id WHERE l3.account_id=a.id) lifetime_value,
+      (SELECT COUNT(*) FROM contacts c WHERE c.account_id=a.id) people_count
+      FROM accounts a WHERE a.workspace_id=? ORDER BY a.name`).all(ws(req));
+    res.json(rows);
+  });
+  app.post("/api/accounts", requireAuth, (req: any, res: any) => { const b = req.body || {}; if (!b.name?.trim()) return err(res, 422, "Customer name required");
+    const id = uid("acc"); db.prepare("INSERT INTO accounts (id,workspace_id,name,phone,email,address,website,industry,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(id, ws(req), b.name.trim(), b.phone || "", b.email || "", b.address || "", b.website || "", b.industry || "", b.notes || "", now(), now());
+    res.status(201).json(db.prepare("SELECT * FROM accounts WHERE id=?").get(id)); });
+  app.get("/api/accounts/:id", requireAuth, (req: any, res: any) => {
+    const a = db.prepare("SELECT * FROM accounts WHERE id=? AND workspace_id=?").get(req.params.id, ws(req)) as any; if (!a) return err(res, 404, "not found");
+    const contacts = db.prepare("SELECT * FROM contacts WHERE account_id=? ORDER BY name").all(a.id);
+    const leads = db.prepare("SELECT l.*, c.name contact_name FROM leads l LEFT JOIN contacts c ON c.id=l.contact_id WHERE l.account_id=? ORDER BY l.created_at DESC").all(a.id);
+    const jobs = db.prepare("SELECT j.*, l.service_requested, c.name contact_name FROM jobs j JOIN leads l ON l.id=j.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE l.account_id=? ORDER BY j.created_at DESC").all(a.id);
+    const lifetime = (jobs as any[]).reduce((s, j) => s + (j.value || 0), 0);
+    res.json({ account: { ...a, custom: J(a.custom, {}) }, contacts, leads, jobs, lifetime_value: lifetime });
+  });
+  app.patch("/api/accounts/:id", requireAuth, (req: any, res: any) => { const b = req.body || {}; const F = ["name", "phone", "email", "address", "website", "industry", "notes"]; const sets = F.filter(f => b[f] !== undefined); if (!sets.length) return err(res, 422, "nothing to update");
+    db.prepare(`UPDATE accounts SET ${sets.map(f => f + "=?").join(",")}, updated_at=? WHERE id=? AND workspace_id=?`).run(...sets.map(f => b[f]), now(), req.params.id, ws(req)); res.json({ ok: true }); });
+  app.post("/api/leads/:id/convert", requireAuth, (req: any, res: any) => { const lead = db.prepare("SELECT * FROM leads WHERE id=? AND workspace_id=?").get(req.params.id, ws(req)) as any; if (!lead) return err(res, 404, "lead not found");
+    const acc = convertLeadToCustomer(ws(req), lead); audit(ws(req), req.user.id, "lead.convert", "lead", lead.id, { account_id: acc?.id }); res.json({ account: acc }); });
+
+  // ----- People (contacts) -----
+  app.get("/api/people", requireAuth, (req: any, res: any) => { res.json(db.prepare(`SELECT c.*, a.name account_name, (SELECT COUNT(*) FROM leads l WHERE l.contact_id=c.id) leads_count FROM contacts c LEFT JOIN accounts a ON a.id=c.account_id WHERE c.workspace_id=? ORDER BY c.name`).all(ws(req))); });
+  app.post("/api/people", requireAuth, (req: any, res: any) => { const b = req.body || {}; if (!b.name?.trim()) return err(res, 422, "Name required"); const id = uid("ct");
+    db.prepare("INSERT INTO contacts (id,workspace_id,name,phone,email,address,account_id,title,is_customer) VALUES (?,?,?,?,?,?,?,?,?)").run(id, ws(req), b.name.trim(), b.phone || "", b.email || "", b.address || "", b.account_id || null, b.title || "", b.account_id ? 1 : 0); res.status(201).json(db.prepare("SELECT * FROM contacts WHERE id=?").get(id)); });
+  app.patch("/api/people/:id", requireAuth, (req: any, res: any) => { const b = req.body || {}; const F = ["name", "phone", "email", "address", "account_id", "title"]; const sets = F.filter(f => b[f] !== undefined); if (!sets.length) return err(res, 422, "nothing to update");
+    db.prepare(`UPDATE contacts SET ${sets.map(f => f + "=?").join(",")} WHERE id=? AND workspace_id=?`).run(...sets.map(f => b[f]), req.params.id, ws(req)); res.json({ ok: true }); });
+
+  // ----- Feed (Chatter) + follows -----
+  const feedList = (type: string, id: string) => db.prepare(`SELECT f.*, u.name user_name FROM feed_posts f LEFT JOIN users u ON u.id=f.user_id WHERE f.entity_type=? AND f.entity_id=? ORDER BY f.created_at ASC`).all(type, id);
+  app.get("/api/feed/:type/:id", requireAuth, (req: any, res: any) => { const following = !!db.prepare("SELECT id FROM follows WHERE user_id=? AND entity_type=? AND entity_id=?").get(req.user.id, req.params.type, req.params.id); res.json({ posts: feedList(req.params.type, req.params.id), following }); });
+  app.post("/api/feed/:type/:id", requireAuth, (req: any, res: any) => { const body = String(req.body?.body || "").trim(); if (!body) return err(res, 422, "Post is empty");
+    const id = uid("fp"); db.prepare("INSERT INTO feed_posts (id,workspace_id,entity_type,entity_id,user_id,body,created_at) VALUES (?,?,?,?,?,?,?)").run(id, ws(req), req.params.type, req.params.id, req.user.id, body, now());
+    const users = db.prepare("SELECT id, name FROM users WHERE workspace_id=? AND active=1").all(ws(req)) as any[];
+    const mentioned = users.filter(u => u.id !== req.user.id && body.toLowerCase().includes("@" + u.name.split(" ")[0].toLowerCase()));
+    const label = entityLabel(ws(req), req.params.type, req.params.id);
+    const audience = new Set<string>(mentioned.map(u => u.id));
+    for (const f of db.prepare("SELECT user_id FROM follows WHERE entity_type=? AND entity_id=?").all(req.params.type, req.params.id) as any[]) if (f.user_id !== req.user.id) audience.add(f.user_id);
+    if (audience.size) notify(ws(req), [...audience], "feed.post", `${req.user.name} posted on ${label}`, body.slice(0, 140), req.params.type === "lead" ? req.params.id : null);
+    res.status(201).json({ posts: feedList(req.params.type, req.params.id) }); });
+  app.post("/api/follow/:type/:id", requireAuth, (req: any, res: any) => { const ex = db.prepare("SELECT id FROM follows WHERE user_id=? AND entity_type=? AND entity_id=?").get(req.user.id, req.params.type, req.params.id) as any;
+    if (ex) { db.prepare("DELETE FROM follows WHERE id=?").run(ex.id); return res.json({ following: false }); }
+    db.prepare("INSERT INTO follows (id,workspace_id,user_id,entity_type,entity_id,created_at) VALUES (?,?,?,?,?,?)").run(uid("fol"), ws(req), req.user.id, req.params.type, req.params.id, now()); res.json({ following: true }); });
+
+  // ----- Custom fields -----
+  app.get("/api/custom-fields", requireAuth, (req: any, res: any) => { const o = req.query.object || "lead"; res.json(db.prepare("SELECT * FROM custom_fields WHERE workspace_id=? AND object_type=? AND active=1 ORDER BY sort, created_at").all(ws(req), o)); });
+  app.post("/api/custom-fields", requireAuth, (req: any, res: any) => { const b = req.body || {}; const key = String(b.key || b.label || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, ""); if (!key || !b.label) return err(res, 422, "Label required");
+    const id = uid("cf"); try { db.prepare("INSERT INTO custom_fields (id,workspace_id,object_type,key,label,field_type,options,sort,created_at) VALUES (?,?,?,?,?,?,?,?,?)").run(id, ws(req), b.object_type || "lead", key, b.label, b.field_type || "text", JSON.stringify(b.options || []), Number(b.sort) || 0, now()); } catch { return err(res, 409, "A field with that name already exists on this object"); }
+    res.status(201).json(db.prepare("SELECT * FROM custom_fields WHERE id=?").get(id)); });
+  app.delete("/api/custom-fields/:id", requireAuth, (req: any, res: any) => { db.prepare("UPDATE custom_fields SET active=0 WHERE id=? AND workspace_id=?").run(req.params.id, ws(req)); res.json({ ok: true }); });
+  app.post("/api/custom-values", requireAuth, (req: any, res: any) => { const { object_type, entity_id, values } = req.body || {}; const table = object_type === "job" ? "jobs" : object_type === "account" ? "accounts" : "leads";
+    const row = db.prepare(`SELECT custom FROM ${table} WHERE id=? AND workspace_id=?`).get(entity_id, ws(req)) as any; if (!row) return err(res, 404, "record not found");
+    const merged = { ...J(row.custom, {}), ...(values || {}) }; db.prepare(`UPDATE ${table} SET custom=? WHERE id=?`).run(JSON.stringify(merged), entity_id); res.json({ custom: merged }); });
+
+  // ----- Campaigns -----
+  const campaignStats = (c: any) => { const members = db.prepare("SELECT COUNT(*) n FROM campaign_members WHERE campaign_id=?").get(c.id) as any;
+    const agg = db.prepare(`SELECT COUNT(DISTINCT l.id) leads, SUM(CASE WHEN l.state='WON' THEN 1 ELSE 0 END) won, COALESCE(SUM(l.est_value),0) pipeline, COALESCE(SUM(CASE WHEN l.state='WON' THEN l.est_value ELSE 0 END),0) revenue FROM campaign_members m JOIN leads l ON l.id=m.lead_id WHERE m.campaign_id=?`).get(c.id) as any;
+    const cost = c.cost || 0; const revenue = agg.revenue || 0; return { members: members.n, leads: agg.leads || 0, won: agg.won || 0, pipeline: agg.pipeline || 0, revenue, roi_pct: cost > 0 ? Math.round(((revenue - cost) / cost) * 100) : null }; };
+  app.get("/api/campaigns", requireAuth, (req: any, res: any) => { res.json((db.prepare("SELECT * FROM campaigns WHERE workspace_id=? ORDER BY created_at DESC").all(ws(req)) as any[]).map(c => ({ ...c, stats: campaignStats(c) }))); });
+  app.post("/api/campaigns", requireAuth, (req: any, res: any) => { const b = req.body || {}; if (!b.name?.trim()) return err(res, 422, "Campaign name required"); const id = uid("camp");
+    db.prepare("INSERT INTO campaigns (id,workspace_id,name,type,status,starts_on,ends_on,cost,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(id, ws(req), b.name.trim(), b.type || "outreach", "active", b.starts_on || null, b.ends_on || null, Number(b.cost) || 0, b.notes || "", now(), now());
+    res.status(201).json(db.prepare("SELECT * FROM campaigns WHERE id=?").get(id)); });
+  app.get("/api/campaigns/:id", requireAuth, (req: any, res: any) => { const c = db.prepare("SELECT * FROM campaigns WHERE id=? AND workspace_id=?").get(req.params.id, ws(req)) as any; if (!c) return err(res, 404, "not found");
+    const members = db.prepare(`SELECT m.*, l.service_requested, l.state, l.est_value, ct.name contact_name FROM campaign_members m JOIN leads l ON l.id=m.lead_id LEFT JOIN contacts ct ON ct.id=l.contact_id WHERE m.campaign_id=? ORDER BY m.created_at DESC`).all(c.id);
+    res.json({ campaign: c, stats: campaignStats(c), members }); });
+  app.patch("/api/campaigns/:id", requireAuth, (req: any, res: any) => { const b = req.body || {}; const F = ["name", "type", "status", "starts_on", "ends_on", "cost", "notes"]; const sets = F.filter(f => b[f] !== undefined); if (!sets.length) return err(res, 422, "nothing to update");
+    db.prepare(`UPDATE campaigns SET ${sets.map(f => f + "=?").join(",")}, updated_at=? WHERE id=? AND workspace_id=?`).run(...sets.map(f => f === "cost" ? Number(b[f]) || 0 : b[f]), now(), req.params.id, ws(req)); res.json({ ok: true }); });
+  app.post("/api/campaigns/:id/members", requireAuth, (req: any, res: any) => { const ids: string[] = req.body?.lead_ids || []; let added = 0;
+    for (const lid of ids) { const l = db.prepare("SELECT id FROM leads WHERE id=? AND workspace_id=?").get(lid, ws(req)); if (!l) continue; const r = db.prepare("INSERT OR IGNORE INTO campaign_members (id,workspace_id,campaign_id,lead_id,status,created_at) VALUES (?,?,?,?,?,?)").run(uid("cm"), ws(req), req.params.id, lid, "member", now()); if (r.changes) { added++; db.prepare("UPDATE leads SET campaign_id=? WHERE id=? AND (campaign_id IS NULL OR campaign_id='')").run(req.params.id, lid); } }
+    res.json({ added }); });
+  app.patch("/api/campaign-members/:id", requireAuth, (req: any, res: any) => { db.prepare("UPDATE campaign_members SET status=? WHERE id=? AND workspace_id=?").run(req.body?.status || "member", req.params.id, ws(req)); res.json({ ok: true }); });
+  app.delete("/api/campaign-members/:id", requireAuth, (req: any, res: any) => { db.prepare("DELETE FROM campaign_members WHERE id=? AND workspace_id=?").run(req.params.id, ws(req)); res.json({ ok: true }); });
+
+  // ----- Assignment rules -----
+  app.get("/api/assignment-rules", requireAuth, (req: any, res: any) => { res.json(db.prepare("SELECT * FROM assignment_rules WHERE workspace_id=? ORDER BY sort, created_at").all(ws(req))); });
+  app.post("/api/assignment-rules", requireAuth, (req: any, res: any) => { const b = req.body || {}; if (!b.field || b.value === undefined) return err(res, 422, "Rule needs a field and a value"); const id = uid("ar");
+    db.prepare("INSERT INTO assignment_rules (id,workspace_id,name,sort,field,op,value,assign_mode,assign_user_id,pool,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(id, ws(req), b.name || "Rule", Number(b.sort) || 0, b.field, b.op || "contains", String(b.value), b.assign_mode || "user", b.assign_user_id || null, JSON.stringify(b.pool || []), now());
+    res.status(201).json(db.prepare("SELECT * FROM assignment_rules WHERE id=?").get(id)); });
+  app.patch("/api/assignment-rules/:id", requireAuth, (req: any, res: any) => { const b = req.body || {}; const F = ["name", "active", "sort", "field", "op", "value", "assign_mode", "assign_user_id"]; const sets = F.filter(f => b[f] !== undefined);
+    if (b.pool !== undefined) { sets.push("pool" as any); } if (!sets.length) return err(res, 422, "nothing to update");
+    const vals = sets.map(f => f === "pool" ? JSON.stringify(b.pool || []) : b[f]); db.prepare(`UPDATE assignment_rules SET ${sets.map(f => f + "=?").join(",")} WHERE id=? AND workspace_id=?`).run(...vals, req.params.id, ws(req)); res.json({ ok: true }); });
+  app.delete("/api/assignment-rules/:id", requireAuth, (req: any, res: any) => { db.prepare("DELETE FROM assignment_rules WHERE id=? AND workspace_id=?").run(req.params.id, ws(req)); res.json({ ok: true }); });
+
+  // ----- Duplicates + merge -----
+  app.get("/api/duplicates", requireAuth, (req: any, res: any) => { const groups = db.prepare(`SELECT dedupe_key, COUNT(*) n FROM leads WHERE workspace_id=? AND dedupe_key!='' AND state!='DUPLICATE' AND merged_into_id IS NULL GROUP BY dedupe_key HAVING n>1 ORDER BY n DESC`).all(ws(req)) as any[];
+    res.json(groups.map(g => ({ key: g.dedupe_key, count: g.n, leads: db.prepare(`SELECT l.id, l.service_requested, l.state, l.est_value, l.created_at, c.name contact_name, c.phone contact_phone, c.email contact_email FROM leads l LEFT JOIN contacts c ON c.id=l.contact_id WHERE l.workspace_id=? AND l.dedupe_key=? AND l.state!='DUPLICATE' ORDER BY l.created_at`).all(ws(req), g.dedupe_key) }))); });
+  app.post("/api/leads/:id/merge", requireAuth, (req: any, res: any) => { const dupe = db.prepare("SELECT * FROM leads WHERE id=? AND workspace_id=?").get(req.params.id, ws(req)) as any; const into = db.prepare("SELECT * FROM leads WHERE id=? AND workspace_id=?").get(req.body?.into_id, ws(req)) as any;
+    if (!dupe || !into || dupe.id === into.id) return err(res, 422, "Pick two different leads");
+    for (const t of ["activities", "tasks", "proposals", "documents", "time_entries", "job_crew", "job_schedule", "lead_events", "inbox_items", "signatures"]) { try { db.prepare(`UPDATE ${t} SET lead_id=? WHERE lead_id=?`).run(into.id, dupe.id); } catch { /* table shape varies */ } }
+    try { db.prepare("UPDATE followup_enrollments SET lead_id=? WHERE lead_id=?").run(into.id, dupe.id); } catch {}
+    try { db.prepare("UPDATE campaign_members SET lead_id=? WHERE lead_id=?").run(into.id, dupe.id); } catch {}
+    try { db.prepare("UPDATE feed_posts SET entity_id=? WHERE entity_type='lead' AND entity_id=?").run(into.id, dupe.id); } catch {}
+    db.prepare("UPDATE leads SET state='DUPLICATE', merged_into_id=?, updated_at=? WHERE id=?").run(into.id, now(), dupe.id);
+    audit(ws(req), req.user.id, "lead.merge", "lead", dupe.id, { into_id: into.id }); res.json({ ok: true, survivor: into.id }); });
+
+  // ----- Notes + Files -----
+  app.get("/api/notes", requireAuth, (req: any, res: any) => { const { entity_type, entity_id } = req.query as any; const base = `SELECT n.*, u.name user_name FROM notes n LEFT JOIN users u ON u.id=n.user_id WHERE n.workspace_id=?`;
+    const rows = entity_id ? db.prepare(base + " AND n.entity_type=? AND n.entity_id=? ORDER BY n.created_at DESC").all(ws(req), entity_type, entity_id) : db.prepare(base + " ORDER BY n.created_at DESC LIMIT 200").all(ws(req));
+    res.json((rows as any[]).map(n => ({ ...n, entity_label: n.entity_id ? entityLabel(ws(req), n.entity_type, n.entity_id) : "" }))); });
+  app.post("/api/notes", requireAuth, (req: any, res: any) => { const b = req.body || {}; if (!String(b.body || "").trim() && !String(b.title || "").trim()) return err(res, 422, "Note is empty"); const id = uid("note");
+    db.prepare("INSERT INTO notes (id,workspace_id,entity_type,entity_id,user_id,title,body,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)").run(id, ws(req), b.entity_type || "lead", b.entity_id || null, req.user.id, b.title || "", b.body || "", now(), now()); res.status(201).json(db.prepare("SELECT * FROM notes WHERE id=?").get(id)); });
+  app.delete("/api/notes/:id", requireAuth, (req: any, res: any) => { db.prepare("DELETE FROM notes WHERE id=? AND workspace_id=?").run(req.params.id, ws(req)); res.json({ ok: true }); });
+  app.get("/api/files", requireAuth, (req: any, res: any) => { const docs = db.prepare(`SELECT d.id, d.name, d.status, d.required, d.received_at, d.lead_id, d.job_id, 'document' kind, l.service_requested, c.name contact_name FROM documents d LEFT JOIN leads l ON l.id=d.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE d.workspace_id=? ORDER BY d.name`).all(ws(req));
+    let ups: any[] = []; try { ups = db.prepare(`SELECT p.id, p.filename name, 'received' status, 0 required, p.created_at received_at, p.lead_id, NULL job_id, 'upload' kind, l.service_requested, c.name contact_name FROM portal_uploads p LEFT JOIN leads l ON l.id=p.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE p.workspace_id=?`).all(ws(req)); } catch {}
+    res.json([...(docs as any[]), ...ups]); });
+
+  // ----- Tasks app + Calendar -----
+  app.get("/api/tasks-all", requireAuth, (req: any, res: any) => { const f = String(req.query.filter || "open"); let cond = "t.status='open'";
+    if (f === "mine") cond = `t.status='open' AND t.assignee_id='${req.user.id}'`; if (f === "overdue") cond = "t.status='open' AND t.due_at < datetime('now')"; if (f === "done") cond = "t.status='done'";
+    res.json(db.prepare(`SELECT t.*, l.service_requested, c.name contact_name, u.name assignee_name FROM tasks t LEFT JOIN leads l ON l.id=t.lead_id LEFT JOIN contacts c ON c.id=l.contact_id LEFT JOIN users u ON u.id=t.assignee_id WHERE t.workspace_id=? AND ${cond} ORDER BY t.due_at ASC LIMIT 300`).all(ws(req))); });
+  app.get("/api/calendar", requireAuth, (req: any, res: any) => { const from = String(req.query.from || new Date().toISOString().slice(0, 10)); const to = String(req.query.to || new Date(Date.now() + 42 * 86400000).toISOString().slice(0, 10)); const ev: any[] = [];
+    for (const t of db.prepare(`SELECT t.*, l.service_requested, c.name contact_name FROM tasks t LEFT JOIN leads l ON l.id=t.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE t.workspace_id=? AND t.status='open' AND date(t.due_at) BETWEEN date(?) AND date(?)`).all(ws(req), from, to) as any[]) ev.push({ id: "task" + t.id, date: String(t.due_at).slice(0, 10), kind: "task", title: t.title, sub: `${t.contact_name || ""} — ${t.service_requested || ""}`, lead_id: t.lead_id });
+    for (const c of db.prepare(`SELECT cb.*, l.service_requested, ct.name contact_name FROM callbacks cb LEFT JOIN leads l ON l.id=cb.lead_id LEFT JOIN contacts ct ON ct.id=l.contact_id WHERE cb.workspace_id=? AND cb.status='open' AND date(cb.due_at) BETWEEN date(?) AND date(?)`).all(ws(req), from, to) as any[]) ev.push({ id: "cb" + c.id, date: String(c.due_at).slice(0, 10), kind: "callback", title: "📞 Callback" + (c.note ? " — " + c.note : ""), sub: `${c.contact_name || ""} — ${c.service_requested || ""}`, lead_id: c.lead_id });
+    for (const s of db.prepare(`SELECT s.*, l.service_requested, c.name contact_name, COALESCE(w.name, u.name) worker FROM job_schedule s LEFT JOIN leads l ON l.id=s.lead_id LEFT JOIN contacts c ON c.id=l.contact_id LEFT JOIN workers w ON w.id=s.worker_id LEFT JOIN users u ON u.id=s.user_id WHERE s.workspace_id=? AND s.work_date BETWEEN ? AND ?`).all(ws(req), from, to) as any[]) ev.push({ id: "sch" + s.id, date: s.work_date, kind: "schedule", title: `👷 ${s.worker || "Crew"} on site`, sub: `${s.contact_name || ""} — ${s.service_requested || ""}`, lead_id: s.lead_id });
+    for (const f2 of db.prepare(`SELECT f.*, l.service_requested, c.name contact_name FROM followup_enrollments f LEFT JOIN leads l ON l.id=f.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE f.workspace_id=? AND f.status='active' AND date(f.next_due_at) BETWEEN date(?) AND date(?)`).all(ws(req), from, to) as any[]) ev.push({ id: "fu" + f2.id, date: String(f2.next_due_at).slice(0, 10), kind: "followup", title: `🔁 Follow-up step ${(f2.step_idx || 0) + 1}`, sub: `${f2.contact_name || ""} — ${f2.service_requested || ""}`, lead_id: f2.lead_id });
+    for (const v of db.prepare(`SELECT v.*, l.service_requested, c.name contact_name FROM site_visits v LEFT JOIN leads l ON l.id=v.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE v.workspace_id=? AND date(v.scheduled_at) BETWEEN date(?) AND date(?)`).all(ws(req), from, to) as any[]) ev.push({ id: "sv" + v.id, date: String(v.scheduled_at).slice(0, 10), kind: "visit", title: "📍 Site visit", sub: `${v.contact_name || ""} — ${v.service_requested || ""}`, lead_id: v.lead_id });
+    ev.sort((a, b) => a.date.localeCompare(b.date)); res.json(ev); });
+
+  // ----- Global search + favorites -----
+  app.get("/api/search", requireAuth, (req: any, res: any) => { const q = String(req.query.q || "").trim(); if (q.length < 2) return res.json({ leads: [], jobs: [], accounts: [], people: [], tasks: [], campaigns: [] }); const like = "%" + q + "%"; const W = ws(req);
+    const leads = db.prepare(`SELECT l.id, l.service_requested title, l.state sub, c.name contact_name FROM leads l LEFT JOIN contacts c ON c.id=l.contact_id WHERE l.workspace_id=? AND (c.name LIKE ? OR l.service_requested LIKE ? OR c.email LIKE ? OR c.phone LIKE ?) AND l.state!='DUPLICATE' ORDER BY l.updated_at DESC LIMIT 8`).all(W, like, like, like, like);
+    const jobs = db.prepare(`SELECT j.id, l.service_requested title, j.stage sub, c.name contact_name FROM jobs j JOIN leads l ON l.id=j.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE j.workspace_id=? AND (c.name LIKE ? OR l.service_requested LIKE ?) LIMIT 8`).all(W, like, like);
+    const accounts = db.prepare(`SELECT id, name title, industry sub FROM accounts WHERE workspace_id=? AND name LIKE ? LIMIT 8`).all(W, like);
+    const people = db.prepare(`SELECT id, name title, email sub FROM contacts WHERE workspace_id=? AND (name LIKE ? OR email LIKE ?) LIMIT 8`).all(W, like, like);
+    const tasks = db.prepare(`SELECT id, title, due_at sub, lead_id FROM tasks WHERE workspace_id=? AND title LIKE ? AND status='open' LIMIT 8`).all(W, like);
+    const campaigns = db.prepare(`SELECT id, name title, status sub FROM campaigns WHERE workspace_id=? AND name LIKE ? LIMIT 8`).all(W, like);
+    res.json({ leads, jobs, accounts, people, tasks, campaigns }); });
+  app.get("/api/favorites", requireAuth, (req: any, res: any) => { const rows = db.prepare("SELECT * FROM favorites WHERE user_id=? ORDER BY created_at DESC").all(req.user.id) as any[]; res.json(rows.map(f => ({ ...f, label: entityLabel(ws(req), f.entity_type, f.entity_id) }))); });
+  app.post("/api/favorites", requireAuth, (req: any, res: any) => { const { entity_type, entity_id } = req.body || {}; const ex = db.prepare("SELECT id FROM favorites WHERE user_id=? AND entity_type=? AND entity_id=?").get(req.user.id, entity_type, entity_id) as any;
+    if (ex) { db.prepare("DELETE FROM favorites WHERE id=?").run(ex.id); return res.json({ favorite: false }); }
+    db.prepare("INSERT INTO favorites (id,workspace_id,user_id,entity_type,entity_id,created_at) VALUES (?,?,?,?,?,?)").run(uid("fav"), ws(req), req.user.id, entity_type, entity_id, now()); res.json({ favorite: true }); });
+
+  // ----- Report builder + dashboard pins -----
+  app.post("/api/reports/build", requireAuth, (req: any, res: any) => { const { object_type = "leads", group_by = "state", metric = "count" } = req.body || {}; const W = ws(req);
+    const GROUPS: Record<string, string> = { state: "l.state", source: "COALESCE(s.name,'Unknown')", owner: "COALESCE(u.name,'Unassigned')", service: "l.service_requested", month: "substr(l.created_at,1,7)", job_stage: "j.stage", sector: "COALESCE(j.sector,'private')" };
+    const g = GROUPS[group_by] || "l.state"; let rows: any[];
+    if (object_type === "jobs") rows = db.prepare(`SELECT ${g} k, COUNT(*) count, COALESCE(SUM(j.value),0) value FROM jobs j JOIN leads l ON l.id=j.lead_id LEFT JOIN sources s ON s.id=l.source_id LEFT JOIN users u ON u.id=l.owner_id WHERE j.workspace_id=? GROUP BY k ORDER BY value DESC`).all(W);
+    else rows = db.prepare(`SELECT ${g} k, COUNT(*) count, COALESCE(SUM(l.est_value),0) value FROM leads l LEFT JOIN sources s ON s.id=l.source_id LEFT JOIN users u ON u.id=l.owner_id LEFT JOIN jobs j ON j.lead_id=l.id WHERE l.workspace_id=? AND l.state!='DUPLICATE' GROUP BY k ORDER BY value DESC`).all(W);
+    res.json({ rows: (rows as any[]).map(r => ({ key: String(r.k ?? "—"), count: r.count, value: r.value })), metric }); });
+  app.get("/api/dashboard-pins", requireAuth, (req: any, res: any) => { res.json(db.prepare("SELECT * FROM dashboard_pins WHERE workspace_id=? ORDER BY created_at").all(ws(req))); });
+  app.post("/api/dashboard-pins", requireAuth, (req: any, res: any) => { const b = req.body || {}; const id = uid("pin"); db.prepare("INSERT INTO dashboard_pins (id,workspace_id,title,object_type,group_by,metric,created_by,created_at) VALUES (?,?,?,?,?,?,?,?)").run(id, ws(req), b.title || "Report", b.object_type || "leads", b.group_by || "state", b.metric || "count", req.user.id, now()); res.status(201).json(db.prepare("SELECT * FROM dashboard_pins WHERE id=?").get(id)); });
+  app.delete("/api/dashboard-pins/:id", requireAuth, (req: any, res: any) => { db.prepare("DELETE FROM dashboard_pins WHERE id=? AND workspace_id=?").run(req.params.id, ws(req)); res.json({ ok: true }); });
+}

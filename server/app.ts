@@ -19,6 +19,7 @@ import { rateFor, logTime, jobLabor, DEFAULT_CLASSES, resolveWorker, listWorkers
 import { ensureDay, chaseReport, todayStr } from "./fieldreports.ts";
 import { weeklyReport } from "./statusreport.ts";
 import { enrollFollowup, stopFollowups } from "./followups.ts";
+import { registerCrm, convertLeadToCustomer, applyAssignmentRules, onLeadCreated } from "./crm.ts";
 
 import { providerStatus, authUrl, listConnections } from "./oauth.ts";
 
@@ -69,7 +70,8 @@ function createLead(workspaceId: string, actor: string, input: any) {
   const triage = triageLead(workspaceId, null, { service_requested: input.service_requested, message: input.message, est_value: input.est_value, created_at: created });
   const id = uid("lead");
   const owners = db.prepare("SELECT id FROM users WHERE workspace_id=? AND role='LEAD_OWNER' AND active=1").all(workspaceId) as any[];
-  const owner = input.owner_id || owners[0]?.id || null;
+  let owner = input.owner_id || owners[0]?.id || null;
+  if (!input.owner_id) { try { const ruled = applyAssignmentRules(workspaceId, { service_requested: triage.service_guess, source: input.source, est_value: input.est_value || 0, urgency: triage.urgency }); if (ruled) owner = ruled; } catch { /* rules never block creation */ } }
   db.prepare(`INSERT INTO leads (id,workspace_id,contact_id,source_id,external_id,dedupe_key,service_requested,state,urgency,value_band,est_value,owner_id,pm_id,approver_id,next_action,next_action_due_at,sla_due_at,notes,location,consent_contact_ok,consent_source,created_at,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
     .run(id, workspaceId, cid, sid, input.external_id || null, key, triage.service_guess, triage.spam_score > 0.5 ? "JUNK" : "NEW", triage.urgency, triage.value_band, input.est_value || 0, owner, input.pm_id || null, input.approver_id || null,
@@ -87,6 +89,7 @@ function createLead(workspaceId: string, actor: string, input: any) {
       const to = ch === "sms" ? input.contact?.phone : input.contact?.email;
       if (to) queueAndDeliver(workspaceId, { lead_id: id, channel: ch, to, subject: `We got your request — ${wsx.name}`, body: `Hi ${(input.contact?.name || "there").split(" ")[0]} — thanks for reaching out to ${wsx.name} about ${triage.service_guess || input.service_requested || "your project"}. We've got it, and a real person will call you shortly during business hours (Mon–Fri 8:00–5:30). Reply here any time.` }).catch(() => {});
     } } catch { /* first touch never blocks lead creation */ }
+  try { onLeadCreated(workspaceId, id, input); } catch { /* campaigns never block creation */ }
   return { lead: leadView(db.prepare("SELECT * FROM leads WHERE id=?").get(id)), duplicate: false };
 }
 
@@ -184,7 +187,7 @@ export function setStage(workspaceId: string, actor: string, lead: any, toRaw: s
   if (toState === "PROPOSAL") { const prop = db.prepare("SELECT * FROM proposals WHERE lead_id=? ORDER BY version DESC").get(lead.id) as any; if (prop) maybeRequestApproval(workspaceId, actor, updated, prop); }
   if (toState === "SENT") { const prop = db.prepare("SELECT * FROM proposals WHERE lead_id=? ORDER BY version DESC").get(lead.id) as any; if (prop) enrollFollowup(workspaceId, lead.id, prop.id); }
   if (isFinal && !wasFinal) { finalizeLead(workspaceId, actor, updated, toState); stopFollowups(lead.id, "finalized"); notifyOwners(workspaceId, "outcome.final", `Lead finalized: ${toState}`, `${leadView(updated).contact_name || lead.id} is now ${toState}`, lead.id); if (actor !== "api") emitEvent(workspaceId, "outcome.final", { lead_id: lead.id, outcome: OUTCOME_OF[toState], state: toState });
-    if (toState === "WON") { ensureJobForLead(workspaceId, actor, updated); const wsx: any = db.prepare("SELECT * FROM workspaces WHERE id=?").get(workspaceId); const cv = leadView(updated);
+    if (toState === "WON") { ensureJobForLead(workspaceId, actor, updated); try { convertLeadToCustomer(workspaceId, updated); } catch { /* conversion never blocks the win */ } const wsx: any = db.prepare("SELECT * FROM workspaces WHERE id=?").get(workspaceId); const cv = leadView(updated);
       if (wsx?.review_on_won && wsx?.review_url && cv.contact_email) queueAndDeliver(workspaceId, { lead_id: lead.id, channel: "email", to: cv.contact_email, subject: `Thanks from ${wsx.name} — how did we do?`, body: `Hi ${cv.contact_name || "there"},\n\nThanks for choosing ${wsx.name}. If we earned it, a quick Google review helps a local business like ours more than any ad: ${wsx.review_url}\n\nAnd if a neighbor ever needs the same help, we'd be grateful for the referral.` }).catch(() => {}); } }
   return { lead: leadView(updated) };
 }
@@ -270,6 +273,7 @@ app.get("/api/users", requireAuth, (req: any, res) => res.json((db.prepare("SELE
 app.get("/api/leads", requireAuth, (req: any, res) => {
   const ws = req.user.workspace_id;
   let rows = (db.prepare("SELECT * FROM leads WHERE workspace_id=? ORDER BY created_at DESC").all(ws) as any[]).map(leadView);
+  if (req.query.state !== "DUPLICATE") rows = rows.filter(l => !l.merged_into_id); // merged duplicates live on their survivor (Salesforce behavior)
   if (scopeOwn(req.user)) rows = rows.filter(l => mine(req.user, l));
   if (req.query.state) rows = rows.filter(l => l.state === req.query.state);
   if (req.query.bucket) { const B: Record<string, string[]> = { new: ["NEW"], working: ["WORKING", "QUALIFIED", "FOLLOWUP"], proposal: ["PROPOSAL", "SENT"], won: ["WON"], closed: ["LOST", "NO_RESPONSE", "UNSERVICEABLE", "JUNK", "DUPLICATE"] }; rows = rows.filter(l => (B[String(req.query.bucket)] || []).includes(l.state)); }
@@ -1755,3 +1759,6 @@ app.get("/api/activity", requireAuth, (req: any, res) => {
 app.get("/api/leads/:id/followups", requireAuth, (req: any, res) => res.json(db.prepare("SELECT * FROM followup_enrollments WHERE lead_id=? AND workspace_id=? ORDER BY created_at DESC").all(req.params.id, req.user.workspace_id)));
 app.post("/api/leads/:id/followups/stop", requireAuth, (req: any, res) => { stopFollowups(req.params.id, "manual"); res.json({ ok: true }); });
 app.get("/api/health", (_req, res) => res.json({ ok: true, service: "leadflow-os", time: now() }));
+
+// ---------- v4: Salesforce-parity CRM layer (slices 37-46) ----------
+registerCrm(app, requireAuth);
