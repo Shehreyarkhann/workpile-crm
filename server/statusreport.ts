@@ -28,7 +28,7 @@ export function weeklyReport(ws: string, week?: string) {
   const sched = one(`SELECT COUNT(*) c, COUNT(DISTINCT lead_id) jobs FROM job_schedule WHERE workspace_id=? AND work_date>=? AND work_date<=?`, ws, from, to);
   const undelivered = one(`SELECT COUNT(*) c FROM outcome_deliveries WHERE workspace_id=? AND delivered_at IS NULL`, ws).c;
   // v3 slice 36 additions: jobs completed, labor variance, touches, rehash wins, paperwork outstanding
-  const jobsDone = one(`SELECT COUNT(*) c FROM jobs WHERE workspace_id=? AND stage IN ('PAID','CLOSED') AND date(updated_at)>=? AND date(updated_at)<=?`, ws, from, to).c;
+  const jobsDone = one(`SELECT COUNT(*) c FROM jobs WHERE workspace_id=? AND stage IN ('WORK_COMPLETED','DOCUMENTATION_PENDING','READY_TO_INVOICE','INVOICED','CLOSED') AND date(updated_at)>=? AND date(updated_at)<=?`, ws, from, to).c;
   const variance = db.prepare(`SELECT l.service_requested, c.name customer, j.value job_value, SUM(t.amount) labor_cost FROM jobs j JOIN leads l ON l.id=j.lead_id LEFT JOIN contacts c ON c.id=l.contact_id LEFT JOIN time_entries t ON t.lead_id=j.lead_id WHERE j.workspace_id=? GROUP BY j.id HAVING labor_cost > j.value * 0.5 ORDER BY (labor_cost / MAX(j.value,1)) DESC LIMIT 5`).all(ws) as any[];
   const touches = one(`SELECT COUNT(*) c FROM activities WHERE workspace_id=? AND date(created_at)>=? AND date(created_at)<=?`, ws, from, to).c
     + one(`SELECT COUNT(*) c FROM messages_outbox WHERE workspace_id=? AND COALESCE(direction,'out')='out' AND date(created_at)>=? AND date(created_at)<=?`, ws, from, to).c;

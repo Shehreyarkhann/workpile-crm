@@ -67,6 +67,12 @@ test("timesheet week view + payroll CSV carry job hours and labor cost", async (
   const tom = ts.j.rows.find((r: any) => r.manager_id === techId);
   assert.ok(tom); assert.equal(tom.job_hours, 16); assert.equal(tom.job_cost, 848);
   assert.equal(ts.j.summary.job_cost, 848);
+  // v9 lifecycle (§13.2): submit + approve Tom's sheet before payroll export
+  await J("/api/timesheets", { method: "POST", body: { manager_id: techId, days: {}, notes: "" } }, { Cookie: cookie });
+  const ts2 = await J("/api/timesheets", {}, { Cookie: cookie });
+  const tomRow = ts2.j.rows.find((r: any) => r.manager_id === techId);
+  const ap = await J(`/api/timesheets/${tomRow.id}/approve`, { method: "POST", body: {} }, { Cookie: cookie });
+  assert.equal(ap.status, 200);
   const csv = await J("/api/timesheets/export", {}, { Cookie: cookie });
   assert.match(csv.txt, /labor_cost/);
   assert.ok(csv.txt.includes("848"));

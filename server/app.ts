@@ -211,7 +211,7 @@ function ensureJobForLeadInner(workspaceId: string, actor: string, lead: any) {
   if (prop) { try { const opts = JSON.parse(prop.options || "null"); const sel = opts && prop.selected_option ? opts.find((o: any) => o.name === prop.selected_option) : null; value = sel ? sel.total : prop.total; } catch { value = prop.total; } }
   const id = uid("job");
   db.prepare("INSERT INTO jobs (id,workspace_id,lead_id,proposal_id,stage,value,sector,created_from,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
-    .run(id, workspaceId, lead.id, prop?.id || null, "SCHEDULED", value || 0, lead.sector || "private", prop?.signed_at ? "sign" : "manual", now(), now());
+    .run(id, workspaceId, lead.id, prop?.id || null, "AWAITING_SCHEDULING", value || 0, lead.sector || "private", prop?.signed_at ? "sign" : "manual", now(), now());
   // the job inherits the lead's paperwork checklist (documents carry both ids)
   db.prepare("UPDATE documents SET job_id=? WHERE lead_id=? AND (job_id IS NULL OR job_id='')").run(id, lead.id);
   logEvent(workspaceId, lead.id, actor, "job_created", null, null, { job_id: id, value });
@@ -518,10 +518,11 @@ app.post("/api/timesheets/:id/chase", requireAuth, (req: any, res) => {
 app.get("/api/timesheets/export", requireAuth, needPerm("can_export"), (req: any, res) => {
   const ws = req.user.workspace_id; const week = String(req.query.week || weekStartOf(new Date()));
   ensureWeek(ws, week);
-  const rows = db.prepare("SELECT t.*, u.name manager, u.email FROM timesheets t LEFT JOIN users u ON u.id=t.manager_id WHERE t.workspace_id=? AND t.week_of=? ORDER BY u.name").all(ws, week) as any[];
+  const rows = (db.prepare("SELECT t.*, u.name manager, u.email FROM timesheets t LEFT JOIN users u ON u.id=t.manager_id WHERE t.workspace_id=? AND t.week_of=? ORDER BY u.name").all(ws, week) as any[]).filter(r => r.status === "approved");
   const head = "manager,email,week_of,mon,tue,wed,thu,fri,sat,sun,grid_hours,job_hours,total_hours,labor_cost,status,notes";
   const wkEnd2 = new Date(new Date(week + "T12:00:00").getTime() + 6 * 86400000).toISOString().slice(0, 10);
   const lines = rows.map(r => { let d: any = {}; try { d = r.days ? JSON.parse(r.days) : {}; } catch { d = {}; } const esc = (v: any) => `"${String(v ?? "").replaceAll('"', '""')}"`; const j = db.prepare("SELECT COALESCE(SUM(hours),0) h, COALESCE(SUM(amount),0) a FROM time_entries WHERE workspace_id=? AND (worker_id=? OR user_id=?) AND entry_date>=? AND entry_date<=?").get(ws, r.worker_id || "__none__", r.manager_id || "__none__", week, wkEnd2) as any; return [esc(r.manager), esc(r.email), r.week_of, d.mon || "", d.tue || "", d.wed || "", d.thu || "", d.fri || "", d.sat || "", d.sun || "", r.hours ?? "", j.h, (Number(r.hours) || 0) + j.h, Math.round(j.a * 100) / 100, r.status, esc(r.notes || "")].join(","); });
+  for (const r of rows) db.prepare("UPDATE timesheets SET status='exported' WHERE id=? AND status='approved'").run(r.id);
   res.setHeader("Content-Type", "text/csv"); res.setHeader("Content-Disposition", `attachment; filename="timesheets-${week}.csv"`);
   res.send([head, ...lines].join("\n"));
 });
@@ -572,7 +573,9 @@ app.post("/api/schedule", requireAuth, (req: any, res) => {
   const id = uid("sch");
   db.prepare("INSERT INTO job_schedule (id,workspace_id,lead_id,user_id,worker_id,work_date,note,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?)").run(id, ws, lead.id, w.linked_user_id || null, w.id, String(b.work_date || todayStr()), String(b.note || ""), req.user.id, now());
   if (w.linked_user_id) notify(ws, [w.linked_user_id], "scheduled", `🗓 You're scheduled — ${String(b.work_date || todayStr())}`, "You've been assigned to a job that day. Open Ops Console → Crew schedule for details.");
-  res.json(db.prepare("SELECT * FROM job_schedule WHERE id=?").get(id));
+  const conflicts = db.prepare("SELECT s.id, s.lead_id, l.service_requested FROM job_schedule s JOIN leads l ON l.id=s.lead_id WHERE s.workspace_id=? AND s.work_date=? AND s.lead_id!=? AND (s.worker_id=? OR s.user_id=?)").all(ws, String(b.work_date || todayStr()), lead.id, w.id, w.linked_user_id || "__none__") as any[];
+  const created = db.prepare("SELECT * FROM job_schedule WHERE id=?").get(id) as any;
+  res.json({ ...created, conflicts: conflicts.map((c: any) => ({ schedule_id: c.id, lead_id: c.lead_id, service_requested: c.service_requested, warning: "Same worker already booked that day" })) });
 });
 app.delete("/api/schedule/:id", requireAuth, (req: any, res) => {
   db.prepare("DELETE FROM job_schedule WHERE id=? AND workspace_id=?").run(req.params.id, req.user.workspace_id);
@@ -678,7 +681,7 @@ app.delete("/api/time-entries/:id", requireAuth, (req: any, res) => {
   res.json(jobLabor(req.user.workspace_id, e.lead_id));
 });
 // ---------- v3 slice 30: jobs — the operational half of a won lead ----------
-export const JOB_STAGES = ["SCHEDULED", "IN_PROGRESS", "FIELD_DONE", "PAPERWORK", "INVOICED", "PAID", "CLOSED", "ON_HOLD"];
+export const JOB_STAGES = ["AWAITING_SCHEDULING", "SCHEDULED", "IN_PROGRESS", "ON_HOLD", "WORK_COMPLETED", "DOCUMENTATION_PENDING", "READY_TO_INVOICE", "INVOICED", "CLOSED", "CANCELLED"];
 function backfillJobs(ws: string) { const won = db.prepare("SELECT * FROM leads WHERE workspace_id=? AND state='WON'").all(ws) as any[]; for (const l of won) ensureJobForLead(ws, "system", l); }
 function jobView(j: any) {
   const l = db.prepare("SELECT * FROM leads WHERE id=?").get(j.lead_id) as any;
@@ -716,6 +719,7 @@ app.post("/api/jobs/:id/stage", requireAuth, (req: any, res) => {
   const to = String(req.body.to || "");
   if (!JOB_STAGES.includes(to)) return res.status(422).json({ error: { code: "bad_stage" } });
   db.prepare("UPDATE jobs SET stage=?, closed_at=?, updated_at=? WHERE id=?").run(to, to === "CLOSED" ? now() : j.closed_at, now(), j.id);
+  if (to === "INVOICED" && j.invoice_status === "not_ready") db.prepare("UPDATE jobs SET invoice_status='invoiced' WHERE id=?").run(j.id);
   logEvent(req.user.workspace_id, j.lead_id, req.user.id, "job_stage", j.stage, to, { job_id: j.id });
   res.json(jobView(db.prepare("SELECT * FROM jobs WHERE id=?").get(j.id)));
 });
@@ -787,6 +791,9 @@ app.get("/api/setup-status", requireAuth, (req: any, res) => {
   });
 });
 app.post("/api/timesheets/:id/submit", requireAuth, (req: any, res) => { db.prepare("UPDATE timesheets SET status='submitted', submitted_at=? WHERE id=?").run(now(), req.params.id); res.json({ ok: true }); });
+app.post("/api/timesheets/:id/review", requireAuth, needPerm("can_approve"), (req: any, res) => { const t = db.prepare("SELECT * FROM timesheets WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any; if (!t) return res.status(404).json({ error: { code: "not_found" } }); if (t.status !== "submitted") return res.status(422).json({ error: { code: "bad_state", message: `Only a submitted sheet can be reviewed (current: ${t.status})` } }); db.prepare("UPDATE timesheets SET status='reviewed', reviewed_by=?, reviewed_at=? WHERE id=?").run(req.user.id, now(), t.id); res.json({ ok: true, status: "reviewed" }); });
+app.post("/api/timesheets/:id/approve", requireAuth, needPerm("can_approve"), (req: any, res) => { const t = db.prepare("SELECT * FROM timesheets WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any; if (!t) return res.status(404).json({ error: { code: "not_found" } }); if (!["submitted", "reviewed"].includes(t.status)) return res.status(422).json({ error: { code: "bad_state", message: `Only a submitted/reviewed sheet can be approved (current: ${t.status})` } }); db.prepare("UPDATE timesheets SET status='approved', approved_by=?, approved_at=? WHERE id=?").run(req.user.id, now(), t.id); res.json({ ok: true, status: "approved" }); });
+app.post("/api/timesheets/:id/reject", requireAuth, needPerm("can_approve"), (req: any, res) => { const t = db.prepare("SELECT * FROM timesheets WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any; if (!t) return res.status(404).json({ error: { code: "not_found" } }); if (!["submitted", "reviewed"].includes(t.status)) return res.status(422).json({ error: { code: "bad_state", message: `Only a submitted/reviewed sheet can be rejected (current: ${t.status})` } }); const reason = String(req.body?.reason || "").trim(); if (!reason) return res.status(422).json({ error: { code: "reason_required", message: "Rejection needs a reason — it goes back to the submitter." } }); db.prepare("UPDATE timesheets SET status='rejected', rejection_reason=? WHERE id=?").run(reason, t.id); res.json({ ok: true, status: "rejected" }); });
 
 // CSV import (§4.1) — header heuristics + vendor-native shapes (Tier 2 importers):
 // exports from Jobber, Housecall Pro, ServiceTitan and Salesforce import as-is.
@@ -1090,11 +1097,11 @@ app.get("/api/queue", requireAuth, (req: any, res) => {
   for (const p of db.prepare("SELECT p.*, c.name contact_name, CAST((julianday('now') - julianday(COALESCE(p.sent_at, p.created_at))) AS INTEGER) days FROM proposals p JOIN leads l ON l.id=p.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE p.workspace_id=? AND p.status='sent' AND p.signed_at IS NULL AND l.state IN ('SENT','FOLLOWUP') AND julianday('now') - julianday(COALESCE(p.sent_at, p.created_at)) >= 4 ORDER BY days DESC LIMIT 15").all(ws) as any[])
     items.push({ id: "q_cold_" + p.id, type: "proposal_cold", score: 66 + Math.min(10, p.days), title: `Proposal going cold — ${p.contact_name || "customer"}`, subtitle: `Sent ${p.days} days ago · ${moneyFmt(p.total)} · unsigned`, lead_id: p.lead_id, primary: { kind: "open_lead", label: "Nudge" } });
   backfillJobs(ws);
-  for (const j of db.prepare("SELECT * FROM jobs WHERE workspace_id=? AND stage='SCHEDULED'").all(ws) as any[]) {
+  for (const j of db.prepare("SELECT * FROM jobs WHERE workspace_id=? AND stage NOT IN ('CLOSED','CANCELLED')").all(ws) as any[]) {
     const crew = (db.prepare("SELECT COUNT(*) c FROM job_crew WHERE lead_id=?").get(j.lead_id) as any).c;
-    if (!crew) { const v = jobView(j); items.push({ id: "q_crew_" + j.id, type: "job_crew", score: 62, title: `Job needs crew — ${v.contact_name}`, subtitle: `${v.service_requested} · ${moneyFmt(j.value)} · no one assigned`, job_id: j.id, lead_id: j.lead_id, primary: { kind: "open_job", label: "Assign crew" } }); }
+    if (!crew && ["AWAITING_SCHEDULING", "SCHEDULED"].includes(j.stage)) { const v = jobView(j); items.push({ id: "q_crew_" + j.id, type: "job_crew", score: 62, title: `Job needs crew — ${v.contact_name}`, subtitle: `${v.service_requested} · ${moneyFmt(j.value)} · no one assigned`, job_id: j.id, lead_id: j.lead_id, primary: { kind: "open_job", label: "Assign crew" } }); }
     const docs = db.prepare("SELECT COUNT(*) t, SUM(CASE WHEN status='received' THEN 1 ELSE 0 END) r FROM documents WHERE (job_id=? OR lead_id=?) AND required=1").get(j.id, j.lead_id) as any;
-    if ((docs.t || 0) > (docs.r || 0) && ["FIELD_DONE", "PAPERWORK"].includes(j.stage)) { const v = jobView(j); items.push({ id: "q_docs_" + j.id, type: "paperwork", score: 58, title: `Paperwork missing — ${v.contact_name}`, subtitle: `${(docs.t || 0) - (docs.r || 0)} required document(s) outstanding on ${v.service_requested}`, job_id: j.id, lead_id: j.lead_id, primary: { kind: "open_job", label: "Chase docs" } }); }
+    if ((docs.t || 0) > (docs.r || 0) && ["IN_PROGRESS", "WORK_COMPLETED", "DOCUMENTATION_PENDING", "READY_TO_INVOICE"].includes(j.stage)) { const v = jobView(j); items.push({ id: "q_docs_" + j.id, type: "paperwork", score: 58, title: `Paperwork missing — ${v.contact_name}`, subtitle: `${(docs.t || 0) - (docs.r || 0)} required document(s) outstanding on ${v.service_requested} — the job cannot invoice until they land`, job_id: j.id, lead_id: j.lead_id, primary: { kind: "open_job", label: "Chase docs" } }); }
   }
   for (const f of db.prepare("SELECT f.*, COALESCE(w.name,u.name) who FROM field_reports f LEFT JOIN workers w ON w.id=f.worker_id LEFT JOIN users u ON u.id=f.manager_id WHERE f.workspace_id=? AND f.status='missing' AND f.report_date<? ORDER BY f.report_date LIMIT 20").all(ws, todayStr()) as any[])
     items.push({ id: "q_fr_" + f.id, type: "field_report", score: 52, title: `Field report missing — ${f.who || "worker"}`, subtitle: `Report for ${f.report_date} not filed`, lead_id: f.lead_id || null, primary: { kind: "open_ops", label: "Chase" } });

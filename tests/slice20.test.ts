@@ -45,10 +45,15 @@ test("per-day logging sums hours, flips status, persists days + notes", async ()
 });
 
 test("payroll CSV exports the week with totals", async () => {
+  // v9 lifecycle (§13.2): only APPROVED sheets reach payroll — approve Paul's first
+  const list = await J("/api/timesheets", {}, { Cookie: cookie });
+  const paul = list.j.rows.find((x: any) => x.manager_id === paulId);
+  const ap = await J(`/api/timesheets/${paul.id}/approve`, { method: "POST", body: {} }, { Cookie: cookie });
+  assert.equal(ap.status, 200);
   const r = await J("/api/timesheets/export", {}, { Cookie: cookie });
   assert.match(r.txt, /manager,email,week_of,mon,tue/);
-  assert.ok(r.txt.includes("Paul PM") && r.txt.includes(",38,submitted") || r.txt.includes("38"));
-  assert.ok(r.txt.includes("Laura Lead"));
+  assert.ok(r.txt.includes("Paul PM") && r.txt.includes("38"));
+  assert.ok(!r.txt.includes("Laura Lead"), "unapproved sheets never reach the payroll export");
 });
 
 test("chase notifies the manager once; the sweeper never double-chases", async () => {
