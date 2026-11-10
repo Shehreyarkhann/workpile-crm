@@ -144,3 +144,18 @@ aside.rail .sideHead { flex-direction: column; gap: 6px; }
 .pulseRow:hover { background: #f7fbf8; }
 .pulseIco { font-size: 17px; width: 26px; text-align: center; }
 @media (prefers-reduced-motion: no-preference) { .palette { animation: wpPop .13s ease-out; } @keyframes wpPop { from { transform: translateY(-6px) scale(.99); opacity: .4; } } }
+
+/* slice 11: dark mode (token-driven) */
+[data-theme="dark"] { --ink:#e2e8f0; --mut:#94a3b8; --line:#263449; --bg:#0b1220; --card:#111c2e; --shadow:0 1px 3px rgba(0,0,0,.5); }
+[data-theme="dark"] body { background:var(--bg); color:var(--ink); }
+[data-theme="dark"] aside { background:#0d1626; color:#cbd5e1; border-right-color:#1e293b; }
+[data-theme="dark"] aside button { color:#a8bdd0; } [data-theme="dark"] aside button:hover { background:#16233a; } [data-theme="dark"] aside button.on { background:#14532d; color:#ecfdf5; }
+[data-theme="dark"] aside .logo { color:#f1f5f9; } [data-theme="dark"] .wsSwitch { background:#111c2e; color:var(--ink); border-color:#263449; }
+[data-theme="dark"] input, [data-theme="dark"] select, [data-theme="dark"] textarea { background:#0f1a2c; color:var(--ink); border-color:#263449; }
+[data-theme="dark"] .btn.ghost { background:#16233a; color:var(--ink); border-color:#263449; }
+[data-theme="dark"] .palette, [data-theme="dark"] .bellPanel { background:#111c2e; color:var(--ink); }
+[data-theme="dark"] .palItem.on { background:#14532d; }
+[data-theme="dark"] table th { color:var(--mut); } [data-theme="dark"] tr.clickable:hover { background:#16233a; }
+[data-theme="dark"] .modalCard, [data-theme="dark"] .card { background:var(--card); }
+[data-theme="dark"] .topbar { background:var(--bg); }
+[data-theme="dark"] .chip { background:#16233a; color:var(--ink); border-color:#263449; } [data-theme="dark"] .chip.on { background:#14532d; }

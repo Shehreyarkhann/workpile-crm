@@ -50,6 +50,7 @@ export async function queueAndDeliver(workspaceId: string, m: { lead_id?: string
 export function notify(workspaceId: string, userIds: (string | null | undefined)[], type: string, title: string, body: string, leadId?: string) {
   const targets = [...new Set(userIds.filter(Boolean))] as string[];
   for (const u of targets) db.prepare("INSERT INTO notifications (id,workspace_id,user_id,type,title,body,lead_id,created_at) VALUES (?,?,?,?,?,?,?,?)").run(uid("ntf"), workspaceId, u, type, title, body, leadId || null, now());
+  if (targets.length) import("./push.ts").then(m => m.sendPush(targets, title, body).catch(() => {})).catch(() => {});
 }
 export function notifyOwners(workspaceId: string, type: string, title: string, body: string, leadId?: string) {
   const owners = db.prepare("SELECT id FROM users WHERE workspace_id=? AND role IN ('OWNER','APPROVER') AND active=1").all(workspaceId) as any[];

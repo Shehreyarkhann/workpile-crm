@@ -80,6 +80,8 @@ function Dashboard({ go, openLead }: any) {
 }
 
 function Leads({ initial, openLead, users, me }: any) {
+  const [sel, setSel] = useState<Set<string>>(new Set()); const [bulkMsg, setBulkMsg] = useState("");
+  const bulk = async (action: string, extra: any = {}) => { const r = await api("/api/leads/bulk", { method: "POST", body: { ids: [...sel], action, ...extra } }).catch((e: any) => ({ error: e.message })); if ((r as any).error) { setBulkMsg("Error: " + (r as any).error); return; } setBulkMsg(`Done: ${r.ok} updated, ${r.skipped} skipped${r.details?.length ? " — " + r.details.slice(0, 2).map((d: any) => d.reason).join("; ") : ""}`); setSel(new Set()); setTickFix(t => t + 1); };
   const [syncOpen, setSyncOpen] = useState(false);
   const [mode, setMode] = useState<"table" | "board">("table");
   const [f, setF] = useState<any>(initial || {});
@@ -107,14 +109,22 @@ function Leads({ initial, openLead, users, me }: any) {
       <button className="chip" onClick={() => setF({ page: 1, min_value: "10000", sort: "value" })}>💰 High value $10k+</button>
       <button className="chip" onClick={() => setF({ page: 1, unassigned: "1" })}>Unassigned</button>
     </div>
+    {sel.size > 0 && <div className="ok" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}><b>{sel.size} selected</b>
+      <select id="bulkOwner" style={{ width: 170 }} defaultValue=""><option value="">Assign to…</option>{users.map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}</select>
+      <button className="btn small" onClick={() => { const v = (document.getElementById("bulkOwner") as HTMLSelectElement).value; if (v) bulk("assign", { owner_id: v }); }}>Assign</button>
+      <button className="btn small" onClick={() => bulk("advance")}>Advance stage →</button>
+      <button className="btn small ghost" onClick={() => bulk("snooze", { days: 7 })}>Snooze 7 days</button>
+      <button className="btn small danger" onClick={() => bulk("archive_junk")}>Archive as junk</button>
+      <button className="btn small ghost" onClick={() => setSel(new Set())}>Clear</button>{bulkMsg && <span>{bulkMsg}</span>}</div>}
+    {bulkMsg && sel.size === 0 && <p className="muted">{bulkMsg}</p>}
     <div className="chips">
       <button className={`chip ${!f.bucket && !f.state ? "on" : ""}`} onClick={() => setF({ ...f, bucket: "", state: "", page: 1 })}>All</button>
       {BUCKETS.map(([b, lab]) => <button key={b} className={`chip ${f.bucket === b ? "on" : ""}`} onClick={() => setF({ ...f, bucket: b, state: "", page: 1 })}>{lab}</button>)}
       <select style={{ width: 200 }} value={f.state || ""} onChange={e => setF({ ...f, state: e.target.value, bucket: "", page: 1 })}><option value="">Any exact state…</option>{STATES.map(s => <option key={s} value={s}>{s.replaceAll("_", " ")}</option>)}</select>
       {f.service && <button className="chip on" onClick={() => setF({ ...f, service: "" })}>Service: {f.service} ✕</button>}
     </div>
-    {mode === "table" ? (<div className="card" style={{ padding: 6 }}><table><thead><tr><th>Contact</th><th>Service</th><th>AI Score</th><th>State</th><th>Value</th><th>Owner</th><th>Next step</th><th>Created</th></tr></thead><tbody>
-      {data.items.map((l: any) => <tr className="clickable" key={l.id} onClick={() => openLead(l.id)}><td><b>{l.contact_name}</b><br /><span className="muted">{l.contact_phone || l.contact_email || ""}</span></td><td>{l.service_requested}</td><td>{l.ai_score !== null && l.ai_score !== undefined ? <span className={`score ${JSON.parse(l.ai_flags || "{}").temperature || "cold"}`}>{l.ai_score}</span> : <span className="muted">—</span>}</td><td><Badge s={l.state} /></td><td>{money(l.est_value)}</td><td>{l.owner_name || "—"}</td><td>{l.next_action || "—"}<br /><span className="muted">{dOnly(l.next_action_due_at)}</span></td><td>{dOnly(l.created_at)}</td></tr>)}
+    {mode === "table" ? (<div className="card" style={{ padding: 6 }}><table><thead><tr><th style={{ width: 30 }}><input type="checkbox" style={{ width: "auto" }} checked={data.items.length > 0 && data.items.every((l: any) => sel.has(l.id))} onChange={e => setSel(e.target.checked ? new Set(data.items.map((l: any) => l.id)) : new Set())} /></th><th>Contact</th><th>Service</th><th>AI Score</th><th>State</th><th>Value</th><th>Owner</th><th>Next step</th><th>Created</th></tr></thead><tbody>
+      {data.items.map((l: any) => <tr className="clickable" key={l.id} onClick={() => openLead(l.id)}><td onClick={e => e.stopPropagation()}><input type="checkbox" style={{ width: "auto" }} checked={sel.has(l.id)} onChange={() => { const n = new Set(sel); n.has(l.id) ? n.delete(l.id) : n.add(l.id); setSel(n); }} /></td><td><b>{l.contact_name}</b><br /><span className="muted">{l.contact_phone || l.contact_email || ""}</span></td><td>{l.service_requested}</td><td>{l.ai_score !== null && l.ai_score !== undefined ? <span className={`score ${JSON.parse(l.ai_flags || "{}").temperature || "cold"}`}>{l.ai_score}</span> : <span className="muted">—</span>}</td><td><Badge s={l.state} /></td><td>{money(l.est_value)}</td><td>{l.owner_name || "—"}</td><td>{l.next_action || "—"}<br /><span className="muted">{dOnly(l.next_action_due_at)}</span></td><td>{dOnly(l.created_at)}</td></tr>)}
       {data.items.length === 0 && <tr><td colSpan={7} className="muted">No leads match these filters.</td></tr>}
     </tbody></table><Pager /></div>) : (
       <div className="kanban">{BUCKETS.map(([b, lab]) => <div className="kcol" key={b}><h4>{lab}<span>{num(board[b]?.total ?? 0)}</span></h4>
@@ -142,7 +152,7 @@ function MessagesPanel({ lead }: any) {
     <div className="rowflex" style={{ marginTop: 8 }}><button className="btn" disabled={!body.trim()} onClick={send}>Send {ch === "sms" ? "text" : "email"}</button>{note && <span className="muted">{note}</span>}</div>
     <h4 style={{ marginBottom: 6 }}>History</h4>
     {msgs.length === 0 && <p className="muted">Nothing sent yet.</p>}
-    {msgs.map((m: any) => <p key={m.id} style={{ margin: "6px 0", borderBottom: "1px solid #eef2f7", paddingBottom: 6 }}><b>{m.channel === "sms" ? "💬" : "✉"} {m.to_addr}</b> · <span className="tinyBadge">{m.status}</span> <span className="muted">{dt(m.created_at)}</span>{m.subject ? <><br /><b>{m.subject}</b></> : ""}<br /><span className="muted">{m.body.slice(0, 220)}</span></p>)}
+    {msgs.map((m: any) => <p key={m.id} style={{ margin: "6px 0", borderBottom: "1px solid #eef2f7", paddingBottom: 6, ...(m.direction === "in" ? { background: "#f0f9ff", borderRadius: 8, padding: 8 } : {}) }}><b>{m.direction === "in" ? "↩ Customer reply" : m.channel === "sms" ? "💬" : "✉"} {m.direction === "in" ? "" : m.to_addr}</b> · <span className="tinyBadge">{m.status}</span> <span className="muted">{dt(m.created_at)}</span>{m.subject ? <><br /><b>{m.subject}</b></> : ""}<br /><span className="muted">{m.body.slice(0, 220)}</span></p>)}
   </div>;
 }
 
@@ -670,6 +680,9 @@ const [sb, setSb] = useState(() => localStorage.getItem("wp_sb") || "open"); con
   const [notifs, setNotifs] = useState<any[]>([]); const [unread, setUnread] = useState(0); const [bellOpen, setBellOpen] = useState(false); const [verifyMsg, setVerifyMsg] = useState("");
 const [pending, setPending] = useState(0); const [creating, setCreating] = useState(false); const [leadId, setLeadId] = useState<string | null>(null); const [tick, setTick] = useState(0);
   const [palOpen, setPalOpen] = useState(false); const [helpOpen, setHelpOpen] = useState(false);
+  const [theme, setTheme] = useState(() => localStorage.getItem("wp_theme") || "light");
+  useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem("wp_theme", theme); }, [theme]);
+  useEffect(() => { if (user && "serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {}); }, [user?.id]);
   const openLead = (id: string) => { setLeadId(id); try { const r = JSON.parse(localStorage.getItem("wp_recent") || "[]").filter((x: string) => x !== id); r.unshift(id); localStorage.setItem("wp_recent", JSON.stringify(r.slice(0, 6))); } catch {} };
   useEffect(() => { if (!user) return; let gAt = 0;
     const h = (e: KeyboardEvent) => { const t = e.target as HTMLElement; const typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
@@ -706,8 +719,10 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       <div className="topbar"><button className="btn ghost burger" onClick={() => setMOpen(o => !o)}>☰</button><div className="search"><input type="search" readOnly placeholder="Search leads, jump anywhere…  ( ⌘K )" onFocus={() => setPalOpen(true)} /></div>
         <div style={{ position: "relative" }}><button className="btn ghost" onClick={() => setBellOpen(o => !o)}>🔔{unread ? <span className="cnt" style={{ background: "#dc2626", color: "#fff", borderRadius: 99, fontSize: 11, padding: "1px 7px", fontWeight: 700, marginLeft: 4 }}>{unread}</span> : null}</button>
         {bellOpen && <div className="bellPanel"><div className="rowflex" style={{ justifyContent: "space-between" }}><b>Notifications</b><button className="btn ghost small" onClick={async () => { await api("/api/notifications/read-all", { method: "POST", body: {} }); setUnread(0); setNotifs(notifs.map(n => ({ ...n, read_at: n.read_at || "now" }))); }}>Mark all read</button></div>
+        <button className="btn ghost small" style={{ margin: "6px 0" }} onClick={async () => { const k = await api("/api/push/key").catch(() => null); if (!k?.configured) { alert("Phone push activates when the server has VAPID keys configured — the in-app bell works today."); return; } const perm = await Notification.requestPermission(); if (perm !== "granted") return; const reg = await navigator.serviceWorker.ready; const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: Uint8Array.from(atob(k.public_key.replaceAll("-", "+").replaceAll("_", "/")), c => c.charCodeAt(0)) as any }); await api("/api/push/subscribe", { method: "POST", body: { subscription: sub } }); alert("Phone alerts on for this device ✓"); }}>📱 Enable phone alerts</button>
         {notifs.length === 0 && <p className="muted">Nothing yet \u2014 approvals, signatures, deposits, and new leads land here.</p>}
         {notifs.map(n => <div key={n.id} className="bellItem" style={n.read_at ? {} : { background: "#f0f9f1" }} onClick={async () => { await api(`/api/notifications/${n.id}/read`, { method: "POST", body: {} }); setUnread(u => Math.max(0, u - (n.read_at ? 0 : 1))); if (n.lead_id) { openLead(n.lead_id); setBellOpen(false); } }}><b>{n.title}</b><br /><span className="muted">{n.body}</span><br /><span className="muted" style={{ fontSize: 11.5 }}>{dt(n.created_at)}</span></div>)}</div>}</div>
+        <button className="btn ghost" title="Toggle dark mode" onClick={() => setTheme(t => t === "dark" ? "light" : "dark")}>{theme === "dark" ? "☀️" : "🌙"}</button>
         <button className="btn" onClick={() => setCreating(true)}>+ New Lead</button></div>
       {user && user.email_verified === 0 && <div className="verifyBar">✉️ Verify your email to secure your account and enable password recovery. <button className="btn ghost small" onClick={async () => { const r = await api("/api/auth/resend-verify", { method: "POST", body: {} }).catch((e: any) => ({ error: e.message })); setVerifyMsg(r.verify_url ? "Test mode \u2014 verify here: " + r.verify_url : r.error ? r.error : "Verification email sent \u2014 check your inbox."); }}>Resend verification</button>{verifyMsg && <span style={{ marginLeft: 8 }}>{verifyMsg}</span>}</div>}
       <EB>

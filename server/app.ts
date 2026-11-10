@@ -869,6 +869,39 @@ app.get("/api/reports/export", requireAuth, (req: any, res) => {
   res.type("text/csv").setHeader("Content-Disposition", `attachment; filename="workpile-${kind}.csv"`).send(csv);
 });
 
+// ---------- slice 11 (Tier 1): bulk actions, two-way texting, push ----------
+const NEXT_STATE: Record<string, string> = { NEW: "TRIAGED", TRIAGED: "QUALIFYING", QUALIFYING: "QUALIFIED", QUALIFIED: "READY_FOR_APPROVAL", APPROVED: "PROPOSAL_DRAFTED", PROPOSAL_SENT: "IN_FOLLOW_UP" };
+app.post("/api/leads/bulk", requireAuth, (req: any, res) => {
+  const ids: string[] = (req.body.ids || []).slice(0, 200); const action = String(req.body.action || "");
+  const results = { ok: 0, skipped: 0, details: [] as any[] };
+  for (const id of ids) {
+    const l = db.prepare("SELECT * FROM leads WHERE id=? AND workspace_id=?").get(id, req.user.workspace_id) as any;
+    if (!l) { results.skipped++; continue; }
+    if (action === "assign") { db.prepare("UPDATE leads SET owner_id=?, updated_at=? WHERE id=?").run(req.body.owner_id || null, now(), id); logEvent(req.user.workspace_id, id, req.user.id, "bulk_assign", null, null, { owner_id: req.body.owner_id }); results.ok++; }
+    else if (action === "snooze") { const d = new Date(Date.now() + (Number(req.body.days) || 7) * 86400000).toISOString(); db.prepare("UPDATE leads SET next_action_due_at=?, updated_at=? WHERE id=?").run(d, now(), id); results.ok++; }
+    else if (action === "advance") { const to = NEXT_STATE[l.state]; if (!to) { results.skipped++; results.details.push({ id, reason: "no_forward_step" }); continue; } const r: any = transition(req.user.workspace_id, req.user.id, l, to); if (r.error) { results.skipped++; results.details.push({ id, reason: r.error }); } else results.ok++; }
+    else if (action === "archive_junk") { const r: any = transition(req.user.workspace_id, req.user.id, l, "JUNK"); if (r.error) { results.skipped++; } else results.ok++; }
+    else { results.skipped++; }
+  }
+  res.json(results);
+});
+app.post("/webhooks/twilio/inbound", express.urlencoded({ extended: false }), (req: any, res) => {
+  const from = String(req.body.From || ""); const body = String(req.body.Body || "");
+  const digits = from.replace(/\D/g, "").slice(-10);
+  if (!digits || !body) return res.type("text/xml").send("<Response/>");
+  const hit = db.prepare(`SELECT l.id lead_id, l.workspace_id, l.owner_id FROM leads l JOIN contacts c ON c.id=l.contact_id WHERE REPLACE(REPLACE(REPLACE(c.phone,'-',''),' ',''),'(','') LIKE ? ORDER BY l.created_at DESC LIMIT 1`).get("%" + digits) as any;
+  if (hit) {
+    db.prepare("INSERT INTO messages_outbox (id,workspace_id,lead_id,channel,to_addr,subject,body,status,direction,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
+      .run(uid("msg"), hit.workspace_id, hit.lead_id, "sms", from, null, body, "received", "in", now());
+    logEvent(hit.workspace_id, hit.lead_id, "customer", "message_in_sms", null, null, { from });
+    stopFollowups(hit.lead_id, "customer_replied");
+    notify(hit.workspace_id, [hit.owner_id], "message.reply", "Customer replied 💬", body.slice(0, 140), hit.lead_id);
+    notifyOwners(hit.workspace_id, "message.reply", "Customer replied 💬", body.slice(0, 140), hit.lead_id);
+  }
+  res.type("text/xml").send("<Response/>");
+});
+app.get("/api/push/key", requireAuth, async (req: any, res) => { try { const m = await import("./push.ts"); res.json({ public_key: m.vapidPublicKey(), configured: m.pushConfigured() }); } catch (e: any) { res.json({ public_key: null, configured: false, error: String(e?.message || e) }); } });
+app.post("/api/push/subscribe", requireAuth, async (req: any, res) => { try { const m = await import("./push.ts"); if (!req.body.subscription?.endpoint) return res.status(422).json({ error: { code: "bad_subscription" } }); m.saveSubscription(req.user.id, req.body.subscription); res.json({ ok: true }); } catch (e: any) { res.status(500).json({ error: { code: "push_unavailable" } }); } });
 // ---------- slice 10: My Day (personal command center) ----------
 app.get("/api/myday", requireAuth, (req: any, res) => {
   const ws = req.user.workspace_id, me = req.user.id;

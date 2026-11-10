@@ -67,6 +67,7 @@ export function initSchema() {
   CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY, workspace_id TEXT, user_id TEXT, type TEXT, title TEXT, body TEXT, lead_id TEXT, read_at TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS auth_tokens (id TEXT PRIMARY KEY, user_id TEXT, kind TEXT, token_hash TEXT, expires_at TEXT, used_at TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS followup_enrollments (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, proposal_id TEXT, step_idx INTEGER DEFAULT 0, next_due_at TEXT, status TEXT DEFAULT 'active', stop_reason TEXT, created_at TEXT, updated_at TEXT);
+  CREATE TABLE IF NOT EXISTS push_subscriptions (id TEXT PRIMARY KEY, user_id TEXT, endpoint TEXT UNIQUE, subscription TEXT, created_at TEXT);
   `);
   // additive columns for existing DBs (expand step of expand-migrate-contract)
   for (const stmt of [
@@ -90,6 +91,9 @@ export function initSchema() {
     "ALTER TABLE workspaces ADD COLUMN followup_steps TEXT",
     "ALTER TABLE workspaces ADD COLUMN review_url TEXT",
     "ALTER TABLE workspaces ADD COLUMN review_on_won INTEGER DEFAULT 0",
+    "ALTER TABLE messages_outbox ADD COLUMN direction TEXT DEFAULT 'out'",
+    "ALTER TABLE workspaces ADD COLUMN booking_slug TEXT",
+    "ALTER TABLE workspaces ADD COLUMN booking_enabled INTEGER DEFAULT 0",
     "ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0",
     "ALTER TABLE webhook_endpoints ADD COLUMN events TEXT DEFAULT 'outcome.final'",
   ]) { try { db.exec(stmt); } catch { /* already present */ } }
