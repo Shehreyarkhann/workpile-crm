@@ -15,6 +15,7 @@ import { cleanupPreview, cleanupApply, insights, insightsV2, reactivateStale, sc
 import { emitEvent, EVENTS } from "./integrations.ts";
 import { queueAndDeliver, notify, notifyOwners, emailConfigured, smsConfigured } from "./comms.ts";
 import { weekStartOf, ensureWeek, chaseRow, sumDays } from "./timesheets.ts";
+import { rateFor, logTime, jobLabor, DEFAULT_CLASSES } from "./labor.ts";
 import { enrollFollowup, stopFollowups } from "./followups.ts";
 
 import { providerStatus, authUrl, listConnections } from "./oauth.ts";
@@ -196,7 +197,7 @@ app.post("/api/auth/login", (req, res) => {
 app.get("/api/auth/me", requireAuth, (req: any, res) => { ensureMembership(req.user); const ws = db.prepare("SELECT name FROM workspaces WHERE id=?").get(req.user.workspace_id) as any; res.json({ user: { id: req.user.id, name: req.user.name, email: req.user.email, role: req.user.role, workspace_id: req.user.workspace_id, workspace_name: ws?.name, email_verified: req.user.email_verified ?? 0, is_platform_admin: !!req.user.is_platform_admin, permissions: permsOf(req.user) }, workspaces: membershipsOf(req.user.id) }); });
 
 // ---------- routes: workspace data ----------
-app.get("/api/users", requireAuth, (req: any, res) => res.json((db.prepare("SELECT * FROM users WHERE workspace_id=?").all(req.user.workspace_id) as any[]).map(u => ({ id: u.id, name: u.name, email: u.email, role: u.role, approval_limit: u.approval_limit, permissions: permsOf(u), has_overrides: !!u.permissions }))));
+app.get("/api/users", requireAuth, (req: any, res) => res.json((db.prepare("SELECT * FROM users WHERE workspace_id=?").all(req.user.workspace_id) as any[]).map(u => ({ id: u.id, name: u.name, email: u.email, role: u.role, approval_limit: u.approval_limit, labor_class_id: u.labor_class_id || null, permissions: permsOf(u), has_overrides: !!u.permissions }))));
 app.get("/api/leads", requireAuth, (req: any, res) => {
   const ws = req.user.workspace_id;
   let rows = (db.prepare("SELECT * FROM leads WHERE workspace_id=? ORDER BY created_at DESC").all(ws) as any[]).map(leadView);
@@ -334,8 +335,11 @@ app.get("/api/timesheets", requireAuth, (req: any, res) => {
   const week = String(req.query.week || weekStartOf(new Date()));
   ensureWeek(ws, week);
   const rows = db.prepare("SELECT t.*, u.name manager FROM timesheets t LEFT JOIN users u ON u.id=t.manager_id WHERE t.workspace_id=? AND t.week_of=? ORDER BY u.name").all(ws, week) as any[];
-  for (const r of rows) { try { r.days = r.days ? JSON.parse(r.days) : null; } catch { r.days = null; } r.overdue = r.status === "missing" && week < weekStartOf(new Date()); }
-  const summary = { submitted: rows.filter(r => r.status === "submitted").length, missing: rows.filter(r => r.status === "missing").length, total_hours: rows.reduce((a, r) => a + (r.hours || 0), 0) };
+  const wkEnd = new Date(new Date(week + "T12:00:00").getTime() + 6 * 86400000).toISOString().slice(0, 10);
+  for (const r of rows) { try { r.days = r.days ? JSON.parse(r.days) : null; } catch { r.days = null; } r.overdue = r.status === "missing" && week < weekStartOf(new Date());
+    const j = db.prepare("SELECT COALESCE(SUM(hours),0) h, COALESCE(SUM(amount),0) a FROM time_entries WHERE workspace_id=? AND user_id=? AND entry_date>=? AND entry_date<=?").get(ws, r.manager_id, week, wkEnd) as any;
+    r.job_hours = j.h; r.job_cost = Math.round(j.a * 100) / 100; }
+  const summary = { submitted: rows.filter(r => r.status === "submitted").length, missing: rows.filter(r => r.status === "missing").length, total_hours: rows.reduce((a, r) => a + (r.hours || 0), 0), job_hours: rows.reduce((a, r) => a + (r.job_hours || 0), 0), job_cost: Math.round(rows.reduce((a, r) => a + (r.job_cost || 0), 0) * 100) / 100 };
   res.json({ week_of: week, rows, summary });
 });
 app.post("/api/timesheets", requireAuth, (req: any, res) => {
@@ -361,10 +365,77 @@ app.get("/api/timesheets/export", requireAuth, needPerm("can_export"), (req: any
   const ws = req.user.workspace_id; const week = String(req.query.week || weekStartOf(new Date()));
   ensureWeek(ws, week);
   const rows = db.prepare("SELECT t.*, u.name manager, u.email FROM timesheets t LEFT JOIN users u ON u.id=t.manager_id WHERE t.workspace_id=? AND t.week_of=? ORDER BY u.name").all(ws, week) as any[];
-  const head = "manager,email,week_of,mon,tue,wed,thu,fri,sat,sun,total_hours,status,notes";
-  const lines = rows.map(r => { let d: any = {}; try { d = r.days ? JSON.parse(r.days) : {}; } catch { d = {}; } const esc = (v: any) => `"${String(v ?? "").replaceAll('"', '""')}"`; return [esc(r.manager), esc(r.email), r.week_of, d.mon || "", d.tue || "", d.wed || "", d.thu || "", d.fri || "", d.sat || "", d.sun || "", r.hours ?? "", r.status, esc(r.notes || "")].join(","); });
+  const head = "manager,email,week_of,mon,tue,wed,thu,fri,sat,sun,grid_hours,job_hours,total_hours,labor_cost,status,notes";
+  const wkEnd2 = new Date(new Date(week + "T12:00:00").getTime() + 6 * 86400000).toISOString().slice(0, 10);
+  const lines = rows.map(r => { let d: any = {}; try { d = r.days ? JSON.parse(r.days) : {}; } catch { d = {}; } const esc = (v: any) => `"${String(v ?? "").replaceAll('"', '""')}"`; const j = db.prepare("SELECT COALESCE(SUM(hours),0) h, COALESCE(SUM(amount),0) a FROM time_entries WHERE workspace_id=? AND user_id=? AND entry_date>=? AND entry_date<=?").get(ws, r.manager_id, week, wkEnd2) as any; return [esc(r.manager), esc(r.email), r.week_of, d.mon || "", d.tue || "", d.wed || "", d.thu || "", d.fri || "", d.sat || "", d.sun || "", r.hours ?? "", j.h, (Number(r.hours) || 0) + j.h, Math.round(j.a * 100) / 100, r.status, esc(r.notes || "")].join(","); });
   res.setHeader("Content-Type", "text/csv"); res.setHeader("Content-Disposition", `attachment; filename="timesheets-${week}.csv"`);
   res.send([head, ...lines].join("\n"));
+});
+// ---------- slice 21: labor classes, crew, job time ----------
+app.get("/api/labor-classes", requireAuth, (req: any, res) => res.json(db.prepare("SELECT * FROM labor_classes WHERE workspace_id=? ORDER BY name").all(req.user.workspace_id)));
+app.post("/api/labor-classes", requireAuth, needPerm("can_settings"), (req: any, res) => {
+  const b = req.body || {}; const id = uid("lclass");
+  db.prepare("INSERT INTO labor_classes (id,workspace_id,name,private_rate,govt_rate,created_at) VALUES (?,?,?,?,?,?)").run(id, req.user.workspace_id, String(b.name || "Class"), Number(b.private_rate) || 0, Number(b.govt_rate) || 0, now());
+  res.json(db.prepare("SELECT * FROM labor_classes WHERE id=?").get(id));
+});
+app.post("/api/labor-classes/seed-defaults", requireAuth, needPerm("can_settings"), (req: any, res) => {
+  const ws = req.user.workspace_id;
+  for (const c of DEFAULT_CLASSES) { const ex = db.prepare("SELECT id FROM labor_classes WHERE workspace_id=? AND name=?").get(ws, c.name); if (!ex) db.prepare("INSERT INTO labor_classes (id,workspace_id,name,private_rate,govt_rate,created_at) VALUES (?,?,?,?,?,?)").run(uid("lclass"), ws, c.name, c.private_rate, c.govt_rate, now()); }
+  res.json(db.prepare("SELECT * FROM labor_classes WHERE workspace_id=? ORDER BY name").all(ws));
+});
+app.patch("/api/labor-classes/:id", requireAuth, needPerm("can_settings"), (req: any, res) => {
+  const c = db.prepare("SELECT * FROM labor_classes WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!c) return res.status(404).json({ error: { code: "not_found" } });
+  const b = req.body || {};
+  db.prepare("UPDATE labor_classes SET name=?, private_rate=?, govt_rate=? WHERE id=?").run(String(b.name ?? c.name), Number(b.private_rate ?? c.private_rate) || 0, Number(b.govt_rate ?? c.govt_rate) || 0, c.id);
+  res.json(db.prepare("SELECT * FROM labor_classes WHERE id=?").get(c.id));
+});
+app.delete("/api/labor-classes/:id", requireAuth, needPerm("can_settings"), (req: any, res) => {
+  db.prepare("UPDATE users SET labor_class_id=NULL WHERE labor_class_id=?").run(req.params.id);
+  db.prepare("DELETE FROM labor_classes WHERE id=? AND workspace_id=?").run(req.params.id, req.user.workspace_id);
+  res.json({ ok: true });
+});
+app.get("/api/leads/:id/labor", requireAuth, (req: any, res) => {
+  const l = db.prepare("SELECT id FROM leads WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id);
+  if (!l) return res.status(404).json({ error: { code: "not_found" } });
+  res.json(jobLabor(req.user.workspace_id, req.params.id));
+});
+app.post("/api/leads/:id/crew", requireAuth, (req: any, res) => {
+  const ws = req.user.workspace_id;
+  const u = db.prepare("SELECT id FROM users WHERE id=? AND workspace_id=?").get(String(req.body.user_id || ""), ws) as any;
+  if (!u) return res.status(422).json({ error: { code: "bad_user" } });
+  try { db.prepare("INSERT INTO job_crew (id,workspace_id,lead_id,user_id,created_at) VALUES (?,?,?,?,?)").run(uid("crew"), ws, req.params.id, u.id, now()); } catch { /* already on crew */ }
+  res.json(jobLabor(ws, req.params.id));
+});
+app.delete("/api/leads/:id/crew/:userId", requireAuth, (req: any, res) => {
+  db.prepare("DELETE FROM job_crew WHERE lead_id=? AND user_id=? AND workspace_id=?").run(req.params.id, req.params.userId, req.user.workspace_id);
+  res.json(jobLabor(req.user.workspace_id, req.params.id));
+});
+app.post("/api/leads/:id/time", requireAuth, (req: any, res) => {
+  const r = logTime(req.user.workspace_id, req.params.id, req.user.id, req.body || {});
+  if ((r as any).error) return res.status(422).json({ error: { code: (r as any).error } });
+  res.json(r);
+});
+app.delete("/api/time-entries/:id", requireAuth, (req: any, res) => {
+  const e = db.prepare("SELECT * FROM time_entries WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!e) return res.status(404).json({ error: { code: "not_found" } });
+  db.prepare("DELETE FROM time_entries WHERE id=?").run(e.id);
+  res.json(jobLabor(req.user.workspace_id, e.lead_id));
+});
+app.get("/api/setup-status", requireAuth, (req: any, res) => {
+  const ws = req.user.workspace_id;
+  const one = (sql: string) => (db.prepare(sql).get(ws) as any).c > 0;
+  const cnt = (sql: string) => (db.prepare(sql).get(ws) as any).c;
+  res.json({
+    has_leads: one("SELECT COUNT(*) c FROM leads WHERE workspace_id=?"),
+    has_price_book: one("SELECT COUNT(*) c FROM price_book_items WHERE workspace_id=?"),
+    has_services: one("SELECT COUNT(*) c FROM services WHERE workspace_id=?"),
+    team_size: cnt("SELECT COUNT(*) c FROM users WHERE workspace_id=? AND active=1"),
+    template_customized: one("SELECT COUNT(*) c FROM workspaces WHERE id=? AND pt_company IS NOT NULL AND pt_company<>''"),
+    has_rates: one("SELECT COUNT(*) c FROM labor_classes WHERE workspace_id=?"),
+    has_sync: one("SELECT COUNT(*) c FROM workspaces WHERE id=? AND source_api_url IS NOT NULL AND source_api_url<>''"),
+    has_booking: one("SELECT COUNT(*) c FROM workspaces WHERE id=? AND booking_enabled=1"),
+  });
 });
 app.post("/api/timesheets/:id/submit", requireAuth, (req: any, res) => { db.prepare("UPDATE timesheets SET status='submitted', submitted_at=? WHERE id=?").run(now(), req.params.id); res.json({ ok: true }); });
 
@@ -941,7 +1012,7 @@ app.patch("/api/leads/:id", requireAuth, (req: any, res) => {
   const l = db.prepare("SELECT * FROM leads WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!l) return res.status(404).json({ error: { code: "not_found" } });
   if (scopeOwn(req.user) && !mine(req.user, l)) return res.status(403).json({ error: { code: "permission_denied", permission: "leads_scope" } });
-  const fields = ["service_requested", "est_value", "urgency", "value_band", "owner_id", "pm_id", "approver_id", "next_action", "next_action_due_at", "notes", "location"];
+  const fields = ["service_requested", "est_value", "urgency", "value_band", "owner_id", "pm_id", "approver_id", "next_action", "next_action_due_at", "notes", "location", "sector"];
   const sets: string[] = [], vals: any[] = [];
   for (const f of fields) if (req.body[f] !== undefined) { sets.push(`${f}=?`); vals.push(req.body[f]); }
   if (req.body.contact) { const c = req.body.contact; db.prepare("UPDATE contacts SET name=COALESCE(?,name), phone=COALESCE(?,phone), email=COALESCE(?,email), address=COALESCE(?,address) WHERE id=?").run(c.name ?? null, c.phone ?? null, c.email ?? null, c.address ?? null, l.contact_id); }
@@ -1140,6 +1211,7 @@ app.patch("/api/team/:id", requireAuth, needPerm("can_manage_team"), (req: any, 
     const clean: any = {}; for (const k of PERM_KEYS) if (req.body.permissions[k] !== undefined) clean[k] = req.body.permissions[k];
     db.prepare("UPDATE users SET permissions=? WHERE id=?").run(Object.keys(clean).length ? JSON.stringify(clean) : null, t.id);
   }
+  if (req.body.labor_class_id !== undefined) db.prepare("UPDATE users SET labor_class_id=? WHERE id=?").run(req.body.labor_class_id || null, t.id);
   audit(req.user.workspace_id, req.user.id, "team.access_change", "user", t.id, req.body);
   const u = db.prepare("SELECT * FROM users WHERE id=?").get(t.id) as any;
   res.json({ user: { id: u.id, name: u.name, email: u.email, role: u.role, approval_limit: u.approval_limit, permissions: permsOf(u), has_overrides: !!u.permissions } });

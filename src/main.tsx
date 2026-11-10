@@ -17,6 +17,25 @@ export const STATES = ["NEW", "TRIAGED", "QUALIFYING", "QUALIFIED", "READY_FOR_A
 export const BUCKETS: [string, string][] = [["new", "New"], ["working", "Working"], ["approver", "Waiting on Approver"], ["proposal", "Proposal Out"], ["won", "Won"], ["closed", "Closed"]];
 type Nav = { view: string; leads?: any; leadId?: string };
 
+function GettingStarted({ go }: any) {
+  const [st, setSt] = useState<any>(null); const [off, setOff] = useState(localStorage.getItem("wp_gs_off") === "1");
+  useEffect(() => { api("/api/setup-status").then(setSt).catch(() => {}); }, []);
+  if (!st || off) return null;
+  const steps = [
+    { done: st.has_services, label: "Add your services catalog", view: "settings" },
+    { done: st.has_price_book, label: "Build your price book (proposals price themselves from it)", view: "settings" },
+    { done: st.has_rates, label: "Set labor rates — private vs government", view: "settings" },
+    { done: st.template_customized, label: "Customize your proposal template (header, terms, footer)", view: "settings" },
+    { done: st.team_size > 1, label: "Invite your team and set each person's access", view: "settings" },
+    { done: st.has_sync || st.has_leads, label: "Connect lead sync or import your backlog", view: "imports" },
+    { done: st.has_booking, label: "Turn on the public booking page", view: "settings" },
+  ];
+  const done = steps.filter(x => x.done).length;
+  if (done === steps.length) return null;
+  return (<div className="card" style={{ marginBottom: 14, borderLeft: "4px solid #166534" }}><div className="rowflex" style={{ justifyContent: "space-between" }}><b>🚀 Getting started — {done} of {steps.length} done</b><button className="btn ghost small" onClick={() => { localStorage.setItem("wp_gs_off", "1"); setOff(true); }}>Dismiss</button></div>
+    <div className="chipRow" style={{ marginTop: 8 }}>{steps.map((x: any, i: number) => <button key={i} className={"chip" + (x.done ? " on" : "")} onClick={() => go({ view: x.view })}>{x.done ? "✓ " : "→ "}{x.label}</button>)}</div></div>);
+}
+
 function Dashboard({ go, openLead }: any) {
   const [d, setD] = useState<any>(null); const [ins, setIns] = useState<any[]>([]); const [brief, setBrief] = useState<any>(null);
   useEffect(() => { api("/api/dashboard").then(setD).catch(() => {}); api("/api/ai/insights").then(setIns).catch(() => {}); api("/api/brief").then(setBrief).catch(() => {}); }, []);
@@ -34,6 +53,7 @@ function Dashboard({ go, openLead }: any) {
         {brief.backlog_remaining > 0 && <button className="chip" onClick={() => go({ view: "leads", leads: { bucket: "new" } })}>{brief.backlog_remaining} in backlog →</button>}
         <button className="chip" onClick={() => go({ view: "ai" })}>🤖 AI insights →</button></div></div>
       <div className="briefSide">{(brief.stuck || []).slice(0, 3).map((t: any, i: number) => <div key={i}>⏰ {t.service_requested} — {t.state.replaceAll("_", " ").toLowerCase()}, overdue</div>)}</div></div>}
+    <GettingStarted go={go} />
     <div className="kpis">
       <K lab="Total leads" val={num(m.total_leads)} hint="All time · click to open Leads" onClick={() => go({ view: "leads" })} />
       <K lab="Won" val={num(m.won)} hint={`${money(d.won_value)} won value`} onClick={() => go({ view: "leads", leads: { bucket: "won" } })} />
@@ -156,6 +176,54 @@ function MessagesPanel({ lead }: any) {
   </div>;
 }
 
+function CrewTime({ lead, users, reloadLead }: any) {
+  const [lab, setLab] = useState<any>(null); const [msg, setMsg] = useState("");
+  const [form, setForm] = useState<any>({ user_id: "", entry_date: new Date().toISOString().slice(0, 10), hours: "", note: "" });
+  const [addUser, setAddUser] = useState("");
+  const load = () => { api("/api/leads/" + lead.id + "/labor").then(setLab).catch(() => {}); };
+  useEffect(load, [lead.id]);
+  if (!lab) return <p className="muted">Loading crew & time…</p>;
+  const sector = lead.sector || "private";
+  const setLeadField = async (patch: any, ok: string) => { await api("/api/leads/" + lead.id, { method: "PATCH", body: patch }); setMsg(ok); reloadLead && reloadLead(); };
+  const logTime = async () => { if (!form.user_id || !(Number(form.hours) > 0)) return setMsg("Pick a worker and hours first"); const r = await api(`/api/leads/${lead.id}/time`, { method: "POST", body: { user_id: form.user_id, entry_date: form.entry_date, hours: Number(form.hours), note: form.note } }); setMsg(r.rated ? `Logged at ${money(r.entry.rate)}/hr (${r.entry.class_name}, ${sector} rate) ✓` : "Logged — but this worker has NO rate class, so it costed $0. Assign classes in Settings → Labor & Rates."); setForm({ ...form, hours: "", note: "" }); load(); };
+  const crewIds = new Set(lab.crew.map((c: any) => c.user_id));
+  const margin = lead.est_value > 0 ? Math.round((lab.cost / lead.est_value) * 100) : null;
+  return (<div>
+    <div className="grid2">
+      <div className="card" style={{ margin: 0 }}><h4 style={{ marginTop: 0 }}>Project setup</h4>
+        <label className="f">Sector — decides which rate column applies</label>
+        <select value={sector} onChange={e => setLeadField({ sector: e.target.value }, "Sector saved ✓")}><option value="private">Private — standard rates</option><option value="government">Government — prevailing-wage rates</option></select>
+        <label className="f">Project manager</label>
+        <select value={lead.pm_id || ""} onChange={e => setLeadField({ pm_id: e.target.value || null }, "Project manager saved ✓")}><option value="">— Unassigned —</option>{users.map((u: any) => <option key={u.id} value={u.id}>{u.name} ({u.role})</option>)}</select>
+        <p className="muted">The PM owns this job day-to-day; the crew below is who actually works (and gets costed) on it.</p></div>
+      <div className="card" style={{ margin: 0 }}><h4 style={{ marginTop: 0 }}>Labor on this job</h4>
+        <div className="kpis" style={{ gridTemplateColumns: "1fr 1fr 1fr" }}>
+          <div className="kpi"><div className="lab">Hours</div><div className="val">{lab.hours}</div><div className="hint">logged to date</div></div>
+          <div className="kpi"><div className="lab">Labor cost</div><div className="val">{money(lab.cost)}</div><div className="hint">{margin !== null ? `${margin}% of ${money(lead.est_value)} job value` : "costed at logged rates"}</div></div>
+          <div className="kpi"><div className="lab">Crew</div><div className="val">{lab.crew.length}</div><div className="hint">assigned workers</div></div>
+        </div>
+        {lab.unrated_hours > 0 && <p className="st fail" style={{ display: "inline-block" }}>⚠ {lab.unrated_hours}h logged with no rate class — costed $0. Fix in Settings → Labor & Rates.</p>}
+      </div>
+    </div>
+    {msg && <div className="ok" style={{ marginTop: 10 }}>{msg}</div>}
+    <h4>Crew</h4>
+    <div className="chipRow">{lab.crew.map((c: any) => <span key={c.id} className="chip on">{c.name} · {c.class_name || "no class"}<button className="btn ghost small" style={{ marginLeft: 6, padding: "0 6px" }} onClick={async () => { const r = await api(`/api/leads/${lead.id}/crew/${c.user_id}`, { method: "DELETE" }); setLab(r); }}>✕</button></span>)}{lab.crew.length === 0 && <span className="muted">No crew yet — add workers, or just log time and they're added automatically.</span>}</div>
+    <div className="rowflex" style={{ marginTop: 8 }}><select value={addUser} onChange={e => setAddUser(e.target.value)}><option value="">Add a worker…</option>{users.filter((u: any) => !crewIds.has(u.id)).map((u: any) => <option key={u.id} value={u.id}>{u.name} ({u.role})</option>)}</select><button className="btn ghost small" disabled={!addUser} onClick={async () => { const r = await api(`/api/leads/${lead.id}/crew`, { method: "POST", body: { user_id: addUser } }); setLab(r); setAddUser(""); }}>Add to crew</button></div>
+    <h4>Log time against this job</h4>
+    <div className="rowflex">
+      <select value={form.user_id} onChange={e => setForm({ ...form, user_id: e.target.value })}><option value="">Worker…</option>{[...lab.crew.map((c: any) => ({ id: c.user_id, name: c.name })), ...users.filter((u: any) => !crewIds.has(u.id)).map((u: any) => ({ id: u.id, name: u.name }))].map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}</select>
+      <input type="date" value={form.entry_date} onChange={e => setForm({ ...form, entry_date: e.target.value })} />
+      <input type="number" min="0" step="0.25" placeholder="Hours" style={{ width: 90 }} value={form.hours} onChange={e => setForm({ ...form, hours: e.target.value })} />
+      <input placeholder="Note (phase, task…)" value={form.note} onChange={e => setForm({ ...form, note: e.target.value })} style={{ flex: 1 }} />
+      <button className="btn small" onClick={logTime}>Log time</button>
+    </div>
+    <table style={{ marginTop: 10 }}><thead><tr><th>Date</th><th>Worker</th><th>Class</th><th>Hours</th><th>Rate</th><th>Cost</th><th>Note</th><th></th></tr></thead><tbody>
+      {lab.entries.map((e: any) => <tr key={e.id}><td>{e.entry_date}</td><td>{e.worker}</td><td>{e.class_name || <span className="st fail">unrated</span>}</td><td>{e.hours}</td><td>{e.rate > 0 ? money(e.rate) : "—"}</td><td><b>{money(e.amount)}</b></td><td className="muted">{e.note}</td><td><button className="btn ghost small" onClick={async () => { const r = await api("/api/time-entries/" + e.id, { method: "DELETE" }); setLab(r); }}>✕</button></td></tr>)}
+      {lab.entries.length === 0 && <tr><td colSpan={8} className="muted">No time logged yet. Every entry snapshots the worker's {sector} rate, so the job's true labor cost is always known — and later rate changes never rewrite history.</td></tr>}
+    </tbody></table>
+  </div>);
+}
+
 function LeadDetail({ id, users, priceBook, close, refresh }: any) {
   const [d, setD] = useState<any>(null); const [edit, setEdit] = useState<any>(null); const [msg, setMsg] = useState("");
   const [act, setAct] = useState<any>({ type: "call", body: "", outcome: "" }); const [sug, setSug] = useState<any>(null);
@@ -182,7 +250,7 @@ function LeadDetail({ id, users, priceBook, close, refresh }: any) {
       {sug.suggestion.kind === "nudge" && <button className="btn small" onClick={async () => { const r = await api("/api/ai/nudge", { method: "POST", body: { lead_id: id } }); setMsg(`Nudge sent by ${r.channel} (${String(r.status).replaceAll("_", " ")}) ✓`); }}>Nudge now</button>}
       {sug.suggestion.kind === "fix_step" && <button className="btn small" onClick={async () => { await api("/api/leads/" + id, { method: "PATCH", body: { next_action: "Follow up", next_action_due_at: new Date(Date.now() + 86400000).toISOString() } }); setMsg("Next step set for tomorrow ✓"); load(); }}>Set for tomorrow</button>}
     </div>}
-    <div className="tabs"><button className={tab === "details" ? "on" : ""} onClick={() => setTab("details")}>Details</button><button className={tab === "activity" ? "on" : ""} onClick={() => setTab("activity")}>Activity & Tasks</button><button className={tab === "proposals" ? "on" : ""} onClick={() => setTab("proposals")}>Proposals & Files ({d.proposals.length})</button><button className={tab === "messages" ? "on" : ""} onClick={() => setTab("messages")}>Messages</button></div>
+    <div className="tabs"><button className={tab === "details" ? "on" : ""} onClick={() => setTab("details")}>Details</button><button className={tab === "activity" ? "on" : ""} onClick={() => setTab("activity")}>Activity & Tasks</button><button className={tab === "proposals" ? "on" : ""} onClick={() => setTab("proposals")}>Proposals & Files ({d.proposals.length})</button><button className={tab === "messages" ? "on" : ""} onClick={() => setTab("messages")}>Messages</button><button className={tab === "crew" ? "on" : ""} onClick={() => setTab("crew")}>Crew & Time</button></div>
     {tab === "details" && <div>
       <div className="formgrid">
         <div><label className="f">Contact name</label><input value={edit.contact_name || ""} onChange={e => setEdit({ ...edit, contact_name: e.target.value })} /></div>
@@ -212,6 +280,7 @@ function LeadDetail({ id, users, priceBook, close, refresh }: any) {
         <div className="feed" style={{ marginTop: 12 }}><h3>Timeline</h3>{d.events.map((e: any) => <div className="ev" key={e.id}>{e.type.replaceAll("_", " ")}{e.to_state ? ` → ${e.to_state}` : ""} <span>· {dt(e.created_at)}</span></div>)}</div></div>
     </div>}
     {tab === "messages" && <MessagesPanel lead={d.lead} />}
+    {tab === "crew" && <CrewTime lead={l} users={users} reloadLead={load} />}
     {tab === "proposals" && <div>
       <div className="card"><h3>Proposals</h3>
         {d.proposals.map((p: any) => <div key={p.id} style={{ borderBottom: "1px solid #eef2f7", padding: "8px 0" }}><b>v{p.version} · {money(p.total)}</b> · {p.status}{p.signed_at ? " · ✅ signed" : ""} · payment {p.payment_status || "—"}<br />
@@ -356,14 +425,14 @@ function Ops() {
       <a className="btn ghost small" style={{ textDecoration: "none" }} href={`/api/timesheets/export?week=${week}`}>⬇ Payroll CSV</a></div>
     {msg && <div className="ok">{msg}</div>}
     {!data && <p className="muted">Loading…</p>}
-    {data && <><p className="muted" style={{ marginTop: 0 }}>{data.summary.submitted} of {data.rows.length} submitted · {data.summary.total_hours} hours logged · {data.summary.missing} missing. Expected sheets are created automatically for every field manager; missing ones past their week get chased automatically (and you can chase any time).</p>
-    <table><thead><tr><th>Manager</th><th>Status</th><th>Hours</th><th></th></tr></thead><tbody>
-      {data.rows.map((r: any) => <tr key={r.id}><td>{r.manager}</td><td>{r.status === "submitted" ? <span className="st pass">submitted</span> : r.overdue ? <span className="st fail">missing · overdue</span> : <span className="st warn">missing</span>}{r.chased_at ? <span className="muted"> · chased {dOnly(r.chased_at)}</span> : ""}</td><td>{r.hours ?? "—"}</td>
+    {data && <><p className="muted" style={{ marginTop: 0 }}>{data.summary.submitted} of {data.rows.length} submitted · {data.summary.total_hours} grid hours · {data.summary.job_hours || 0} job hours ({money(data.summary.job_cost || 0)} labor) · {data.summary.missing} missing. Expected sheets are created automatically for every field manager; missing ones past their week get chased automatically (and you can chase any time).</p>
+    <table><thead><tr><th>Manager</th><th>Status</th><th>Grid hrs</th><th>Job hrs</th><th>Labor $</th><th></th></tr></thead><tbody>
+      {data.rows.map((r: any) => <tr key={r.id}><td>{r.manager}</td><td>{r.status === "submitted" ? <span className="st pass">submitted</span> : r.overdue ? <span className="st fail">missing · overdue</span> : <span className="st warn">missing</span>}{r.chased_at ? <span className="muted"> · chased {dOnly(r.chased_at)}</span> : ""}</td><td>{r.hours ?? "—"}</td><td>{r.job_hours || "—"}</td><td>{r.job_cost ? money(r.job_cost) : "—"}</td>
         <td><span className="rowflex">{r.status === "missing" && <button className="btn ghost small" onClick={() => chase(r)}>Chase</button>}<button className="btn ghost small" onClick={() => startEdit(r)}>{r.status === "submitted" ? "Edit" : "Log hours"}</button></span>
         {editId === r.id && <div style={{ marginTop: 8 }}><div className="rowflex">{dayNames.map(([k, lab]) => <label key={k} style={{ fontSize: 12 }}>{lab}<input type="number" min="0" max="24" style={{ width: 58, display: "block" }} value={days[k] ?? ""} onChange={e => setDays({ ...days, [k]: e.target.value === "" ? "" : Number(e.target.value) })} /></label>)}<b style={{ alignSelf: "end", paddingBottom: 8 }}>Σ {dayNames.reduce((a, [k]) => a + (Number(days[k]) || 0), 0)}h</b></div>
           <input placeholder="Notes (jobs covered, PTO, etc.)" value={notes} onChange={e => setNotes(e.target.value)} style={{ marginTop: 6 }} />
           <div className="rowflex" style={{ marginTop: 6 }}><button className="btn small" onClick={() => save(r)}>Save timesheet</button><button className="btn ghost small" onClick={() => setEditId("")}>Cancel</button></div></div>}</td></tr>)}
-      {data.rows.length === 0 && <tr><td colSpan={4} className="muted">No field managers (PM / Lead Owner roles) in this workspace yet.</td></tr>}
+      {data.rows.length === 0 && <tr><td colSpan={6} className="muted">No field managers (PM / Lead Owner roles) in this workspace yet.</td></tr>}
     </tbody></table></>}
   </div>);
 }
@@ -444,6 +513,30 @@ function AccessModal({ member, close, done }: any) {
   </div></div>);
 }
 
+function RatesTab({ users, refreshUsers }: any) {
+  const [classes, setClasses] = useState<any[]>([]); const [msg, setMsg] = useState("");
+  const [nc, setNc] = useState<any>({ name: "", private_rate: "", govt_rate: "" });
+  const load = () => { api("/api/labor-classes").then(setClasses).catch(() => {}); };
+  useEffect(load, []);
+  const saveRow = async (c: any) => { await api("/api/labor-classes/" + c.id, { method: "PATCH", body: { name: c.name, private_rate: Number(c.private_rate) || 0, govt_rate: Number(c.govt_rate) || 0 } }); setMsg(`Saved ${c.name} ✓`); load(); };
+  return (<div className="card"><h3 style={{ marginTop: 0 }}>Labor rates — private vs government (prevailing wage)</h3>
+    <p className="muted">Each worker belongs to a class. When time is logged on a job, the rate comes from the class — the <b>private</b> column for private jobs, the <b>government</b> column for government/prevailing-wage jobs (set per job on its Crew & Time tab). Rates snapshot onto each entry, so raising rates later never changes old jobs' costs.</p>
+    {msg && <div className="ok">{msg}</div>}
+    {classes.length === 0 && <button className="btn" onClick={async () => { const r = await api("/api/labor-classes/seed-defaults", { method: "POST", body: {} }); setClasses(r); setMsg("Standard classes loaded — adjust the numbers to your payroll ✓"); }}>Load standard classes (Laborer / Technician / Foreman / PM)</button>}
+    <table><thead><tr><th>Class</th><th>Private $/hr</th><th>Government $/hr</th><th></th></tr></thead><tbody>
+      {classes.map((c: any, i: number) => <tr key={c.id}><td><input value={c.name} onChange={e => { const n = [...classes]; n[i] = { ...c, name: e.target.value }; setClasses(n); }} /></td>
+        <td><input type="number" min="0" step="0.5" style={{ width: 100 }} value={c.private_rate} onChange={e => { const n = [...classes]; n[i] = { ...c, private_rate: e.target.value }; setClasses(n); }} /></td>
+        <td><input type="number" min="0" step="0.5" style={{ width: 100 }} value={c.govt_rate} onChange={e => { const n = [...classes]; n[i] = { ...c, govt_rate: e.target.value }; setClasses(n); }} /></td>
+        <td><span className="rowflex"><button className="btn ghost small" onClick={() => saveRow(c)}>Save</button><button className="btn ghost small" onClick={async () => { await api("/api/labor-classes/" + c.id, { method: "DELETE" }); load(); refreshUsers(); }}>Delete</button></span></td></tr>)}
+    </tbody></table>
+    <div className="rowflex" style={{ marginTop: 8 }}><input placeholder="New class name" value={nc.name} onChange={e => setNc({ ...nc, name: e.target.value })} /><input type="number" placeholder="Private $/hr" style={{ width: 110 }} value={nc.private_rate} onChange={e => setNc({ ...nc, private_rate: e.target.value })} /><input type="number" placeholder="Govt $/hr" style={{ width: 110 }} value={nc.govt_rate} onChange={e => setNc({ ...nc, govt_rate: e.target.value })} /><button className="btn ghost small" onClick={async () => { if (!nc.name) return; await api("/api/labor-classes", { method: "POST", body: { name: nc.name, private_rate: Number(nc.private_rate) || 0, govt_rate: Number(nc.govt_rate) || 0 } }); setNc({ name: "", private_rate: "", govt_rate: "" }); load(); }}>Add class</button></div>
+    <h4 style={{ marginTop: 18 }}>Who belongs to which class</h4>
+    <table><thead><tr><th>Team member</th><th>Role</th><th>Labor class</th></tr></thead><tbody>
+      {users.map((u: any) => <tr key={u.id}><td>{u.name}</td><td>{u.role}</td><td><select value={u.labor_class_id || ""} onChange={async e => { await api("/api/team/" + u.id, { method: "PATCH", body: { labor_class_id: e.target.value || null } }); setMsg(`Class updated for ${u.name} ✓`); refreshUsers(); }}><option value="">— No class (time costs $0) —</option>{classes.map((c: any) => <option key={c.id} value={c.id}>{c.name} ({money(c.private_rate)} priv · {money(c.govt_rate)} govt)</option>)}</select></td></tr>)}
+    </tbody></table>
+  </div>);
+}
+
 function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any) {
   const myPerms = me?.permissions; const canSettings = !myPerms || myPerms.can_settings; const canTeam = !myPerms || myPerms.can_manage_team;
   const [accessFor, setAccessFor] = useState<any>(null);
@@ -453,13 +546,15 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any)
   const [keys, setKeys] = useState<any[]>([]); const [newKey, setNewKey] = useState(""); const [hooks, setHooks] = useState<any[]>([]); const [flags, setFlags] = useState<any>({}); const [oauth, setOauth] = useState<any>(null); const [catalog, setCatalog] = useState<any[]>([]); const [cfg, setCfg] = useState<string | null>(null); const [cfgMsg, setCfgMsg] = useState(""); const [syncRange, setSyncRange] = useState("30");
   useEffect(() => { api("/api/integrations").then(r => setCatalog(r.integrations)).catch(() => {}); }, []);
   const [nb, setNb] = useState<any>({ name: "", unit: "job", standard_price: "", floor_price: "" });
+  const [pb, setPb] = useState<any[]>([]); useEffect(() => { setPb(priceBook); }, [priceBook]);
+  const [tplEdit, setTplEdit] = useState<any>(null);
   const [nt, setNt] = useState<any>({ name: "", body: "" }); const [nu, setNu] = useState<any>({ name: "", email: "", role: "LEAD_OWNER", password: "" }); const [nh, setNh] = useState("");
   const loadAll = () => { api("/api/settings").then(setS).catch(() => {}); api("/api/templates").then(setTpls).catch(() => {}); api("/api/services").then(setSvcs).catch(() => {}); api("/api/api-keys").then(setKeys).catch(() => {}); api("/api/webhooks").then(setHooks).catch(() => {}); api("/api/flags").then(setFlags).catch(() => {}); api("/api/oauth/status").then(setOauth).catch(() => {}); api("/api/users").then(setUsers).catch(() => {}); api("/api/price-book").then(setPriceBook).catch(() => {}); };
   useEffect(loadAll, []);
   const T = ({ id, children }: any) => <button className={tab === id ? "on" : ""} onClick={() => setTab(id)}>{children}</button>;
   return (<div><h2 className="pt">Settings</h2><p className="sub">Everything configurable, in the product — no engineer required.</p>
     {msg && <div className="ok">{msg}</div>}
-    <div className="tabs">{canSettings && <><T id="workspace">Workspace</T><T id="pricebook">Price Book</T><T id="templates">Templates</T><T id="services">Services</T></>}{canTeam && <T id="team">Team</T>}{canSettings && <T id="integrations">Integrations</T>}</div>
+    <div className="tabs">{canSettings && <><T id="workspace">Workspace</T><T id="pricebook">Price Book</T><T id="templates">Templates</T><T id="services">Services</T></>}{canTeam && <T id="team">Team</T>}{canSettings && <T id="rates">Labor & Rates</T>}{canSettings && <T id="integrations">Integrations</T>}</div>
     {!canSettings && !canTeam && <div className="card">Your access doesn't include settings or team management. Ask an owner or admin if you need something changed.</div>}
     {tab === "workspace" && canSettings && s && <div className="card"><div className="formgrid">
       <div><label className="f">Business name</label><input value={s.workspace.name || ""} onChange={e => setS({ ...s, workspace: { ...s.workspace, name: e.target.value } })} /></div>
@@ -477,11 +572,11 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any)
     {tab === "workspace" && canSettings && s && <FollowupSettings key={s.workspace.id} ws={s.workspace} />}
     {tab === "workspace" && canSettings && s && <BookingSettings key={"bk" + s.workspace.id} ws={s.workspace} />}
     {tab === "pricebook" && canSettings && <div className="card"><table><thead><tr><th>Item</th><th>Unit</th><th>Standard</th><th>Floor</th><th></th></tr></thead><tbody>
-      {priceBook.map((p: any) => <tr key={p.id}><td>{p.name}</td><td>{p.unit}</td><td>{money(p.standard_price)}</td><td>{money(p.floor_price)}</td><td><button className="btn ghost small" onClick={async () => { const v = prompt("New standard price ($)", p.standard_price); if (v) { await api(`/api/price-book/${p.id}`, { method: "PATCH", body: { standard_price: Number(v) } }); loadAll(); } }}>Edit price</button> <button className="btn ghost small" onClick={async () => { await api(`/api/price-book/${p.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></td></tr>)}
+      {pb.map((p: any, i: number) => <tr key={p.id}><td>{p.name}</td><td>{p.unit}</td><td><input type="number" min="0" step="0.5" style={{ width: 110 }} value={p.standard_price} onChange={e => { const n = [...pb]; n[i] = { ...p, standard_price: e.target.value }; setPb(n); }} /></td><td><input type="number" min="0" step="0.5" style={{ width: 110 }} value={p.floor_price} onChange={e => { const n = [...pb]; n[i] = { ...p, floor_price: e.target.value }; setPb(n); }} /></td><td><button className="btn ghost small" onClick={async () => { await api(`/api/price-book/${p.id}`, { method: "PATCH", body: { standard_price: Number(p.standard_price) || 0, floor_price: Number(p.floor_price) || 0 } }); setMsg("Price saved ✓"); loadAll(); }}>Save</button> <button className="btn ghost small" onClick={async () => { await api(`/api/price-book/${p.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></td></tr>)}
     </tbody></table>
       <div className="rowflex" style={{ marginTop: 12 }}><input style={{ flex: 2 }} placeholder="New item name" value={nb.name} onChange={e => setNb({ ...nb, name: e.target.value })} /><input style={{ width: 90 }} placeholder="unit" value={nb.unit} onChange={e => setNb({ ...nb, unit: e.target.value })} /><input style={{ width: 120 }} type="number" placeholder="standard $" value={nb.standard_price} onChange={e => setNb({ ...nb, standard_price: e.target.value })} /><input style={{ width: 120 }} type="number" placeholder="floor $" value={nb.floor_price} onChange={e => setNb({ ...nb, floor_price: e.target.value })} /><button className="btn" onClick={async () => { await api("/api/price-book", { method: "POST", body: { ...nb, standard_price: Number(nb.standard_price) || 0, floor_price: Number(nb.floor_price) || 0 } }); setNb({ name: "", unit: "job", standard_price: "", floor_price: "" }); loadAll(); }}>Add item</button></div>
       <p className="muted">Proposals can only price from this book — the floor is the margin guardrail the Approval Gate enforces.</p></div>}
-    {tab === "templates" && canSettings && <div className="card"><ProposalTemplateEditor /><h3>Message templates</h3>{tpls.map(t => <div key={t.id} style={{ borderBottom: "1px solid #eef2f7", padding: "10px 0" }}><b>{t.name}</b> <span className="muted">· {t.kind} · v{t.version} · {t.active ? "active" : "inactive"}</span><p className="muted" style={{ whiteSpace: "pre-wrap" }}>{t.body}</p><button className="btn ghost small" onClick={async () => { const v = prompt("Edit template body", t.body); if (v !== null) { await api(`/api/templates/${t.id}`, { method: "PATCH", body: { body: v } }); loadAll(); } }}>Edit</button> <button className="btn ghost small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></div>)}
+    {tab === "templates" && canSettings && <div className="card"><ProposalTemplateEditor /><h3>Message templates</h3>{tpls.map(t => <div key={t.id} style={{ borderBottom: "1px solid #eef2f7", padding: "10px 0" }}><b>{t.name}</b> <span className="muted">· {t.kind} · v{t.version} · {t.active ? "active" : "inactive"}</span>{tplEdit?.id === t.id ? <><textarea rows={5} value={tplEdit.body} onChange={e => setTplEdit({ ...tplEdit, body: e.target.value })} /><span className="rowflex" style={{ marginTop: 6 }}><button className="btn small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "PATCH", body: { body: tplEdit.body } }); setTplEdit(null); loadAll(); }}>Save</button><button className="btn ghost small" onClick={() => setTplEdit(null)}>Cancel</button></span></> : <><p className="muted" style={{ whiteSpace: "pre-wrap" }}>{t.body}</p><button className="btn ghost small" onClick={() => setTplEdit({ id: t.id, body: t.body })}>Edit</button></>} <button className="btn ghost small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></div>)}
       <div className="formgrid" style={{ marginTop: 12 }}><div><label className="f">New template name</label><input value={nt.name} onChange={e => setNt({ ...nt, name: e.target.value })} /></div><div className="full"><label className="f">Body (merge fields: {"{{contact_name}} {{service}} {{total}}"})</label><textarea rows={4} value={nt.body} onChange={e => setNt({ ...nt, body: e.target.value })} /></div></div>
       <button className="btn" style={{ marginTop: 10 }} onClick={async () => { await api("/api/templates", { method: "POST", body: nt }); setNt({ name: "", body: "" }); loadAll(); }}>Add template</button></div>}
     {tab === "services" && canSettings && <div className="card">{svcs.map(sv => <div className="check" key={sv.id}><span className={`st ${sv.active ? "pass" : "fail"}`}>{sv.active ? "✓" : "✗"}</span><span style={{ flex: 1 }}>{sv.name} {sv.is_catalog ? "" : "(not in catalog — Demand Gap territory)"}</span><button className="btn ghost small" onClick={async () => { await api(`/api/services/${sv.id}`, { method: "PATCH", body: { active: !sv.active } }); loadAll(); }}>{sv.active ? "Deactivate" : "Activate"}</button></div>)}
@@ -491,6 +586,7 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any)
     </tbody></table>
       <div className="rowflex" style={{ marginTop: 12 }}><input style={{ flex: 1 }} placeholder="Name" value={nu.name} onChange={e => setNu({ ...nu, name: e.target.value })} /><input style={{ flex: 1 }} placeholder="Email" value={nu.email} onChange={e => setNu({ ...nu, email: e.target.value })} /><input style={{ flex: 1 }} placeholder="Temp password" value={nu.password} onChange={e => setNu({ ...nu, password: e.target.value })} /><select style={{ width: 150 }} value={nu.role} onChange={e => setNu({ ...nu, role: e.target.value })}><option>LEAD_OWNER</option><option>PM</option><option>APPROVER</option><option>OPS_ADMIN</option></select><button className="btn" onClick={async () => { await api("/api/users", { method: "POST", body: nu }); setNu({ name: "", email: "", role: "LEAD_OWNER", password: "" }); loadAll(); setMsg("Team member added ✓"); }}>Add member</button></div>
       {accessFor && <AccessModal member={accessFor} close={() => setAccessFor(null)} done={() => { setAccessFor(null); loadAll(); setMsg("Access updated ✓"); }} />}</div>}
+    {tab === "rates" && canSettings && <RatesTab users={users} refreshUsers={loadAll} />}
     {tab === "integrations" && canSettings && <div>
       <div className="card"><h3 style={{ marginTop: 0 }}>Integration catalog — every way data moves in and out</h3>
       <div className="featGrid">{catalog.map((c: any) => <div className="feat clickable" key={c.id} onClick={() => { setCfg(c.id); setCfgMsg(""); }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><b>{c.name}</b><span className="tinyBadge" style={c.status === "connected" ? { background: "#dcfce7", color: "#166534" } : c.status === "test_mode" || c.status === "demo_source" ? { background: "#fef9c3", color: "#854d0e" } : {}}>{c.status.replaceAll("_", " ")}</span></div><p>{c.detail}</p><span className="cfgHint">Configure →</span></div>)}</div></div>
