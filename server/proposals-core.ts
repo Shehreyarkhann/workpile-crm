@@ -9,8 +9,9 @@ export function draftProposalForLead(ws: string, lead: any): { proposal_id: stri
   const line = pb ? { price_book_item_id: pb.id, description: pb.name, qty: 1, unit_price: pb.standard_price, line_total: pb.standard_price, source: "price_book" } : { description: `ESTIMATE — ${lead.service_requested} (from lead value; review pricing before sending)`, qty: 1, unit_price: lead.est_value || 0, line_total: lead.est_value || 0, source: "manual" };
   const count = (db.prepare("SELECT COUNT(*) c FROM proposals WHERE lead_id=?").get(lead.id) as any).c;
   const id = uid("prop");
-  db.prepare("INSERT INTO proposals (id,workspace_id,lead_id,template_id,version,status,line_items,total,margin_band,win_prob_band,options,expires_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
-    .run(id, ws, lead.id, null, count + 1, "draft", JSON.stringify([line]), line.line_total, "in_band", (line.line_total || 0) > 25000 ? "review" : "standard", null, new Date(Date.now() + 30 * 86400000).toISOString(), now());
+  const pnum = (db.prepare("SELECT COALESCE(MAX(number),1000) m FROM proposals WHERE workspace_id=?").get(ws) as any).m + 1;
+  db.prepare("INSERT INTO proposals (id,workspace_id,lead_id,template_id,version,status,line_items,total,margin_band,win_prob_band,options,expires_at,created_at,number) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+    .run(id, ws, lead.id, null, count + 1, "draft", JSON.stringify([line]), line.line_total, "in_band", (line.line_total || 0) > 25000 ? "review" : "standard", null, new Date(Date.now() + 30 * 86400000).toISOString(), now(), pnum);
   return { proposal_id: id, total: line.line_total, priced: pb ? "price_book" : "estimate" };
 }
 

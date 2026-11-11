@@ -60,8 +60,17 @@ export function proposalDocument(proposalId: string) {
   const ws = db.prepare("SELECT * FROM workspaces WHERE id=?").get(p.workspace_id) as any;
   let tpl = getTemplate(p.workspace_id);
   let docName: string | null = null;
-  if (p.template_id) { try { const dt = db.prepare("SELECT * FROM doc_templates WHERE id=? AND workspace_id=?").get(p.template_id, p.workspace_id) as any; if (dt) { tpl = { ...tpl, intro_html: dt.intro_html || tpl.intro_html, terms_html: dt.terms_html || tpl.terms_html, footer: dt.footer || tpl.footer, logo: dt.include_logo ? (tpl.logo || null) : null }; docName = dt.name; } } catch { /* doc templates not initialized yet */ } }
-  const ref = "PROP-" + String(p.id).replace(/[^a-z0-9]/gi, "").slice(-6).toUpperCase();
+  // Template resolution: the proposal's own template if one was pinned,
+  // otherwise the workspace's DEFAULT doc template, otherwise the single
+  // workspace template. Users never pick templates while composing (v31).
+  const tplId = p.template_id || (() => { try { return (db.prepare("SELECT id FROM doc_templates WHERE workspace_id=? AND is_default=1").get(p.workspace_id) as any)?.id || null; } catch { return null; } })();
+  if (tplId) { try { const dt = db.prepare("SELECT * FROM doc_templates WHERE id=? AND workspace_id=?").get(tplId, p.workspace_id) as any; if (dt) { tpl = { ...tpl, intro_html: dt.intro_html || tpl.intro_html, terms_html: dt.terms_html || tpl.terms_html, footer: dt.footer || tpl.footer, logo: dt.include_logo ? (tpl.logo || null) : null }; docName = dt.name; } } catch { /* doc templates not initialized yet */ } }
+  // Human proposal number: sequential per workspace from 1001, assigned at
+  // creation. Legacy rows (pre-v31) get their number frozen on first render
+  // by created_at order, so a printed reference never changes afterwards.
+  let pnum = p.number as number | null;
+  if (!pnum) { pnum = ((db.prepare("SELECT COALESCE(MAX(number),1000) m FROM proposals WHERE workspace_id=?").get(p.workspace_id) as any).m || 1000) + 1; try { db.prepare("UPDATE proposals SET number=? WHERE id=? AND number IS NULL").run(pnum, p.id); } catch { /* read-only replica safety */ } }
+  const ref = "PROP-" + pnum;
   const ctx: Record<string, string> = {
     customer: contact?.name || "", business: tpl.company, service: lead?.service_requested || "",
     total: "$" + Number(p.total || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
