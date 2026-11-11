@@ -39,6 +39,7 @@ function filterAgenda(user: any, items: any[]): any[] {
 }
 import { stepsFor, addBusinessDays } from "./followups.ts";
 import { notify } from "./comms.ts";
+import { enrollLead, campaignOutreachStats, renderOutreach, outreachVars, unresolvedVars, nextWindowSlot } from "./outreach.ts";
 
 const J = (s: any, fb: any = null) => { try { return JSON.parse(s ?? ""); } catch { return fb; } };
 const alter = (sql: string) => { try { db.exec(sql); } catch { /* column exists */ } };
@@ -64,6 +65,21 @@ export function initCrmSchema() {
   alter("ALTER TABLE contacts ADD COLUMN account_id TEXT");
   alter("ALTER TABLE contacts ADD COLUMN title TEXT");
   alter("ALTER TABLE jobs ADD COLUMN custom TEXT DEFAULT '{}'");
+  // v42: outreach campaigns (kind 'tracker' keeps the legacy behavior; 'outreach' sends sequences)
+  alter("ALTER TABLE campaigns ADD COLUMN kind TEXT DEFAULT 'tracker'");
+  alter("ALTER TABLE campaigns ADD COLUMN daily_cap INTEGER DEFAULT 50");
+  alter("ALTER TABLE campaigns ADD COLUMN ramp_start INTEGER");
+  alter("ALTER TABLE campaigns ADD COLUMN ramp_step INTEGER DEFAULT 10");
+  alter("ALTER TABLE campaigns ADD COLUMN send_days TEXT DEFAULT '1,2,3,4,5'");
+  alter("ALTER TABLE campaigns ADD COLUMN window_start INTEGER DEFAULT 9");
+  alter("ALTER TABLE campaigns ADD COLUMN window_end INTEGER DEFAULT 17");
+  alter("ALTER TABLE campaigns ADD COLUMN stop_on_reply INTEGER DEFAULT 1");
+  alter("ALTER TABLE campaigns ADD COLUMN launched_at TEXT");
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS campaign_steps (id TEXT PRIMARY KEY, workspace_id TEXT, campaign_id TEXT, position INTEGER DEFAULT 0, channel TEXT DEFAULT 'email', delay_days INTEGER DEFAULT 2, subject TEXT, body TEXT, variants TEXT DEFAULT '[]', created_at TEXT, updated_at TEXT);
+  CREATE TABLE IF NOT EXISTS campaign_enrollments (id TEXT PRIMARY KEY, workspace_id TEXT, campaign_id TEXT, lead_id TEXT, status TEXT DEFAULT 'active', step_idx INTEGER DEFAULT 0, next_due_at TEXT, variants TEXT DEFAULT '{}', sent_count INTEGER DEFAULT 0, fail_count INTEGER DEFAULT 0, stop_reason TEXT, created_at TEXT, updated_at TEXT, UNIQUE(campaign_id, lead_id));
+  CREATE TABLE IF NOT EXISTS campaign_sends (id TEXT PRIMARY KEY, workspace_id TEXT, campaign_id TEXT, enrollment_id TEXT, lead_id TEXT, step_idx INTEGER, variant INTEGER DEFAULT 0, message_id TEXT, created_at TEXT);
+  `);
 }
 
 // ---------- slice 37: conversion (Salesforce Lead -> Account + Contact + Opportunity/Job) ----------
@@ -298,14 +314,62 @@ export function registerCrm(app: any, requireAuth: any, needPerm: any = null) {
     res.status(201).json(db.prepare("SELECT * FROM campaigns WHERE id=?").get(id)); });
   app.get("/api/campaigns/:id", requireAuth, (req: any, res: any) => { const c = db.prepare("SELECT * FROM campaigns WHERE id=? AND workspace_id=?").get(req.params.id, ws(req)) as any; if (!c) return err(res, 404, "not found");
     const members = db.prepare(`SELECT m.*, l.service_requested, l.state, l.est_value, ct.name contact_name FROM campaign_members m JOIN leads l ON l.id=m.lead_id LEFT JOIN contacts ct ON ct.id=l.contact_id WHERE m.campaign_id=? ORDER BY m.created_at DESC`).all(c.id);
-    res.json({ campaign: c, stats: campaignStats(c), members }); });
-  app.patch("/api/campaigns/:id", requireAuth, (req: any, res: any) => { const b = req.body || {}; const F = ["name", "type", "status", "starts_on", "ends_on", "cost", "notes"]; const sets = F.filter(f => b[f] !== undefined); if (!sets.length) return err(res, 422, "nothing to update");
-    db.prepare(`UPDATE campaigns SET ${sets.map(f => f + "=?").join(",")}, updated_at=? WHERE id=? AND workspace_id=?`).run(...sets.map(f => f === "cost" ? Number(b[f]) || 0 : b[f]), now(), req.params.id, ws(req)); res.json({ ok: true }); });
+    const steps = db.prepare("SELECT * FROM campaign_steps WHERE campaign_id=? ORDER BY position").all(c.id);
+    res.json({ campaign: c, stats: campaignStats(c), members, steps, outreach: c.kind === "outreach" ? campaignOutreachStats(c.id) : null }); });
+  app.patch("/api/campaigns/:id", requireAuth, (req: any, res: any) => { const b = req.body || {}; const F = ["name", "type", "status", "starts_on", "ends_on", "cost", "notes", "kind", "send_days"]; const N = ["daily_cap", "ramp_step", "window_start", "window_end", "stop_on_reply"]; const sets = [...F.filter(f => b[f] !== undefined), ...N.filter(f => b[f] !== undefined)]; if (b.ramp_start !== undefined) sets.push("ramp_start"); if (!sets.length) return err(res, 422, "nothing to update");
+    const val = (f: string) => f === "cost" ? Number(b[f]) || 0 : N.includes(f) ? Number(b[f]) || 0 : f === "ramp_start" ? (b[f] === null || b[f] === "" ? null : Number(b[f])) : b[f];
+    db.prepare(`UPDATE campaigns SET ${sets.map(f => f + "=?").join(",")}, updated_at=? WHERE id=? AND workspace_id=?`).run(...sets.map(val), now(), req.params.id, ws(req)); res.json({ ok: true }); });
   app.post("/api/campaigns/:id/members", requireAuth, (req: any, res: any) => { const ids: string[] = req.body?.lead_ids || []; let added = 0;
     for (const lid of ids) { const l = db.prepare("SELECT id FROM leads WHERE id=? AND workspace_id=?").get(lid, ws(req)); if (!l) continue; const r = db.prepare("INSERT OR IGNORE INTO campaign_members (id,workspace_id,campaign_id,lead_id,status,created_at) VALUES (?,?,?,?,?,?)").run(uid("cm"), ws(req), req.params.id, lid, "member", now()); if (r.changes) { added++; db.prepare("UPDATE leads SET campaign_id=? WHERE id=? AND (campaign_id IS NULL OR campaign_id='')").run(req.params.id, lid); } }
-    res.json({ added }); });
+    let enrolled = 0;
+    const camp = db.prepare("SELECT * FROM campaigns WHERE id=? AND workspace_id=?").get(req.params.id, ws(req)) as any;
+    if (added && camp && camp.kind === "outreach" && camp.status === "active" && camp.launched_at) { const wsr = db.prepare("SELECT * FROM workspaces WHERE id=?").get(ws(req)) as any; const due = nextWindowSlot(camp, new Date(), wsr?.tz || "America/New_York"); for (const lid of ids) if (enrollLead(camp, lid, due)) enrolled++; }
+    res.json({ added, enrolled }); });
   app.patch("/api/campaign-members/:id", requireAuth, (req: any, res: any) => { db.prepare("UPDATE campaign_members SET status=? WHERE id=? AND workspace_id=?").run(req.body?.status || "member", req.params.id, ws(req)); res.json({ ok: true }); });
   app.delete("/api/campaign-members/:id", requireAuth, (req: any, res: any) => { db.prepare("DELETE FROM campaign_members WHERE id=? AND workspace_id=?").run(req.params.id, ws(req)); res.json({ ok: true }); });
+
+  // ----- v42: outreach sequences (steps, launch, enrollments, stats) -----
+  const campGate = modGate("campaigns", "edit");
+  const getCamp = (req: any) => db.prepare("SELECT * FROM campaigns WHERE id=? AND workspace_id=?").get(req.params.id, ws(req)) as any;
+  app.get("/api/campaigns/:id/steps", requireAuth, (req: any, res: any) => { if (!getCamp(req)) return err(res, 404, "not found"); res.json(db.prepare("SELECT * FROM campaign_steps WHERE campaign_id=? ORDER BY position").all(req.params.id)); });
+  app.post("/api/campaigns/:id/steps", requireAuth, campGate, (req: any, res: any) => { const c = getCamp(req); if (!c) return err(res, 404, "not found"); const b = req.body || {};
+    const pos = ((db.prepare("SELECT MAX(position) m FROM campaign_steps WHERE campaign_id=?").get(c.id) as any).m ?? -1) + 1; const id = uid("cstep");
+    db.prepare("INSERT INTO campaign_steps (id,workspace_id,campaign_id,position,channel,delay_days,subject,body,variants,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(id, ws(req), c.id, pos, b.channel === "sms" ? "sms" : "email", Math.max(0, Number(b.delay_days) || 0), b.subject || "", b.body || "", JSON.stringify(Array.isArray(b.variants) ? b.variants.slice(0, 5) : []), now(), now());
+    res.status(201).json(db.prepare("SELECT * FROM campaign_steps WHERE id=?").get(id)); });
+  app.patch("/api/campaign-steps/:id", requireAuth, campGate, (req: any, res: any) => { const b = req.body || {}; const F = ["channel", "subject", "body"]; const sets = F.filter(f => b[f] !== undefined);
+    if (b.delay_days !== undefined) sets.push("delay_days"); if (b.position !== undefined) sets.push("position"); if (b.variants !== undefined) sets.push("variants");
+    if (!sets.length) return err(res, 422, "nothing to update");
+    const val = (f: string) => f === "delay_days" || f === "position" ? Number(b[f]) || 0 : f === "variants" ? JSON.stringify(Array.isArray(b[f]) ? b[f].slice(0, 5) : []) : b[f];
+    db.prepare(`UPDATE campaign_steps SET ${sets.map(f => f + "=?").join(",")}, updated_at=? WHERE id=? AND workspace_id=?`).run(...sets.map(val), now(), req.params.id, ws(req)); res.json({ ok: true }); });
+  app.delete("/api/campaign-steps/:id", requireAuth, campGate, (req: any, res: any) => { db.prepare("DELETE FROM campaign_steps WHERE id=? AND workspace_id=?").run(req.params.id, ws(req)); res.json({ ok: true }); });
+  app.post("/api/campaigns/:id/launch", requireAuth, campGate, (req: any, res: any) => { const c = getCamp(req); if (!c) return err(res, 404, "not found");
+    const steps = db.prepare("SELECT COUNT(*) n FROM campaign_steps WHERE campaign_id=?").get(c.id) as any; if (!steps.n) return res.status(422).json({ error: { code: "no_steps", message: "Add at least one sequence step before launching." } });
+    const members = db.prepare("SELECT lead_id FROM campaign_members WHERE campaign_id=?").all(c.id) as any[]; if (!members.length) return res.status(422).json({ error: { code: "no_audience", message: "Add at least one lead to the audience before launching." } });
+    db.prepare("UPDATE campaigns SET kind='outreach', status='active', launched_at=COALESCE(launched_at,?), updated_at=? WHERE id=?").run(now(), now(), c.id);
+    const fresh = getCamp(req); const wsr = db.prepare("SELECT * FROM workspaces WHERE id=?").get(ws(req)) as any; const due = nextWindowSlot(fresh, new Date(), wsr?.tz || "America/New_York");
+    let enrolled = 0; for (const m of members) if (enrollLead(fresh, m.lead_id, due)) enrolled++;
+    res.json({ ok: true, enrolled, first_send_at: due.toISOString() }); });
+  app.post("/api/campaigns/:id/pause", requireAuth, campGate, (req: any, res: any) => { if (!getCamp(req)) return err(res, 404, "not found"); db.prepare("UPDATE campaigns SET status='paused', updated_at=? WHERE id=?").run(now(), req.params.id); res.json({ ok: true }); });
+  app.post("/api/campaigns/:id/resume", requireAuth, campGate, (req: any, res: any) => { const c = getCamp(req); if (!c) return err(res, 404, "not found"); if (!c.launched_at) return res.status(422).json({ error: { code: "not_launched", message: "Launch the campaign first." } }); db.prepare("UPDATE campaigns SET status='active', updated_at=? WHERE id=?").run(now(), req.params.id); res.json({ ok: true }); });
+  app.get("/api/campaigns/:id/enrollments", requireAuth, (req: any, res: any) => { if (!getCamp(req)) return err(res, 404, "not found");
+    res.json(db.prepare(`SELECT e.*, ct.name contact_name, l.service_requested, l.state lead_state FROM campaign_enrollments e JOIN leads l ON l.id=e.lead_id LEFT JOIN contacts ct ON ct.id=l.contact_id WHERE e.campaign_id=? ORDER BY e.created_at DESC LIMIT 300`).all(req.params.id)); });
+  app.patch("/api/campaign-enrollments/:id", requireAuth, campGate, (req: any, res: any) => { const st = req.body?.status; if (!["active", "paused", "stopped"].includes(st)) return err(res, 422, "bad status");
+    if (st === "active") { const e = db.prepare("SELECT * FROM campaign_enrollments WHERE id=? AND workspace_id=?").get(req.params.id, ws(req)) as any; if (!e) return err(res, 404, "not found"); const c = db.prepare("SELECT * FROM campaigns WHERE id=?").get(e.campaign_id) as any; const wsr = db.prepare("SELECT * FROM workspaces WHERE id=?").get(ws(req)) as any; db.prepare("UPDATE campaign_enrollments SET status='active', stop_reason=NULL, next_due_at=?, updated_at=? WHERE id=?").run(nextWindowSlot(c, new Date(), wsr?.tz || "America/New_York").toISOString(), now(), e.id); }
+    else db.prepare("UPDATE campaign_enrollments SET status=?, stop_reason=?, updated_at=? WHERE id=? AND workspace_id=?").run(st, st === "stopped" ? "manual" : null, now(), req.params.id, ws(req));
+    res.json({ ok: true }); });
+  app.post("/api/campaigns/:id/preview", requireAuth, (req: any, res: any) => { const c = getCamp(req); if (!c) return err(res, 404, "not found");
+    const step = db.prepare("SELECT * FROM campaign_steps WHERE campaign_id=? AND position=?").get(c.id, Number(req.body?.step_idx) || 0) as any; if (!step) return err(res, 404, "step not found");
+    let lead: any = null; if (req.body?.lead_id) lead = db.prepare("SELECT * FROM leads WHERE id=? AND workspace_id=?").get(req.body.lead_id, ws(req)) as any;
+    if (!lead) { const m = db.prepare("SELECT lead_id FROM campaign_members WHERE campaign_id=? LIMIT 1").get(c.id) as any; if (m) lead = db.prepare("SELECT * FROM leads WHERE id=?").get(m.lead_id) as any; }
+    const wsr = db.prepare("SELECT * FROM workspaces WHERE id=?").get(ws(req)) as any;
+    const contact = lead ? db.prepare("SELECT * FROM contacts WHERE id=?").get(lead.contact_id) as any : { name: "Alex Sample", email: "alex@example.com", phone: "555-0100" };
+    const sampleLead = lead || { service_requested: "Mold Testing", custom: "{}", account_id: null };
+    const vars = outreachVars(wsr, sampleLead, contact);
+    let variants: any[] = []; try { variants = JSON.parse(step.variants || "[]"); } catch { /* none */ }
+    const all = [{ subject: step.subject || "", body: step.body || "" }, ...variants];
+    const vi = Math.max(0, Math.min(Number(req.body?.variant) || 0, all.length - 1));
+    const seed = "preview::" + step.id + "::v" + vi;
+    res.json({ subject: renderOutreach(all[vi].subject, vars, seed), body: renderOutreach(all[vi].body, vars, seed), variant: vi, variants_count: all.length, unresolved: [...new Set([...unresolvedVars(all[vi].subject || "", vars), ...unresolvedVars(all[vi].body || "", vars)])], sample: !lead }); });
 
   // ----- Assignment rules -----
   app.get("/api/assignment-rules", requireAuth, (req: any, res: any) => { res.json(db.prepare("SELECT * FROM assignment_rules WHERE workspace_id=? ORDER BY sort, created_at").all(ws(req))); });

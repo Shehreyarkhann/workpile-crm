@@ -2687,28 +2687,108 @@ function People({ embedded }: any) {
   </div>);
 }
 
+function StepEditor({ step, idx, campId, onSaved, onDeleted }: any) {
+  const initVariants = (() => { try { return JSON.parse(step.variants || "[]"); } catch { return []; } })();
+  const [channel, setChannel] = useState(step.channel || "email");
+  const [delay, setDelay] = useState(step.delay_days ?? 2);
+  const [base, setBase] = useState({ subject: step.subject || "", body: step.body || "" });
+  const [variants, setVariants] = useState<any[]>(initVariants);
+  const [vtab, setVtab] = useState(0);
+  const [pv, setPv] = useState<any>(null);
+  const [saved, setSaved] = useState(false);
+  const cur = vtab === 0 ? base : (variants[vtab - 1] || { subject: "", body: "" });
+  const setCur = (patch: any) => { if (vtab === 0) setBase({ ...base, ...patch }); else { const v = [...variants]; v[vtab - 1] = { ...(v[vtab - 1] || { subject: "", body: "" }), ...patch }; setVariants(v); } setSaved(false); };
+  const VARS = ["first_name", "name", "company", "service", "business", "city"];
+  return (<div className="card" style={{ marginBottom: 10, borderLeft: "4px solid var(--pine)" }}>
+    <div className="rowflex" style={{ justifyContent: "space-between" }}><b>Step {idx + 1}</b>
+      <span className="rowflex"><select value={channel} onChange={e => { setChannel(e.target.value); setSaved(false); }} style={{ width: 104 }}><option value="email">✉️ Email</option><option value="sms">💬 SMS</option></select>
+      <label className="muted" style={{ fontSize: 12.5 }}>after <input type="number" min={0} style={{ width: 58 }} value={delay} onChange={e => { setDelay(Number(e.target.value)); setSaved(false); }} /> business days</label>
+      <button className="btn ghost small" onClick={async () => { await api("/api/campaign-steps/" + step.id, { method: "DELETE" }); onDeleted(); }}>Delete step</button></span></div>
+    <div className="rowflex" style={{ marginTop: 8 }}>{["A", "B", "C", "D", "E", "F"].slice(0, variants.length + 1).map((L, vi) => <button key={vi} className={`chip ${vtab === vi ? "on" : ""}`} onClick={() => setVtab(vi)}>Variant {L}</button>)}
+      {variants.length < 5 && <button className="chip" onClick={() => { setVariants([...variants, { subject: "", body: "" }]); setVtab(variants.length + 1); setSaved(false); }}>+ A/B variant</button>}
+      {vtab > 0 && <button className="chip" onClick={() => { const v = variants.filter((_: any, i: number) => i !== vtab - 1); setVariants(v); setVtab(0); setSaved(false); }}>Remove variant {["A", "B", "C", "D", "E", "F"][vtab]}</button>}</div>
+    {channel === "email" && <input placeholder="Subject — e.g. Quick question, {{first_name}}" value={cur.subject} onChange={e => setCur({ subject: e.target.value })} style={{ width: "100%", marginTop: 8 }} />}
+    <textarea rows={5} placeholder={"Body — write like a person. Use {{first_name}}, {{company | your home}} for fallbacks, {{RANDOM | Hi | Hello | Hey}} for spintax."} value={cur.body} onChange={e => setCur({ body: e.target.value })} style={{ width: "100%", marginTop: 8 }} />
+    <div className="rowflex" style={{ marginTop: 6 }}><span className="muted" style={{ fontSize: 12 }}>Insert:</span>{VARS.map(v => <button key={v} className="chip" onClick={() => setCur({ body: (cur.body || "") + `{{${v}}}` })}>{`{{${v}}}`}</button>)}
+      <button className="chip" onClick={() => setCur({ body: (cur.body || "") + "{{RANDOM | Hi | Hello | Hey}} " })}>spintax</button></div>
+    <div className="rowflex" style={{ marginTop: 8 }}>
+      <button className="btn small" onClick={async () => { await api("/api/campaign-steps/" + step.id, { method: "PATCH", body: { channel, delay_days: delay, subject: base.subject, body: base.body, variants } }); setSaved(true); onSaved(); }}>{saved ? "Saved ✓" : "Save step"}</button>
+      <button className="btn ghost small" onClick={async () => { const r = await api(`/api/campaigns/${campId}/preview`, { method: "POST", body: { step_idx: idx, variant: vtab } }).catch(() => null); setPv(r); }}>👁 Preview</button>
+      <span className="muted" style={{ fontSize: 12 }}>Each lead is assigned one variant per step and keeps it — replies are measured per variant.</span></div>
+    {pv && <div style={{ background: "#f4f8f5", border: "1px solid #dcebe2", borderRadius: 10, padding: "10px 12px", marginTop: 8 }}><div className="muted" style={{ fontSize: 12 }}>{pv.sample ? "Rendered with sample data" : "Rendered with a real audience member"} · Variant {["A", "B", "C", "D", "E", "F"][pv.variant]}{pv.unresolved?.length ? ` · ⚠ unresolved: ${pv.unresolved.join(", ")}` : ""}</div>{pv.subject ? <div><b>{pv.subject}</b></div> : null}<div style={{ whiteSpace: "pre-wrap" }}>{pv.body}</div></div>}
+  </div>);
+}
+
+function OutreachBuilder({ detail, reloadDetail, openLead }: any) {
+  const camp = detail.campaign;
+  const [enr, setEnr] = useState<any[]>([]);
+  const [msg, setMsg] = useState("");
+  const [st, setSt] = useState<any>({ daily_cap: camp.daily_cap ?? 50, ramp_start: camp.ramp_start ?? "", ramp_step: camp.ramp_step ?? 10, window_start: camp.window_start ?? 9, window_end: camp.window_end ?? 17, stop_on_reply: camp.stop_on_reply !== 0, send_days: String(camp.send_days || "1,2,3,4,5") });
+  const loadEnr = () => { api("/api/campaigns/" + camp.id + "/enrollments").then(setEnr).catch(() => {}); };
+  useEffect(() => { loadEnr(); }, [camp.id, detail]);
+  const o = detail.outreach || { total_sent: 0, replies: 0, reply_rate: null, enrollments: {}, steps: [] };
+  const DAYS: [number, string][] = [[1, "Mon"], [2, "Tue"], [3, "Wed"], [4, "Thu"], [5, "Fri"], [6, "Sat"], [0, "Sun"]];
+  const daySet = new Set(st.send_days.split(",").map((s: string) => Number(s)));
+  const launched = !!camp.launched_at;
+  const act = async (path: string) => { const r: any = await api(`/api/campaigns/${camp.id}/${path}`, { method: "POST", body: {} }).catch((e: any) => ({ error: e })); if (r?.error) setMsg("⚠ " + (r.error.message || JSON.stringify(r.error))); else { setMsg(path === "launch" ? `🚀 Launched — ${r.enrolled} lead(s) enrolled, first sends inside the sending window.` : "Done ✓"); reloadDetail(); loadEnr(); } };
+  return (<div style={{ marginTop: 12, borderTop: "2px dashed #dcebe2", paddingTop: 12 }}>
+    <div className="rowflex" style={{ justifyContent: "space-between" }}><h3 style={{ margin: 0 }}>📤 Outreach sequence</h3>
+      <span className="rowflex">{!launched && <button className="btn" onClick={() => act("launch")}>🚀 Launch campaign</button>}
+        {launched && camp.status === "active" && <button className="btn ghost" onClick={() => act("pause")}>⏸ Pause</button>}
+        {launched && camp.status === "paused" && <button className="btn" onClick={() => act("resume")}>▶ Resume</button>}</span></div>
+    {msg && <p style={{ fontSize: 13 }}>{msg}</p>}
+    <p className="muted" style={{ fontSize: 12.5, marginTop: 4 }}>Launching is the approval: the steps below send automatically to the audience, inside the window and caps you set. Every send honors consent, suppressions and quiet hours, and a reply stops that lead's sequence.</p>
+    <div className="finGrid" style={{ margin: "10px 0" }}>
+      <div className="finCard"><div className="finLab">✉️ Sent</div><div className="finVal">{o.total_sent}</div><div className="finDef">across all steps</div></div>
+      <div className="finCard"><div className="finLab">💬 Replies</div><div className="finVal">{o.replies}</div><div className="finDef">{o.reply_rate !== null && o.reply_rate !== undefined ? o.reply_rate + "% of sends" : "no sends yet"}</div></div>
+      <div className="finCard"><div className="finLab">👥 Enrolled</div><div className="finVal">{Object.values(o.enrollments || {}).reduce((a: any, b: any) => a + b, 0)}</div><div className="finDef">{Object.entries(o.enrollments || {}).map(([k, v]: any) => `${k} ${v}`).join(" · ") || "none yet"}</div></div>
+      <div className="finCard"><div className="finLab">🎯 Daily cap</div><div className="finVal">{camp.daily_cap ?? 50}</div><div className="finDef">{camp.ramp_start ? `ramping from ${camp.ramp_start} (+${camp.ramp_step}/day)` : "no ramp"}</div></div>
+    </div>
+    {(o.steps || []).some((s: any) => s.sent > 0) && <div className="card" style={{ marginBottom: 10 }}><b>Step performance</b>{o.steps.map((s: any) => <div key={s.step_idx} className="muted" style={{ fontSize: 13, padding: "3px 0" }}>Step {s.step_idx + 1} ({s.channel}) — {s.sent} sent · {s.variants.map((v: any) => `${["A", "B", "C", "D", "E", "F"][v.variant]}: ${v.sent}`).join(" · ")}</div>)}</div>}
+    <div className="card" style={{ marginBottom: 10 }}><b>⚙️ Sending settings</b>
+      <div className="rowflex" style={{ marginTop: 8 }}><label className="muted" style={{ fontSize: 12.5 }}>Daily cap <input type="number" min={1} style={{ width: 70 }} value={st.daily_cap} onChange={e => setSt({ ...st, daily_cap: e.target.value })} /></label>
+        <label className="muted" style={{ fontSize: 12.5 }}>Slow ramp from <input type="number" placeholder="off" style={{ width: 70 }} value={st.ramp_start} onChange={e => setSt({ ...st, ramp_start: e.target.value })} /></label>
+        <label className="muted" style={{ fontSize: 12.5 }}>+ per day <input type="number" style={{ width: 60 }} value={st.ramp_step} onChange={e => setSt({ ...st, ramp_step: e.target.value })} /></label>
+        <label className="muted" style={{ fontSize: 12.5 }}>Window <input type="number" min={0} max={23} style={{ width: 56 }} value={st.window_start} onChange={e => setSt({ ...st, window_start: e.target.value })} /> – <input type="number" min={1} max={24} style={{ width: 56 }} value={st.window_end} onChange={e => setSt({ ...st, window_end: e.target.value })} /></label>
+        <label className="muted" style={{ fontSize: 12.5 }}><input type="checkbox" style={{ width: "auto" }} checked={st.stop_on_reply} onChange={e => setSt({ ...st, stop_on_reply: e.target.checked })} /> Stop on reply</label></div>
+      <div className="rowflex" style={{ marginTop: 8 }}><span className="muted" style={{ fontSize: 12.5 }}>Send days:</span>{DAYS.map(([d, L]) => <button key={d} className={`chip ${daySet.has(d) ? "on" : ""}`} onClick={() => { const s = new Set(daySet); if (s.has(d)) s.delete(d); else s.add(d); setSt({ ...st, send_days: [...s].join(",") }); }}>{L}</button>)}
+        <button className="btn small" onClick={async () => { await api("/api/campaigns/" + camp.id, { method: "PATCH", body: { daily_cap: Number(st.daily_cap) || 50, ramp_start: st.ramp_start === "" ? null : Number(st.ramp_start), ramp_step: Number(st.ramp_step) || 10, window_start: Number(st.window_start), window_end: Number(st.window_end), stop_on_reply: st.stop_on_reply ? 1 : 0, send_days: st.send_days } }); setMsg("Settings saved ✓"); reloadDetail(); }}>Save settings</button></div>
+    </div>
+    {(detail.steps || []).map((s: any, i: number) => <StepEditor key={s.id} step={s} idx={i} campId={camp.id} onSaved={reloadDetail} onDeleted={reloadDetail} />)}
+    <button className="btn ghost" onClick={async () => { await api(`/api/campaigns/${camp.id}/steps`, { method: "POST", body: { channel: "email", delay_days: (detail.steps || []).length ? 3 : 0, subject: "", body: "" } }); reloadDetail(); }}>+ Add step</button>
+    {enr.length > 0 && <div style={{ marginTop: 14 }}><b>Enrollments</b>{enr.map((e: any) => <div key={e.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "5px 0", borderBottom: "1px solid #eef2f7" }}><span style={{ flex: 1, minWidth: 0 }} className="clickable" onClick={() => openLead(e.lead_id)}><b>{e.contact_name || e.lead_id}</b> — step {e.step_idx + 1} · {e.sent_count} sent{e.stop_reason ? ` · ${e.stop_reason}` : ""}</span><span className="tinyBadge">{e.status}</span><span className="muted" style={{ fontSize: 12 }}>{e.status === "active" ? "next " + dOnly(e.next_due_at) : ""}</span>
+      {e.status === "active" && <button className="btn ghost small" onClick={async () => { await api("/api/campaign-enrollments/" + e.id, { method: "PATCH", body: { status: "paused" } }); loadEnr(); }}>Pause</button>}
+      {e.status === "paused" && <button className="btn ghost small" onClick={async () => { await api("/api/campaign-enrollments/" + e.id, { method: "PATCH", body: { status: "active" } }); loadEnr(); }}>Resume</button>}
+      {(e.status === "active" || e.status === "paused") && <button className="btn ghost small" onClick={async () => { await api("/api/campaign-enrollments/" + e.id, { method: "PATCH", body: { status: "stopped" } }); loadEnr(); }}>Stop</button>}</div>)}</div>}
+  </div>);
+}
+
 function Campaigns({ openLead }: any) {
   const [rows, setRows] = useState<any[]>([]); const [openId, setOpenId] = useState(""); const [detail, setDetail] = useState<any>(null); const [leads, setLeads] = useState<any[]>([]); const [pick, setPick] = useState<string[]>([]);
-  const [form, setForm] = useState<any>({ name: "", type: "outreach", cost: "" });
+  const [form, setForm] = useState<any>({ name: "", type: "outreach", cost: "", kind: "tracker" });
   const load = () => { api("/api/campaigns").then(setRows).catch(() => {}); };
   useEffect(() => { load(); api("/api/leads?paged=1&page=1&page_size=100&sort=recent").then(r => setLeads(r.items || [])).catch(() => {}); }, []);
+  const reloadDetail = async (id?: string) => { const cid = id || openId; if (!cid) return; setDetail(await api("/api/campaigns/" + cid).catch(() => null)); load(); };
   const expand = async (c: any) => { if (openId === c.id) { setOpenId(""); return; } setOpenId(c.id); setDetail(await api("/api/campaigns/" + c.id).catch(() => null)); };
-  return (<div><h2 className="pt">Campaigns</h2><p className="sub">Where leads come from, what they cost, and what they returned. ROI = (won revenue − cost) ÷ cost, from real won values.</p>
-    {rows.map(c => <div className="card" key={c.id} style={{ marginBottom: 10 }}><div className="rowflex" style={{ justifyContent: "space-between" }}><div><b style={{ fontSize: 16 }}>{c.name}</b> <span className="tinyBadge">{c.type}</span> <span className="tinyBadge">{c.status}</span><br /><span className="muted">{c.stats.members} members · {c.stats.leads} leads · {c.stats.won} won · pipeline {money(c.stats.pipeline)} · revenue {money(c.stats.revenue)} · cost {money(c.cost)}{c.stats.roi_pct !== null ? ` · ROI ${c.stats.roi_pct}%` : ""}</span></div>
-      <button className="btn ghost small" onClick={() => expand(c)}>{openId === c.id ? "Hide" : "Members"}</button></div>
+  return (<div><h2 className="pt">Campaigns</h2><p className="sub">Two kinds: <b>trackers</b> measure where leads came from and what they returned; <b>outreach sequences</b> actually send — multi-step email/SMS with A/B variants, spintax, sending windows and daily caps, stopping the moment a lead replies.</p>
+    {rows.map(c => <div className="card" key={c.id} style={{ marginBottom: 10 }}><div className="rowflex" style={{ justifyContent: "space-between" }}><div><b style={{ fontSize: 16 }}>{c.name}</b> <span className="tinyBadge">{c.kind === "outreach" ? "📤 outreach" : c.type}</span> <span className="tinyBadge">{c.status}</span>{c.kind === "outreach" && c.launched_at ? <span className="tinyBadge">launched</span> : null}<br /><span className="muted">{c.stats.members} members · {c.stats.leads} leads · {c.stats.won} won · pipeline {money(c.stats.pipeline)} · revenue {money(c.stats.revenue)} · cost {money(c.cost)}{c.stats.roi_pct !== null ? ` · ROI ${c.stats.roi_pct}%` : ""}</span></div>
+      <button className="btn ghost small" onClick={() => expand(c)}>{openId === c.id ? "Hide" : (c.kind === "outreach" ? "Open builder" : "Members")}</button></div>
       {openId === c.id && detail && <div style={{ marginTop: 10 }}>
         {detail.members.map((m: any) => <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: "1px solid #eef2f7" }}><span style={{ flex: 1, minWidth: 0 }} className="clickable" onClick={() => openLead(m.lead_id)}><b>{m.contact_name}</b> — {m.service_requested} · {money(m.est_value)} · <Badge s={m.state} /></span>
           <select style={{ width: 148 }} value={m.status} onChange={async e => { await api("/api/campaign-members/" + m.id, { method: "PATCH", body: { status: e.target.value } }); setDetail(await api("/api/campaigns/" + c.id)); }}><option value="member">member</option><option value="responded">responded</option><option value="engaged">engaged</option><option value="converted">converted</option></select>
           <button className="btn ghost small" onClick={async () => { await api("/api/campaign-members/" + m.id, { method: "DELETE" }); setDetail(await api("/api/campaigns/" + c.id)); load(); }}>Remove</button></div>)}
         <div className="rowflex" style={{ marginTop: 10 }}><select multiple size={4} style={{ flex: 1 }} value={pick} onChange={e => setPick([...e.target.selectedOptions].map(o => o.value))}>{leads.filter(l => !detail.members.some((m: any) => m.lead_id === l.id)).map((l: any) => <option key={l.id} value={l.id}>{l.contact_name} — {l.service_requested} ({l.state})</option>)}</select>
           <button className="btn small" disabled={!pick.length} onClick={async () => { await api(`/api/campaigns/${c.id}/members`, { method: "POST", body: { lead_ids: pick } }); setPick([]); setDetail(await api("/api/campaigns/" + c.id)); load(); }}>Add {pick.length || ""} leads</button></div>
-        <p className="muted" style={{ fontSize: 12 }}>Tip: leads created through the API with a campaign_id join automatically.</p></div>}
+        <p className="muted" style={{ fontSize: 12 }}>Tip: leads created through the API with a campaign_id join automatically.{c.kind === "outreach" && c.launched_at ? " This campaign is live — added leads are enrolled immediately." : ""}</p>
+        {detail.campaign.kind === "outreach"
+          ? <OutreachBuilder detail={detail} reloadDetail={() => reloadDetail(c.id)} openLead={openLead} />
+          : <div style={{ marginTop: 10 }}><button className="btn ghost" onClick={async () => { await api("/api/campaigns/" + c.id, { method: "PATCH", body: { kind: "outreach" } }); reloadDetail(c.id); }}>📤 Turn this into an outreach sequence</button></div>}
+      </div>}
     </div>)}
     {rows.length === 0 && <div className="card">No campaigns yet — create the first one below (e.g. “Lapsed clients — fall reactivation”, “Google Ads — tank removals”).</div>}
-    <div className="card"><h3 style={{ marginTop: 0 }}>New campaign</h3><div className="rowflex"><input placeholder="Campaign name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} style={{ flex: 1 }} /><select value={form.type} onChange={e => setForm({ ...form, type: e.target.value })}><option>outreach</option><option>ads</option><option>referral</option><option>event</option><option>email</option><option>reactivation</option></select><input type="number" placeholder="Cost $" value={form.cost} onChange={e => setForm({ ...form, cost: e.target.value })} style={{ width: 120 }} /><button className="btn" disabled={!form.name.trim()} onClick={async () => { await api("/api/campaigns", { method: "POST", body: { ...form, cost: Number(form.cost) || 0 } }); setForm({ name: "", type: "outreach", cost: "" }); load(); }}>Create campaign</button></div></div>
+    <div className="card"><h3 style={{ marginTop: 0 }}>New campaign</h3><div className="rowflex"><input placeholder="Campaign name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} style={{ flex: 1 }} /><select value={form.kind} onChange={e => setForm({ ...form, kind: e.target.value })}><option value="tracker">Tracker (measure a source)</option><option value="outreach">📤 Outreach sequence (sends)</option></select><select value={form.type} onChange={e => setForm({ ...form, type: e.target.value })}><option>outreach</option><option>ads</option><option>referral</option><option>event</option><option>email</option><option>reactivation</option></select><input type="number" placeholder="Cost $" value={form.cost} onChange={e => setForm({ ...form, cost: e.target.value })} style={{ width: 120 }} /><button className="btn" disabled={!form.name.trim()} onClick={async () => { const nc: any = await api("/api/campaigns", { method: "POST", body: { name: form.name, type: form.type, cost: Number(form.cost) || 0 } }); if (form.kind === "outreach" && nc?.id) await api("/api/campaigns/" + nc.id, { method: "PATCH", body: { kind: "outreach", status: "draft" } }); setForm({ name: "", type: "outreach", cost: "", kind: "tracker" }); load(); }}>Create campaign</button></div></div>
   </div>);
 }
-
 function TasksApp({ openLead, embedded }: any) {
   const [f, setF] = useState("open"); const [rows, setRows] = useState<any[]>([]);
   const load = () => { api(`/api/tasks-all?filter=${f}`).then(setRows).catch(() => {}); };

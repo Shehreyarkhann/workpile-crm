@@ -175,6 +175,17 @@ export function initSchema() {
     "ALTER TABLE workspaces ADD COLUMN review_url TEXT",
     "ALTER TABLE workspaces ADD COLUMN review_on_won INTEGER DEFAULT 0",
     "ALTER TABLE messages_outbox ADD COLUMN direction TEXT DEFAULT 'out'",
+    // crm.ts initCrmSchema also ALTERs these, but its ALTERs run at import time — before
+    // initSchema creates the tables on a FRESH database — so they silently no-op there and
+    // only land on the second boot. Mirrored here so fresh installs are correct on boot #1.
+    "ALTER TABLE leads ADD COLUMN account_id TEXT",
+    "ALTER TABLE leads ADD COLUMN converted_at TEXT",
+    "ALTER TABLE leads ADD COLUMN campaign_id TEXT",
+    "ALTER TABLE leads ADD COLUMN custom TEXT DEFAULT '{}'",
+    "ALTER TABLE leads ADD COLUMN merged_into_id TEXT",
+    "ALTER TABLE contacts ADD COLUMN account_id TEXT",
+    "ALTER TABLE contacts ADD COLUMN title TEXT",
+    "ALTER TABLE jobs ADD COLUMN custom TEXT DEFAULT '{}'",
     "ALTER TABLE users ADD COLUMN permissions TEXT",
     "ALTER TABLE workspaces ADD COLUMN auto_assign INTEGER DEFAULT 0",
     "ALTER TABLE workspaces ADD COLUMN auto_dedupe INTEGER DEFAULT 0",
