@@ -78,8 +78,8 @@ label.f { display:block; font-size:12px; font-weight:600; color:var(--mut); marg
 .tabs button { background:none; border:0; padding:9px 14px; cursor:pointer; font-weight:600; color:var(--mut); border-bottom:2px solid transparent; } .tabs button.on { color:var(--brand); border-color:var(--brand); }
 .check { display:flex; gap:8px; align-items:flex-start; padding:6px 0; font-size:13.5px; } .check .st { font-weight:800; } .pass{color:var(--ok)} .fail{color:var(--bad)}
 .mono { font-family:ui-monospace,Menlo,monospace; font-size:12px; word-break:break-all; } .muted { color:var(--mut); } .rowflex { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-.path { display:flex; gap:2px; margin:14px 0 4px; flex-wrap:wrap; }
-.path .stage { flex:1; min-width:86px; text-align:center; font-size:11px; font-weight:700; padding:8px 13px; background:#e2e8f0; color:#475569; clip-path:polygon(0 0,calc(100% - 10px) 0,100% 50%,calc(100% - 10px) 100%,0 100%,10px 50%); cursor:pointer; }
+.path { display:flex; gap:2px; margin:14px 0 4px; flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none; padding-bottom:2px; } .path::-webkit-scrollbar { display:none; }
+.path .stage { flex:1 0 auto; min-width:0; white-space:nowrap; text-align:center; font-size:10px; font-weight:700; padding:8px 8px; background:#e2e8f0; color:#475569; clip-path:polygon(0 0,calc(100% - 10px) 0,100% 50%,calc(100% - 10px) 100%,0 100%,10px 50%); cursor:pointer; }
 .path .stage:first-child { clip-path:polygon(0 0,calc(100% - 10px) 0,100% 50%,calc(100% - 10px) 100%,0 100%); border-radius:6px 0 0 6px; }
 .path .stage.done { background:#bbf7d0; color:#14532d; } .path .stage.cur { background:var(--brand); color:#fff; } .path .stage:hover { filter:brightness(.96); }
 .pathFinal { margin:12px 0 0; padding:10px 14px; border-radius:9px; font-weight:700; }
@@ -445,3 +445,21 @@ aside.rail button.on .nshort { background:#ffffff22; }
 .kcard .qact { display: none; margin-top: 7px; font-size: 11px; font-weight: 700; padding: 4px 9px; border-radius: 999px; border: 1.5px solid #0E5C3A; background: #fff; color: #0E5C3A; cursor: pointer; }
 .kcard:hover .qact, .kcard:focus-within .qact { display: inline-block; }
 .kcard .qact:hover { background: #0E5C3A; color: #fff; }
+
+/* V29.1 modal alignment pass: rails instead of ragged wraps, deck stacks cleanly */
+.modal { overflow-x: clip; }
+.rdyRow { scrollbar-width: none; } .rdyRow::-webkit-scrollbar { display: none; }
+.rdy { white-space: nowrap; }
+.crumbs { row-gap: 4px; }
+@media (max-width: 720px) {
+  .modalWrap { padding: 12px 8px; }
+  .modal { padding: 18px 14px; border-radius: 12px; }
+  .rdyRow { flex-wrap: nowrap; overflow-x: auto; }
+  .deckKeys { display: none; }
+  .deck { padding: 10px 12px 8px; }
+  .deckMain { flex-direction: column; align-items: stretch; }
+  .deckMain .rowflex { width: 100%; flex-direction: column; align-items: stretch; }
+  .deckMain .rowflex .btn { width: 100%; justify-content: center; min-height: 42px; }
+  .tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; } .tabs::-webkit-scrollbar { display: none; }
+  .tabs button { flex: 0 0 auto; white-space: nowrap; }
+}
