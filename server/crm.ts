@@ -340,7 +340,8 @@ const DOC_SEEDS: [string, string, string][] = [
   ["Short & Simple", "<p>Hi {customer} — here's our price for your {service} project. Everything's in the lines below; the total is the total.</p>", "<p>Good for 14 days. Deposit on signing, balance when we're done. If anything changes, we price it in writing before we do it. Licensed & insured.</p>"],
 ];
 export function ensureDocTemplates(workspaceId: string) {
-  db.exec("CREATE TABLE IF NOT EXISTS doc_templates (id TEXT PRIMARY KEY, workspace_id TEXT, name TEXT, intro_html TEXT, terms_html TEXT, footer TEXT, include_logo INTEGER DEFAULT 1, is_default INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT)");
+  db.exec("CREATE TABLE IF NOT EXISTS doc_templates (id TEXT PRIMARY KEY, workspace_id TEXT, name TEXT, intro_html TEXT, terms_html TEXT, footer TEXT, include_logo INTEGER DEFAULT 1, is_default INTEGER DEFAULT 0, applies_to TEXT, created_at TEXT, updated_at TEXT)");
+  try { db.exec("ALTER TABLE doc_templates ADD COLUMN applies_to TEXT"); } catch { /* already there */ }
   const n = (db.prepare("SELECT COUNT(*) c FROM doc_templates WHERE workspace_id=?").get(workspaceId) as any).c;
   if (n > 0) return;
   DOC_SEEDS.forEach(([name, intro, terms], i) => {
@@ -356,14 +357,14 @@ export function registerDocTemplates(app: any, requireAuth: any, needPerm: any =
   app.get("/api/doc-templates", requireAuth, (req: any, res: any) => { ensureDocTemplates(ws(req)); res.json(db.prepare("SELECT * FROM doc_templates WHERE workspace_id=? ORDER BY is_default DESC, created_at").all(ws(req))); });
   app.post("/api/doc-templates", requireAuth, settingsGuard, (req: any, res: any) => { const b = req.body || {}; ensureDocTemplates(ws(req)); const id = uid("dtpl");
     const src = b.from_id ? db.prepare("SELECT * FROM doc_templates WHERE id=? AND workspace_id=?").get(b.from_id, ws(req)) as any : null;
-    db.prepare("INSERT INTO doc_templates (id,workspace_id,name,intro_html,terms_html,footer,include_logo,is_default,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
-      .run(id, ws(req), (b.name || src?.name + " (copy)" || "New template").slice(0, 120), sanitizeHtml(b.intro_html ?? src?.intro_html ?? DEFAULT_INTRO), sanitizeHtml(b.terms_html ?? src?.terms_html ?? DEFAULT_TERMS), String(b.footer ?? src?.footer ?? DEFAULT_FOOTER).slice(0, 500), b.include_logo === false ? 0 : 1, 0, now(), now());
+    db.prepare("INSERT INTO doc_templates (id,workspace_id,name,intro_html,terms_html,footer,include_logo,is_default,applies_to,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+      .run(id, ws(req), (b.name || src?.name + " (copy)" || "New template").slice(0, 120), sanitizeHtml(b.intro_html ?? src?.intro_html ?? DEFAULT_INTRO), sanitizeHtml(b.terms_html ?? src?.terms_html ?? DEFAULT_TERMS), String(b.footer ?? src?.footer ?? DEFAULT_FOOTER).slice(0, 500), b.include_logo === false ? 0 : 1, 0, String(b.applies_to ?? src?.applies_to ?? "").slice(0, 120) || null, now(), now());
     res.status(201).json(db.prepare("SELECT * FROM doc_templates WHERE id=?").get(id)); });
   app.patch("/api/doc-templates/:id", requireAuth, settingsGuard, (req: any, res: any) => { const b = req.body || {}; const cur = db.prepare("SELECT * FROM doc_templates WHERE id=? AND workspace_id=?").get(req.params.id, ws(req)) as any; if (!cur) return err(res, 404, "not found");
     if (b.is_default) db.prepare("UPDATE doc_templates SET is_default=0 WHERE workspace_id=?").run(ws(req));
     const newDefault = b.is_default === undefined ? cur.is_default : (b.is_default ? 1 : 0);
-    db.prepare("UPDATE doc_templates SET name=?, intro_html=?, terms_html=?, footer=?, include_logo=?, is_default=?, updated_at=? WHERE id=?")
-      .run((b.name ?? cur.name).slice(0, 120), sanitizeHtml(b.intro_html ?? cur.intro_html), sanitizeHtml(b.terms_html ?? cur.terms_html), String(b.footer ?? cur.footer).slice(0, 500), b.include_logo === undefined ? cur.include_logo : (b.include_logo ? 1 : 0), newDefault, now(), req.params.id);
+    db.prepare("UPDATE doc_templates SET name=?, intro_html=?, terms_html=?, footer=?, include_logo=?, is_default=?, applies_to=?, updated_at=? WHERE id=?")
+      .run((b.name ?? cur.name).slice(0, 120), sanitizeHtml(b.intro_html ?? cur.intro_html), sanitizeHtml(b.terms_html ?? cur.terms_html), String(b.footer ?? cur.footer).slice(0, 500), b.include_logo === undefined ? cur.include_logo : (b.include_logo ? 1 : 0), newDefault, b.applies_to === undefined ? cur.applies_to : (String(b.applies_to).slice(0, 120) || null), now(), req.params.id);
     res.json(db.prepare("SELECT * FROM doc_templates WHERE id=?").get(req.params.id)); });
   app.delete("/api/doc-templates/:id", requireAuth, settingsGuard, (req: any, res: any) => { const rows = db.prepare("SELECT id, is_default FROM doc_templates WHERE workspace_id=?").all(ws(req)) as any[]; if (rows.length <= 1) return err(res, 422, "Keep at least one template");
     const gone = rows.find(r => r.id === req.params.id); db.prepare("DELETE FROM doc_templates WHERE id=? AND workspace_id=?").run(req.params.id, ws(req));

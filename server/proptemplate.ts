@@ -52,6 +52,26 @@ export function mergeFields(text: string, ctx: Record<string, string>): string {
   return out;
 }
 
+// Smart template resolution (v33): the template whose applies_to matches the
+// lead's requested service wins (exact normalized match, then containment);
+// otherwise the workspace default doc template; otherwise null (the single
+// workspace template renders). Used when a proposal is composed without an
+// explicit template choice — by the API create route and the agent drafter.
+export function resolveDocTemplateId(workspaceId: string, service?: string | null): string | null {
+  try {
+    const rows = db.prepare("SELECT id, applies_to, is_default FROM doc_templates WHERE workspace_id=?").all(workspaceId) as any[];
+    const norm = (s: any) => String(s || "").toLowerCase().trim().replace(/\s+/g, " ");
+    const svc = norm(service);
+    if (svc) {
+      const exact = rows.find(r => r.applies_to && norm(r.applies_to) === svc);
+      if (exact) return exact.id;
+      const fuzzy = rows.find(r => { const a = norm(r.applies_to); return a.length >= 4 && (svc.includes(a) || a.includes(svc)); });
+      if (fuzzy) return fuzzy.id;
+    }
+    return (rows.find(r => r.is_default) || rows[0] || {}).id || null;
+  } catch { return null; }
+}
+
 export function proposalDocument(proposalId: string) {
   const p = db.prepare("SELECT * FROM proposals WHERE id=?").get(proposalId) as any;
   if (!p) return null;
