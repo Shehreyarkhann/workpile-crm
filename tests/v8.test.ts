@@ -45,9 +45,9 @@ test("price override: reason required before creation; recorded + audited with o
 });
 
 test("approval invalidation: a material change after approval blocks the send and resubmits", async () => {
-  const lead = (await J("/api/leads", { method: "POST", body: { contact: { name: "Big Bill", phone: "+15165550153", email: "bill@x.co" }, service_requested: "UST Removal", est_value: 30000 } }, { Cookie: cookie })).j.lead;
-  const prop = (await J(`/api/leads/${lead.id}/proposals`, { method: "POST", body: { line_items: [{ price_book_item_id: pbBig.id, qty: 1 }] } }, { Cookie: cookie })).j;
-  const send1 = await J(`/api/proposals/${prop.id}/send`, { method: "POST", body: {} }, { Cookie: cookie });
+  const lead = (await J("/api/leads", { method: "POST", body: { contact: { name: "Big Bill", phone: "+15165550153", email: "bill@x.co" }, service_requested: "UST Removal", est_value: 30000 } }, { Cookie: loCookie })).j.lead;
+  const prop = (await J(`/api/leads/${lead.id}/proposals`, { method: "POST", body: { line_items: [{ price_book_item_id: pbBig.id, qty: 1 }] } }, { Cookie: loCookie })).j;
+  const send1 = await J(`/api/proposals/${prop.id}/send`, { method: "POST", body: {} }, { Cookie: loCookie }); // v25: non-owner submitter — owners bypass the gate
   assert.equal(send1.status, 422); assert.equal(send1.j.error.code, "approval_required");
   const apprId = send1.j.error.approval_id || send1.j.approval_id;
   const pend = dbm.db.prepare("SELECT * FROM approvals WHERE proposal_id=? AND decision IS NULL").get(prop.id) as any;
@@ -57,7 +57,7 @@ test("approval invalidation: a material change after approval blocks the send an
   assert.ok(stored.content_hash, "approval stored the content hash");
   // simulate a material change to the approved version (any mutation path)
   dbm.db.prepare("UPDATE proposals SET total=31000 WHERE id=?").run(prop.id);
-  const send2 = await J(`/api/proposals/${prop.id}/send`, { method: "POST", body: {} }, { Cookie: cookie });
+  const send2 = await J(`/api/proposals/${prop.id}/send`, { method: "POST", body: {} }, { Cookie: loCookie });
   assert.equal(send2.status, 422);
   assert.equal(send2.j.error.code, "approval_invalidated");
   const fresh = dbm.db.prepare("SELECT COUNT(*) c FROM approvals WHERE proposal_id=? AND decision IS NULL").get(prop.id) as any;

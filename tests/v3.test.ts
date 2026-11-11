@@ -73,16 +73,19 @@ test("28: legacy states migrate (TRIAGED->WORKING, ON_HOLD->flag)", async () => 
 });
 
 test("28: approval policy gates the SEND of big proposals, not the stage", async () => {
+  // v25: the gate binds non-owners — an OPS_ADMIN submits, the owner decides
+  await J("/api/users", { method: "POST", body: { name: "Olga Ops", email: "ops@v3.co", password: "password1", role: "OPS_ADMIN" } }, { Cookie: cookie });
+  const ops = (await J("/api/auth/login", { method: "POST", body: { email: "ops@v3.co", password: "password1" } })).cookie;
   await J(`/api/leads/${leadB.id}/stage`, { method: "POST", body: { to: "PROPOSAL" } }, { Cookie: cookie });
-  const prop = await J(`/api/leads/${leadB.id}/proposals`, { method: "POST", body: { line_items: [{ price_book_item_id: pbId, qty: 6 }] } }, { Cookie: cookie }); // 6 x 12000 = 72000 > 25000 threshold
+  const prop = await J(`/api/leads/${leadB.id}/proposals`, { method: "POST", body: { line_items: [{ price_book_item_id: pbId, qty: 6 }] } }, { Cookie: ops }); // 6 x 12000 = 72000 > 25000 threshold
   assert.equal(prop.j.total, 72000);
   const pend = await J("/api/approvals", {}, { Cookie: cookie });
   assert.ok(pend.j.some((a: any) => a.lead_id === leadB.id), "over-threshold proposal routes to approval on entering PROPOSAL flow");
-  const send = await J(`/api/proposals/${prop.j.id}/send`, { method: "POST", body: { channel: "email" } }, { Cookie: cookie });
+  const send = await J(`/api/proposals/${prop.j.id}/send`, { method: "POST", body: { channel: "email" } }, { Cookie: ops });
   assert.equal(send.status, 422); assert.equal(send.j.error.code, "approval_required");
   const appr = pend.j.find((a: any) => a.lead_id === leadB.id);
   const dec = await J(`/api/approvals/${appr.id}/decide`, { method: "POST", body: { decision: "approved" } }, { Cookie: cookie }); assert.equal(dec.j.ok, true);
-  const send2 = await J(`/api/proposals/${prop.j.id}/send`, { method: "POST", body: { channel: "email" } }, { Cookie: cookie });
+  const send2 = await J(`/api/proposals/${prop.j.id}/send`, { method: "POST", body: { channel: "email" } }, { Cookie: ops });
   assert.equal(send2.status, 201);
   const after = await J(`/api/leads/${leadB.id}`, {}, { Cookie: cookie }); assert.equal(after.j.lead.state, "SENT");
 });

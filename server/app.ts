@@ -157,7 +157,8 @@ export function outcomePayload(lead: any) {
 }
 
 // ---- v3 approval policy (§4.4): off | amount (default, threshold) | always ----
-export function approvalRequiredFor(workspaceId: string, total: number): boolean {
+export function approvalRequiredFor(workspaceId: string, total: number, actorRole?: string): boolean {
+  if (actorRole === "OWNER") return false; // v25: the owner is never approval-gated — unlimited by role
   const ws = db.prepare("SELECT approval_policy, approval_threshold FROM workspaces WHERE id=?").get(workspaceId) as any;
   const policy = ws?.approval_policy || "amount";
   if (policy === "off") return false;
@@ -181,7 +182,8 @@ export function approvedApprovalFor(workspaceId: string, proposalId: string) {
 }
 export function maybeRequestApproval(workspaceId: string, actor: string, lead: any, proposal: any) {
   if (!proposal) return null;
-  if (!approvalRequiredFor(workspaceId, proposal.total || 0)) return null;
+  const actorRole = (db.prepare("SELECT role FROM users WHERE id=?").get(actor) as any)?.role;
+  if (!approvalRequiredFor(workspaceId, proposal.total || 0, actorRole)) return null;
   const pend = pendingApprovalFor(workspaceId, proposal.id);
   if (pend) return pend;
   const appr = approvedApprovalFor(workspaceId, proposal.id);
@@ -310,10 +312,10 @@ app.post("/api/auth/login", (req, res) => {
   res.setHeader("Set-Cookie", `lf_session=${sid}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax`);
   res.json({ user: { id: u.id, name: u.name, email: u.email, role: u.role, workspace_id: u.workspace_id, is_platform_admin: !!u.is_platform_admin , email_verified: u.email_verified ?? 0, permissions: permsOf(u) }, session: sid });
 });
-app.get("/api/auth/me", requireAuth, (req: any, res) => { ensureMembership(req.user); const ws = db.prepare("SELECT name FROM workspaces WHERE id=?").get(req.user.workspace_id) as any; const __imp = (req as any).session?.impersonated_by ? { by_name: (db.prepare("SELECT name FROM users WHERE id=?").get((req as any).session.impersonated_by) as any)?.name || "platform admin", expires_at: (req as any).session.impersonation_expires_at } : null; res.json({ user: { id: req.user.id, name: req.user.name, email: req.user.email, role: req.user.role, workspace_id: req.user.workspace_id, workspace_name: ws?.name, email_verified: req.user.email_verified ?? 0, is_platform_admin: !!req.user.is_platform_admin, impersonation: __imp, permissions: permsOf(req.user) }, workspaces: membershipsOf(req.user.id) }); });
+app.get("/api/auth/me", requireAuth, (req: any, res) => { ensureMembership(req.user); const ws = db.prepare("SELECT name FROM workspaces WHERE id=?").get(req.user.workspace_id) as any; const __imp = (req as any).session?.impersonated_by ? { by_name: (db.prepare("SELECT name FROM users WHERE id=?").get((req as any).session.impersonated_by) as any)?.name || "platform admin", expires_at: (req as any).session.impersonation_expires_at } : null; res.json({ user: { id: req.user.id, name: req.user.name, email: req.user.email, role: req.user.role, avatar_url: req.user.avatar_url || null, approval_limit: req.user.approval_limit || 0, workspace_id: req.user.workspace_id, workspace_name: ws?.name, email_verified: req.user.email_verified ?? 0, is_platform_admin: !!req.user.is_platform_admin, impersonation: __imp, permissions: permsOf(req.user) }, workspaces: membershipsOf(req.user.id) }); });
 
 // ---------- routes: workspace data ----------
-app.get("/api/users", requireAuth, (req: any, res) => res.json((db.prepare("SELECT * FROM users WHERE workspace_id=?").all(req.user.workspace_id) as any[]).map(u => ({ id: u.id, name: u.name, email: u.email, role: u.role, approval_limit: u.approval_limit, labor_class_id: u.labor_class_id || null, permissions: permsOf(u), has_overrides: !!u.permissions }))));
+app.get("/api/users", requireAuth, (req: any, res) => res.json((db.prepare("SELECT * FROM users WHERE workspace_id=?").all(req.user.workspace_id) as any[]).map(u => ({ id: u.id, name: u.name, email: u.email, role: u.role, avatar_url: u.avatar_url || null, approval_limit: u.approval_limit, labor_class_id: u.labor_class_id || null, permissions: permsOf(u), has_overrides: !!u.permissions }))));
 app.get("/api/leads", requireAuth, (req: any, res) => {
   const ws = req.user.workspace_id;
   let rows = (db.prepare("SELECT * FROM leads WHERE workspace_id=? ORDER BY created_at DESC").all(ws) as any[]).map(leadView);
@@ -486,6 +488,7 @@ app.post("/api/approvals/:id/decide", requireAuth, (req: any, res) => {
   if (!["approved", "changes", "rejected"].includes(decision)) return res.status(422).json({ error: { code: "bad_decision" } });
   if (decision !== "approved" && !reason_code) return res.status(422).json({ error: { code: "reason_required", message: "Reject/change requires a reason code (§6.5)" } });
   const __prop = decision === "approved" ? db.prepare("SELECT * FROM proposals WHERE id=?").get(a.proposal_id) as any : null;
+  if (decision === "approved" && __prop && req.user.role !== "OWNER" && (req.user.approval_limit || 0) > 0 && (__prop.total || 0) > req.user.approval_limit) return res.status(422).json({ error: { code: "over_approval_limit", message: `This proposal is $${__prop.total} — above your $${req.user.approval_limit} approval limit. The owner (unlimited) or an approver with a higher limit needs to decide it.` } });
   db.prepare("UPDATE approvals SET decision=?, reason_code=?, edits_diff=?, decided_at=?, content_hash=? WHERE id=?").run(decision, reason_code || null, edits_diff ? JSON.stringify(edits_diff) : null, now(), __prop ? proposalContentHash(__prop) : null, a.id); emitOutbox(req.user.workspace_id, "approval.decided", a.id, { decision, proposal_id: a.proposal_id });
   emitEvent(req.user.workspace_id, "approval.decided", { lead_id: a.lead_id, approval_id: a.id, decision });
   notify(req.user.workspace_id, [a.submitted_by], "approval.decided", `Your proposal was ${decision}`, `Lead ${a.lead_id} — decision: ${decision}${reason_code ? " (" + reason_code + ")" : ""}`, a.lead_id);
@@ -823,6 +826,54 @@ app.post("/api/jobs", requireAuth, (req: any, res) => { // manual job from a lea
   if (!l) return res.status(404).json({ error: { code: "not_found" } });
   const j = ensureJobForLead(req.user.workspace_id, req.user.id, l);
   res.status(201).json(jobView(j));
+});
+// ---------- v25: self-service profile ----------
+app.patch("/api/users/me", requireAuth, (req: any, res) => {
+  const name = req.body.name !== undefined ? String(req.body.name || "").trim().slice(0, 80) : null;
+  if (name !== null && !name) return res.status(422).json({ error: { code: "name_required" } });
+  let avatar: any = undefined;
+  if (req.body.avatar_url !== undefined) {
+    const av = req.body.avatar_url;
+    if (av === null || av === "") avatar = null;
+    else if (typeof av === "string" && av.startsWith("data:image/") && av.length < 300000) avatar = av;
+    else return res.status(422).json({ error: { code: "bad_avatar", message: "Avatar must be an image under ~200KB." } });
+  }
+  if (name !== null) db.prepare("UPDATE users SET name=? WHERE id=?").run(name, req.user.id);
+  if (avatar !== undefined) db.prepare("UPDATE users SET avatar_url=? WHERE id=?").run(avatar, req.user.id);
+  audit(req.user.workspace_id, req.user.id, "profile.update", "user", req.user.id, { name: name !== null, avatar: avatar !== undefined });
+  const u = db.prepare("SELECT id,name,email,role,avatar_url,approval_limit FROM users WHERE id=?").get(req.user.id);
+  res.json({ user: u });
+});
+app.post("/api/users/me/password", requireAuth, (req: any, res) => {
+  const cur = String(req.body.current || ""), next = String(req.body.next || "");
+  if (!verifyPassword(cur, req.user.password_hash)) return res.status(403).json({ error: { code: "wrong_password", message: "Current password doesn't match." } });
+  if (next.length < 8) return res.status(422).json({ error: { code: "weak_password", message: "New password needs at least 8 characters." } });
+  db.prepare("UPDATE users SET password_hash=? WHERE id=?").run(hashPassword(next), req.user.id);
+  audit(req.user.workspace_id, req.user.id, "profile.password", "user", req.user.id, {});
+  res.json({ ok: true });
+});
+// ---------- v25: job team chat with @mentions ----------
+const jobInWs = (req: any) => db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+app.get("/api/jobs/:id/messages", requireAuth, (req: any, res) => {
+  const j = jobInWs(req); if (!j) return res.status(404).json({ error: { code: "not_found" } });
+  const rows = db.prepare("SELECT m.*, u.name user_name, u.avatar_url user_avatar FROM job_messages m LEFT JOIN users u ON u.id=m.user_id WHERE m.job_id=? AND m.workspace_id=? ORDER BY m.created_at").all(j.id, req.user.workspace_id);
+  res.json({ messages: rows });
+});
+app.post("/api/jobs/:id/messages", requireAuth, (req: any, res) => {
+  const j = jobInWs(req); if (!j) return res.status(404).json({ error: { code: "not_found" } });
+  const body = String(req.body.body || "").trim().slice(0, 4000);
+  if (!body) return res.status(422).json({ error: { code: "empty_message" } });
+  const wanted: string[] = []; if (Array.isArray(req.body.mention_ids)) for (const x of req.body.mention_ids) { const s = String(x); if (!wanted.includes(s)) wanted.push(s); }
+  const valid = wanted.length ? (db.prepare(`SELECT id FROM users WHERE workspace_id=? AND active=1 AND id IN (${wanted.map(() => "?").join(",")})`).all(req.user.workspace_id, ...wanted) as any[]).map(r => r.id) : [];
+  const mentions = valid.filter(id => id !== req.user.id);
+  const id = uid("jmsg");
+  db.prepare("INSERT INTO job_messages (id,workspace_id,job_id,user_id,body,mentions,created_at) VALUES (?,?,?,?,?,?,?)").run(id, req.user.workspace_id, j.id, req.user.id, body, JSON.stringify(mentions), now());
+  if (mentions.length) {
+    const lead = db.prepare("SELECT service_requested FROM leads WHERE id=?").get(j.lead_id) as any;
+    notify(req.user.workspace_id, mentions, "job.mention", "You were mentioned in a job chat", `${req.user.name} on ${lead?.service_requested || "a job"}: “${body.slice(0, 110)}”`, j.lead_id, { type: "job", id: j.id });
+  }
+  const row = db.prepare("SELECT m.*, u.name user_name, u.avatar_url user_avatar FROM job_messages m LEFT JOIN users u ON u.id=m.user_id WHERE m.id=?").get(id);
+  res.status(201).json({ message: row, mentioned: mentions });
 });
 app.get("/api/jobs/:id", requireAuth, (req: any, res) => {
   const j = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
@@ -1354,7 +1405,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v24", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
+app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v25", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {
   const target = db.prepare("SELECT * FROM users WHERE id=?").get(String(req.body?.user_id || "")) as any;
@@ -1487,7 +1538,7 @@ app.post("/api/auth/register", (req: any, res) => {
   if (db.prepare("SELECT id FROM users WHERE email=?").get(email)) return res.status(409).json({ error: { code: "email_taken" } });
   const wsId = uid("ws"); db.prepare("INSERT INTO workspaces (id,name,vertical,timezone,created_at) VALUES (?,?,?,?,?)").run(wsId, business_name || name + "'s Business", "field-services", "America/New_York", now());
   workspaceDefaults(wsId); ensureSubscription(wsId);
-  const userId = uid("usr"); db.prepare("INSERT INTO users (id,workspace_id,name,email,password_hash,role,approval_limit) VALUES (?,?,?,?,?,?,?)").run(userId, wsId, name, email, hashPassword(password), "OWNER", 100000);
+  const userId = uid("usr"); db.prepare("INSERT INTO users (id,workspace_id,name,email,password_hash,role,approval_limit) VALUES (?,?,?,?,?,?,?)").run(userId, wsId, name, email, hashPassword(password), "OWNER", 0);
   db.prepare("INSERT INTO memberships (user_id,workspace_id,role,created_at) VALUES (?,?,?,?)").run(userId, wsId, "OWNER", now());
   const sid = uid("ses"); db.prepare("INSERT INTO sessions (id,user_id,created_at,expires_at) VALUES (?,?,?,?)").run(sid, userId, now(), new Date(Date.now() + 7 * 86400000).toISOString());
   res.setHeader("Set-Cookie", `lf_session=${sid}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax`);
@@ -1569,7 +1620,7 @@ app.post("/api/proposals/:id/send", requireAuth, async (req: any, res) => {
   if (!p) return res.status(404).json({ error: { code: "not_found" } });
   const l = db.prepare("SELECT * FROM leads WHERE id=?").get(p.lead_id) as any; const v = leadView(l);
   // v3 §4.4: the only hard send-gate left is a policy-required approval that hasn't happened
-  if (approvalRequiredFor(req.user.workspace_id, p.total || 0) && !approvedApprovalFor(req.user.workspace_id, p.id)) {
+  if (approvalRequiredFor(req.user.workspace_id, p.total || 0, req.user.role) && !approvedApprovalFor(req.user.workspace_id, p.id)) {
     const pend = maybeRequestApproval(req.user.workspace_id, req.user.id, l, p);
     return res.status(422).json({ error: { code: "approval_required", message: `Workspace policy requires approval before sending a $${p.total} proposal — it's in the approver's queue now.`, approval_id: pend?.id || null } });
   }

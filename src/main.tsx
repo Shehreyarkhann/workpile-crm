@@ -864,7 +864,7 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any)
     {tab === "services" && canSettings && <div className="card">{svcs.map(sv => <div className="check" key={sv.id}><span className={`st ${sv.active ? "pass" : "fail"}`}>{sv.active ? "✓" : "✗"}</span><span style={{ flex: 1 }}>{sv.name} {sv.is_catalog ? "" : "(not in catalog — Demand Gap territory)"}</span><button className="btn ghost small" onClick={async () => { await api(`/api/services/${sv.id}`, { method: "PATCH", body: { active: !sv.active } }); loadAll(); }}>{sv.active ? "Deactivate" : "Activate"}</button></div>)}
       <div className="rowflex" style={{ marginTop: 10 }}><input style={{ flex: 1 }} placeholder="New service name" id="nsvc" /><button className="btn" onClick={async () => { const el = document.getElementById("nsvc") as HTMLInputElement; await api("/api/services", { method: "POST", body: { name: el.value } }); el.value = ""; loadAll(); }}>Add service</button></div></div>}
     {tab === "team" && canTeam && <div className="card"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Approval limit</th><th></th></tr></thead><tbody>
-      {users.map((u: any) => <tr key={u.id}><td>{u.name}{u.has_overrides ? <span className="tinyBadge" style={{ marginLeft: 6, background: "#fef9c3", color: "#854d0e" }}>custom access</span> : null}</td><td>{u.email}</td><td><select value={u.role} onChange={async e => { await api(`/api/team/${u.id}`, { method: "PATCH", body: { role: e.target.value } }); loadAll(); }}><option>OWNER</option><option>APPROVER</option><option>OPS_ADMIN</option><option>LEAD_OWNER</option><option>PM</option><option>ADMIN</option></select></td><td>{money(u.approval_limit)}</td><td>{u.role === "OWNER" ? <span className="muted">Full access</span> : <button className="btn ghost small" onClick={() => setAccessFor(u)}>Access…</button>}</td></tr>)}
+      {users.map((u: any) => <tr key={u.id}><td>{u.name}{u.has_overrides ? <span className="tinyBadge" style={{ marginLeft: 6, background: "#fef9c3", color: "#854d0e" }}>custom access</span> : null}</td><td>{u.email}</td><td><select value={u.role} onChange={async e => { await api(`/api/team/${u.id}`, { method: "PATCH", body: { role: e.target.value } }); loadAll(); }}><option>OWNER</option><option>APPROVER</option><option>OPS_ADMIN</option><option>LEAD_OWNER</option><option>PM</option><option>ADMIN</option></select></td><td>{u.role === "OWNER" ? <b style={{ color: "#14532d" }}>Unlimited</b> : money(u.approval_limit)}</td><td>{u.role === "OWNER" ? <span className="muted">Full access</span> : <button className="btn ghost small" onClick={() => setAccessFor(u)}>Access…</button>}</td></tr>)}
     </tbody></table>
       <div className="rowflex" style={{ marginTop: 12 }}><input style={{ flex: 1 }} placeholder="Name" value={nu.name} onChange={e => setNu({ ...nu, name: e.target.value })} /><input style={{ flex: 1 }} placeholder="Email" value={nu.email} onChange={e => setNu({ ...nu, email: e.target.value })} /><input style={{ flex: 1 }} placeholder="Temp password" value={nu.password} onChange={e => setNu({ ...nu, password: e.target.value })} /><select style={{ width: 150 }} value={nu.role} onChange={e => setNu({ ...nu, role: e.target.value })}><option>LEAD_OWNER</option><option>PM</option><option>APPROVER</option><option>OPS_ADMIN</option></select><button className="btn" onClick={async () => { await api("/api/users", { method: "POST", body: nu }); setNu({ name: "", email: "", role: "LEAD_OWNER", password: "" }); loadAll(); setMsg("Team member added ✓"); }}>Add member</button></div>
       {accessFor && <AccessModal member={accessFor} close={() => setAccessFor(null)} done={() => { setAccessFor(null); loadAll(); setMsg("Access updated ✓"); }} />}</div>}
@@ -1761,7 +1761,63 @@ function JobsBoard({ openJob }: any) {
   </div>);
 }
 
-function JobDetail({ id, users, priceBook, close, refresh, openLead }: any) {
+
+function Avatar({ u, size = 30 }: any) {
+  if (u?.avatar_url) return <img className="avatar" style={{ width: size, height: size }} src={u.avatar_url} alt={u?.name || ""} />;
+  const ini = String(u?.name || "?").trim().split(/\s+/).map((w: string) => w[0]).slice(0, 2).join("").toUpperCase();
+  return <span className="avatar avatarIni" style={{ width: size, height: size, fontSize: Math.max(10, size * 0.4) }}>{ini}</span>;
+}
+
+function JobChat({ jobId, me, users }: any) {
+  const [msgs, setMsgs] = useState<any[]>([]); const [draft, setDraft] = useState(""); const [mids, setMids] = useState<string[]>([]);
+  const [query, setQuery] = useState<string | null>(null); const boxRef = useRef<any>(null);
+  const load = () => api("/api/jobs/" + jobId + "/messages").then(r => setMsgs(r.messages || [])).catch(() => {});
+  useEffect(load, [jobId]);
+  useEffect(() => { const el = boxRef.current; if (el) el.scrollTop = el.scrollHeight; }, [msgs.length]);
+  const team = (users || []).filter((u: any) => u.active !== 0);
+  const candidates = query === null ? [] : team.filter((u: any) => u.id !== me?.id && u.name.toLowerCase().includes(query.toLowerCase())).slice(0, 6);
+  const onType = (v: string) => { setDraft(v); const mm = v.match(/@([\w ]*)$/); setQuery(mm ? mm[1] : null); };
+  const pick = (u: any) => { setDraft(d => d.replace(/@([\w ]*)$/, "@" + u.name + " ")); setMids(x => [...new Set([...x, u.id])]); setQuery(null); };
+  const send = async () => { if (!draft.trim()) return; const r = await api("/api/jobs/" + jobId + "/messages", { method: "POST", body: { body: draft, mention_ids: mids } }); setMsgs(x => [...x, r.message]); setDraft(""); setMids([]); setQuery(null); };
+  const renderBody = (msg: any) => {
+    let parts: any[] = [msg.body]; let mentions: string[] = []; try { mentions = JSON.parse(msg.mentions || "[]"); } catch {}
+    for (const mid of mentions) { const u = team.find((t: any) => t.id === mid); if (!u) continue; const tag = "@" + u.name; const next: any[] = []; for (const p of parts) { if (typeof p !== "string") { next.push(p); continue; } const segs = p.split(tag); segs.forEach((s: string, i: number) => { if (i > 0) next.push(<b className="mention" key={mid + i}>@{u.name}</b>); if (s) next.push(s); }); } parts = next; }
+    return parts;
+  };
+  return (<div className="chatBox">
+    <div className="chatMsgs" ref={boxRef}>{msgs.length === 0 && <p className="muted" style={{ margin: 4 }}>No team messages yet. Coordinate the crew here — type @ to tag someone; they'll get a bell notification.</p>}
+      {msgs.map((msg: any) => <div className="chatMsg" key={msg.id}><Avatar u={{ name: msg.user_name, avatar_url: msg.user_avatar }} size={28} /><div className="chatMain"><div className="chatHead"><b>{msg.user_name}</b><span className="muted">{dt(msg.created_at)}</span></div><div className="chatBody">{renderBody(msg)}</div></div></div>)}
+    </div>
+    <div className="chatComposer">
+      {query !== null && candidates.length > 0 && <div className="mentionPicker">{candidates.map((u: any) => <button key={u.id} onClick={() => pick(u)}><Avatar u={u} size={22} /> {u.name} <span className="muted">{u.role}</span></button>)}</div>}
+      <input value={draft} onChange={e => onType(e.target.value)} onKeyDown={e => { if (e.key === "Enter") send(); }} placeholder="Message the team on this job… type @ to tag" />
+      <button className="btn" onClick={send}>Send</button>
+    </div>
+  </div>);
+}
+
+function ProfileModal({ user, close, onSaved }: any) {
+  const [name, setName] = useState(user.name || ""); const [avatar, setAvatar] = useState<string | null>(user.avatar_url || null);
+  const [cur, setCur] = useState(""); const [next, setNext] = useState(""); const [msg, setMsg] = useState(""); const [err, setErr] = useState("");
+  const onPhoto = (f: File) => { const rd = new FileReader(); rd.onload = () => { const img = new Image(); img.onload = () => { const c = document.createElement("canvas"); c.width = c.height = 160; const x = c.getContext("2d")!; const s = Math.min(img.width, img.height); x.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, 160, 160); setAvatar(c.toDataURL("image/jpeg", 0.85)); }; img.src = String(rd.result); }; rd.readAsDataURL(f); };
+  const save = async () => { setErr(""); try { const r = await api("/api/users/me", { method: "PATCH", body: { name, avatar_url: avatar } }); onSaved(r.user); setMsg("Profile saved ✓"); } catch (e: any) { setErr(e.message); } };
+  const savePw = async () => { setErr(""); try { await api("/api/users/me/password", { method: "POST", body: { current: cur, next } }); setCur(""); setNext(""); setMsg("Password changed ✓"); } catch (e: any) { setErr(e.message); } };
+  return (<div className="modalWrap"><div className="modal" style={{ maxWidth: 460 }}>
+    <div className="rowflex" style={{ justifyContent: "space-between" }}><h3 style={{ margin: 0 }}>Your profile</h3><button className="btn ghost small" onClick={close}>✕ Close</button></div>
+    {err && <div className="err">{err}</div>}{msg && <div className="okbox">{msg}</div>}
+    <div className="rowflex" style={{ gap: 14, marginTop: 12 }}><Avatar u={{ name, avatar_url: avatar }} size={64} /><div><label className="btn ghost small" style={{ cursor: "pointer" }}>📷 Change photo<input type="file" accept="image/*" hidden onChange={e => e.target.files?.[0] && onPhoto(e.target.files[0])} /></label>{avatar && <button className="btn ghost small" onClick={() => setAvatar(null)}>Remove</button>}<p className="muted" style={{ margin: "6px 0 0", fontSize: 12 }}>Square-cropped automatically. Shows next to your name everywhere — chat, approvals, activity.</p></div></div>
+    <label className="f">Your name</label><input value={name} onChange={e => setName(e.target.value)} />
+    <label className="f">Email</label><input value={user.email} disabled />
+    <div className="rowflex" style={{ gap: 10, marginTop: 10 }}><span className="tinyBadge" style={{ background: "#e7f6ec", color: "#14532d" }}>{user.role}</span><span className="muted">{user.workspace_name}</span><span style={{ flex: 1 }} /><span className="muted">Approval limit: <b>{user.role === "OWNER" ? "Unlimited (owner)" : (user.approval_limit > 0 ? money(user.approval_limit) : "Set by role policy")}</b></span></div>
+    <div className="rowflex" style={{ marginTop: 14 }}><button className="btn" onClick={save}>Save profile</button><span style={{ flex: 1 }} /><button className="btn ghost" onClick={async () => { await fetch("/api/auth/logout", { method: "POST" }).catch(() => {}); location.reload(); }}>⏻ Sign out</button></div>
+    <h4 style={{ marginTop: 20 }}>Change password</h4>
+    <label className="f">Current password</label><input type="password" value={cur} onChange={e => setCur(e.target.value)} />
+    <label className="f">New password (8+ characters)</label><input type="password" value={next} onChange={e => setNext(e.target.value)} />
+    <button className="btn ghost" style={{ marginTop: 10 }} onClick={savePw}>Change password</button>
+  </div></div>);
+}
+
+function JobDetail({ id, users, me, priceBook, close, refresh, openLead }: any) {
   const [d, setD] = useState<any>(null); const [tab, setTab] = useState("overview"); const [msg, setMsg] = useState("");
   const [co, setCo] = useState<any>({ delta_scope: "", delta_total: "" }); const [sched, setSched] = useState<any>({ worker_name: "", work_date: new Date().toISOString().slice(0, 10), note: "" }); const [schedPick, setSchedPick] = useState<any>(null);
   const load = () => { api("/api/jobs/" + id).then(setD).catch(e => setMsg(e.message)); };
@@ -1788,6 +1844,8 @@ function JobDetail({ id, users, priceBook, close, refresh, openLead }: any) {
       <h4>Paperwork checklist</h4>
       {d.documents.map((doc: any) => <div className="check" key={doc.id}><span className={`st ${doc.status === "received" ? "pass" : "fail"}`}>{doc.status === "received" ? "✓" : "✗"}</span><span style={{ flex: 1 }}>{doc.name}{doc.required ? " (required)" : ""}</span>{doc.status !== "received" && <><button className="btn ghost small" onClick={async () => { const r = await api(`/api/documents/${doc.id}/chase`, { method: "POST", body: {} }).catch((e: any) => ({ error: e.message })); setMsg(r.error ? "Chase failed: " + r.error : `Chase email queued — status: ${r.status}`); }}>Chase it</button><button className="btn ghost small" onClick={async () => { await api(`/api/documents/${doc.id}`, { method: "PATCH", body: { status: "received" } }); load(); }}>Mark received</button></>}</div>)}
       {d.documents.length === 0 && <p className="muted">No documents tracked for this job yet.</p>}
+      <h4 style={{ marginTop: 16 }}>💬 Team chat <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>internal — customers never see this · @ tags notify</span></h4>
+      <JobChat jobId={id} me={me} users={users} />
       <h4 style={{ marginTop: 16 }}>Invoices</h4>
       {(d.invoices || []).map((inv: any) => <div className="check" key={inv.id}><span style={{ flex: 1 }}><b>{inv.number}</b> · {money(inv.total)} · {inv.status} · balance {money(inv.balance)}{inv.due_at ? ` · due ${new Date(inv.due_at).toLocaleDateString()}` : ""}</span>{inv.balance > 0 && inv.status !== "void" && <><input id={"jpay-" + inv.id} type="number" placeholder="$" style={{ width: 90 }} /><button className="btn ghost small" onClick={async () => { const v = Number((document.getElementById("jpay-" + inv.id) as HTMLInputElement).value); if (!(v > 0)) return; try { await api(`/api/invoices/${inv.id}/payments`, { method: "POST", body: { amount: v } }); toast("Payment recorded ✓"); load(); } catch (e: any) { setMsg(e.message); } }}>Record payment</button></>}</div>)}
       {!(d.invoices || []).some((x: any) => ["sent", "partially_paid"].includes(x.status)) && j.stage !== "CANCELLED" && <button className="btn ghost small" onClick={async () => { try { await api(`/api/jobs/${j.id}/invoice`, { method: "POST", body: {} }); toast("Invoice created ✓"); load(); } catch (e: any) { setMsg(e.message); } }}>🧾 Create invoice ({money(j.value)})</button>}
@@ -2259,6 +2317,9 @@ function App() {
   useEffect(() => { const h = (e: any) => { setAgentFocus(e.detail?.executionId || ""); setAgentOpen(true); }; window.addEventListener("wp-agent", h); return () => window.removeEventListener("wp-agent", h); }, []); const [users, setUsers] = useState<any[]>([]); const [priceBook, setPriceBook] = useState<any[]>([]);
 const [sb, setSb] = useState(() => localStorage.getItem("wp_sb") || "open"); const [mOpen, setMOpen] = useState(false);
   const [notifs, setNotifs] = useState<any[]>([]); const [unread, setUnread] = useState(0); const [bellOpen, setBellOpen] = useState(false); const [verifyMsg, setVerifyMsg] = useState("");
+  const [profOpen, setProfOpen] = useState(false);
+  const [navOpen, setNavOpen] = useState<any>(() => { try { return JSON.parse(localStorage.getItem("wp_nav_groups") || "{}"); } catch { return {}; } });
+  const toggleGroup = (g: string) => { const n = { ...navOpen, [g]: navOpen[g] === false ? true : false }; setNavOpen(n); try { localStorage.setItem("wp_nav_groups", JSON.stringify(n)); } catch {} };
 const [pending, setPending] = useState(0); const [creating, setCreating] = useState(false); const [leadId, setLeadId] = useState<string | null>(null); const [tick, setTick] = useState(0);
   const [palOpen, setPalOpen] = useState(false); const [helpOpen, setHelpOpen] = useState(false); const [jobOpen, setJobOpen] = useState<string | null>(null); const [ltOpen, setLtOpen] = useState(false); const [custOpen, setCustOpen] = useState<string | null>(null);
   const [appMode, setAppMode] = useState(() => localStorage.getItem("wp_app") || "all"); const [favs, setFavs] = useState<any[]>([]); const [tabSignal, setTabSignal] = useState<any>(null);
@@ -2294,23 +2355,42 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
   const inApp = (v: string) => appMode === "all" || (APPS[appMode] || []).includes(v) || ["settings", "billing", "admin"].includes(v);
   const NavB = ({ v, children, cnt, short, onGo }: any) => !inApp(v) ? null : <button className={nav.view === v ? "on" : ""} title={children} onClick={() => { if (onGo) onGo(); else go({ view: v }); setMOpen(false); }}><span className="nshort">{short}</span><span className="nlab">{children}</span>{cnt ? <span className="cnt">{cnt}</span> : null}</button>;
   const toggleSb = () => { const next = sb === "rail" ? "open" : "rail"; setSb(next); localStorage.setItem("wp_sb", next); };
+  const NavGroup = ({ id, label, children }: any) => sb === "rail"
+    ? <div className="navGroupRail">{children}</div>
+    : (<div className="navSection"><button className="navGroupBtn" onClick={() => toggleGroup(id)}><span>{label}</span><span className="navChev">{navOpen[id] === false ? "▸" : "▾"}</span></button>{navOpen[id] !== false && <div className="navItems">{children}</div>}</div>);
   return (<div>
     {user.impersonation && <div style={{ background: "#991b1b", color: "#fff", padding: "8px 16px", display: "flex", gap: 12, alignItems: "center", fontSize: 13.5 }}><span>🕵 <b>Impersonation</b> — viewing as {user.name} ({user.workspace_name}). Started by {user.impersonation.by_name}; ends {dt(user.impersonation.expires_at)}. Everything done in this window is audited.</span><span style={{ flex: 1 }} /><button className="btn small" style={{ background: "#fff", color: "#991b1b", fontWeight: 700 }} onClick={async () => { await api("/api/auth/impersonation/exit", { method: "POST", body: {} }); location.reload(); }}>Exit impersonation</button></div>}
     <div className="layout">
       <ToastHost />
     {mOpen && <div className="scrim" onClick={() => setMOpen(false)} />}
-    <aside className={`side ${sb === "rail" ? "rail" : ""} ${mOpen ? "mOpen" : ""}`}><div className="sideHead"><Logo /><button className="collapseBtn" title={sb === "rail" ? "Expand sidebar" : "Collapse sidebar"} onClick={toggleSb}>{sb === "rail" ? "»" : "«"}</button></div><div className="who">{user.name} · {user.role}</div>
+    <aside className={`side ${sb === "rail" ? "rail" : ""} ${mOpen ? "mOpen" : ""}`}><div className="sideHead"><Logo /><button className="collapseBtn" title={sb === "rail" ? "Expand sidebar" : "Collapse sidebar"} onClick={toggleSb}>{sb === "rail" ? "»" : "«"}</button></div><button className="profileCard" onClick={() => setProfOpen(true)} title="Your profile — photo, name, password">
+        <Avatar u={user} size={34} />
+        {sb !== "rail" && <span className="pcMeta"><b>{user.name}</b><span>{user.role}</span></span>}
+      </button>
       <select className="wsSwitch" value={user.workspace_id} onChange={async e => { if (e.target.value === "__new") { const name = prompt("New business / workspace name"); if (name) { await api("/api/workspaces", { method: "POST", body: { name } }); location.reload(); } return; } await api("/api/workspaces/switch", { method: "POST", body: { workspace_id: e.target.value } }); location.reload(); }}>
         {workspaces.map((w: any) => <option key={w.workspace_id} value={w.workspace_id}>{w.name} ({w.role})</option>)}
         <option value="__new">+ New workspace…</option></select>
-      <select className="wsSwitch" value={appMode} onChange={e => setAppMode(e.target.value)} title="App — Salesforce-style tab sets"><option value="all">App: All modules</option><option value="sales">App: Sales</option><option value="ops">App: Operations</option><option value="marketing">App: Marketing</option></select>
-      {favs.length > 0 && <div style={{ padding: "4px 2px" }}><div className="muted" style={{ fontSize: 11, letterSpacing: 0.4 }}>⭐ FAVORITES</div>{favs.slice(0, 6).map(f => <button key={f.id} className="favItem" style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: 0, padding: "4px 6px", cursor: "pointer", fontSize: 13 }} onClick={() => { if (f.entity_type === "lead") openLead(f.entity_id); else if (f.entity_type === "job") setJobOpen(f.entity_id); else if (f.entity_type === "account") setCustOpen(f.entity_id); }}>{f.label}</button>)}</div>}
-      <div className="navGroup">MENU</div>
-      <NavB v="dashboard" short="HO">Home</NavB><NavB v="queue" short="WQ">Work Queue</NavB><NavB v="leads" short="LE">Leads</NavB><NavB v="customers" short="CU">Customers</NavB><NavB v="proposals" short="PR">Proposals</NavB><NavB v="jobs" short="JO">Jobs</NavB><NavB v="planner" short="SC" onGo={() => { go({ view: "planner" }); (window as any).wpGoTab?.("planner", "calendar"); }}>Schedule</NavB><NavB v="inbox" short="IN">Inbox</NavB><NavB v="reports" short="RE">Reports</NavB><NavB v="ai" short="AU">Automations</NavB><NavB v="settings" short="SE">Settings</NavB>
-      <div className="navGroup">MORE</div>
-      <NavB v="myday" short="MY">My Day</NavB><NavB v="planner" short="TA" onGo={() => { go({ view: "planner" }); (window as any).wpGoTab?.("planner", "tasks"); }}>Tasks</NavB><NavB v="pulse" short="PU">Pulse</NavB><NavB v="campaigns" short="CA">Campaigns</NavB><NavB v="library" short="LI">Library</NavB><NavB v="approvals" short="AP" cnt={pending || undefined}>Approvals</NavB><NavB v="imports" short="IM">Import CSV</NavB><NavB v="demand" short="DG">Demand Gap</NavB><NavB v="handoffs" short="HA">Handoffs</NavB><NavB v="ops" short="OP">Ops Console</NavB>
-      {user.is_platform_admin ? <NavB v="admin" short="AD">Platform Admin</NavB> : null}
-      <div className="sideFoot"><button title="Sign out" onClick={async () => { await fetch("/api/auth/logout", { method: "POST" }).catch(() => {}); setUser(null); }}><span className="nshort">⏻</span><span className="nlab">Sign out</span></button></div>
+      {sb !== "rail" && favs.length > 0 && <div style={{ padding: "4px 2px" }}><div className="muted" style={{ fontSize: 11, letterSpacing: 0.4 }}>⭐ FAVORITES</div>{favs.slice(0, 6).map(f => <button key={f.id} className="favItem" style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: 0, padding: "4px 6px", cursor: "pointer", fontSize: 13 }} onClick={() => { if (f.entity_type === "lead") openLead(f.entity_id); else if (f.entity_type === "job") setJobOpen(f.entity_id); else if (f.entity_type === "account") setCustOpen(f.entity_id); }}>{f.label}</button>)}</div>}
+      <NavGroup id="work" label="WORK">
+        <NavB v="dashboard" short="🏠">Home</NavB><NavB v="queue" short="🗂">Work Queue</NavB><NavB v="myday" short="☀️">My Day</NavB><NavB v="inbox" short="💬">Inbox</NavB><NavB v="planner" short="✅" onGo={() => { go({ view: "planner" }); (window as any).wpGoTab?.("planner", "tasks"); }}>Tasks</NavB>
+      </NavGroup>
+      <NavGroup id="pipe" label="PIPELINE">
+        <NavB v="leads" short="🎯">Leads</NavB><NavB v="customers" short="👥">Customers</NavB><NavB v="proposals" short="📄">Proposals</NavB><NavB v="approvals" short="🖊" cnt={pending || undefined}>Approvals</NavB>
+      </NavGroup>
+      <NavGroup id="ops" label="OPERATIONS">
+        <NavB v="jobs" short="🛠">Jobs</NavB><NavB v="planner" short="🗓" onGo={() => { go({ view: "planner" }); (window as any).wpGoTab?.("planner", "calendar"); }}>Schedule</NavB><NavB v="ops" short="🖥">Ops Console</NavB>
+      </NavGroup>
+      <NavGroup id="growth" label="GROWTH">
+        <NavB v="campaigns" short="📣">Campaigns</NavB><NavB v="demand" short="🔍">Demand Gap</NavB><NavB v="pulse" short="📊">Pulse</NavB><NavB v="handoffs" short="🤝">Handoffs</NavB><NavB v="library" short="📚">Library</NavB><NavB v="imports" short="📥">Import CSV</NavB>
+      </NavGroup>
+      <NavGroup id="insights" label="INSIGHTS">
+        <NavB v="reports" short="📈">Reports</NavB>
+      </NavGroup>
+      <NavGroup id="system" label="SYSTEM">
+        <NavB v="ai" short="🤖">Automations</NavB><NavB v="settings" short="⚙️">Settings</NavB>
+        {user.is_platform_admin ? <NavB v="admin" short="🛡">Platform Admin</NavB> : null}
+        {sb !== "rail" && <label className="appModeRow">App view<select value={appMode} onChange={e => setAppMode(e.target.value)} title="Salesforce-style tab sets"><option value="all">All modules</option><option value="sales">Sales</option><option value="ops">Operations</option><option value="marketing">Marketing</option></select></label>}
+      </NavGroup>
     </aside>
     <main>
       <div className="topbar"><button className="btn ghost burger" onClick={() => setMOpen(o => !o)}>☰</button><div className="search"><input type="search" readOnly placeholder="Search leads, jump anywhere…  ( ⌘K )" onFocus={() => setPalOpen(true)} /></div>
@@ -2320,7 +2400,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
         {notifs.length === 0 && <p className="muted">Nothing yet \u2014 approvals, signatures, deposits, and new leads land here.</p>}
         {notifs.map(n => <div key={n.id} className="bellItem" style={n.read_at ? {} : { background: "#f0f9f1" }} onClick={async () => { await api(`/api/notifications/${n.id}/read`, { method: "POST", body: {} }).catch(() => {}); setUnread(u => Math.max(0, u - (n.read_at ? 0 : 1))); setNotifs(ns => ns.map(x => x.id === n.id ? { ...x, read_at: x.read_at || "now" } : x)); const et = n.entity_type || (n.lead_id ? "lead" : null); const eid = n.entity_id || n.lead_id; setBellOpen(false); if (et === "lead" && eid) openLead(eid); else if (et === "job" && eid) setJobOpen(eid); else if (et === "account" && eid) setCustOpen(eid); else if (n.lead_id) openLead(n.lead_id); }}><b>{n.title}</b><br /><span className="muted">{n.body}</span><br /><span className="muted" style={{ fontSize: 11.5 }}>{dt(n.created_at)} · {(n.entity_type || (n.lead_id ? "lead" : "")) ? "tap to open →" : ""}</span></div>)}</div>}</div>
         <button className="btn ghost" title="Toggle dark mode" onClick={() => setTheme(t => t === "dark" ? "light" : "dark")}>{theme === "dark" ? "☀️" : "🌙"}</button>
-        <OnlinePill /><button className="btn ghost" onClick={() => setAgentOpen(true)}>✦ Agent</button><button className="btn ghost" title="Log time (T)" onClick={() => setLtOpen(true)}>⏱ Log time</button><button className="btn" onClick={() => setCreating(true)}>+ New Lead</button></div>
+        <OnlinePill /><button className="btn ghost" onClick={() => setAgentOpen(true)}>✦ Agent</button><button className="btn ghost" title="Log time (T)" onClick={() => setLtOpen(true)}>⏱ Log time</button><button className="btn" onClick={() => setCreating(true)}>+ New Lead</button><button className="avatarBtn" onClick={() => setProfOpen(true)} title={"Your profile — " + user.name}><Avatar u={user} size={32} /></button></div>
       {user && user.email_verified === 0 && <div className="verifyBar">✉️ Verify your email to secure your account and enable password recovery. <button className="btn ghost small" onClick={async () => { const r = await api("/api/auth/resend-verify", { method: "POST", body: {} }).catch((e: any) => ({ error: e.message })); setVerifyMsg(r.verify_url ? "Test mode \u2014 verify here: " + r.verify_url : r.error ? r.error : "Verification email sent \u2014 check your inbox."); }}>Resend verification</button>{verifyMsg && <span style={{ marginLeft: 8 }}>{verifyMsg}</span>}</div>}
       <EB>
       {nav.view === "queue" && <WorkQueue openLead={openLead} openJob={(id: string) => setJobOpen(id)} go={go} />}
@@ -2350,9 +2430,10 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       {nav.view === "billing" && <Billing />}
       {nav.view === "admin" && <Admin />}
       </EB>
-      {jobOpen && <JobDetail id={jobOpen} users={users} priceBook={priceBook} close={() => setJobOpen(null)} refresh={() => setTick(t => t + 1)} openLead={(lid: string) => { setJobOpen(null); setLeadId(lid); }} />}
+      {jobOpen && <JobDetail id={jobOpen} users={users} me={user} priceBook={priceBook} close={() => setJobOpen(null)} refresh={() => setTick(t => t + 1)} openLead={(lid: string) => { setJobOpen(null); setLeadId(lid); }} />}
       {custOpen && <CustomerDetail id={custOpen} close={() => setCustOpen(null)} openLead={openLead} openJob={(id: string) => setJobOpen(id)} />}
       {agentOpen && <AgentPanel close={() => setAgentOpen(false)} focusId={agentFocus} />}
+      {profOpen && <ProfileModal user={user} close={() => setProfOpen(false)} onSaved={(u: any) => setUser({ ...user, ...u })} />}
       {ltOpen && <LogTimeModal close={() => setLtOpen(false)} done={() => setTick(t => t + 1)} />}
       {creating && <CreateLead users={users} done={(id: any) => { setCreating(false); setTick(t => t + 1); if (id) openLead(id); }} />}
       {palOpen && <CommandPalette close={() => setPalOpen(false)} go={go} openLead={openLead} newLead={() => setCreating(true)} />}

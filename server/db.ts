@@ -82,6 +82,7 @@ export function initSchema() {
   CREATE TABLE IF NOT EXISTS workers (id TEXT PRIMARY KEY, workspace_id TEXT, name TEXT, phone TEXT, labor_class_id TEXT, linked_user_id TEXT, active INTEGER DEFAULT 1, created_at TEXT);
   CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, proposal_id TEXT, stage TEXT DEFAULT 'SCHEDULED', value REAL DEFAULT 0, sector TEXT DEFAULT 'private', scheduled_start TEXT, scheduled_end TEXT, invoice_status TEXT DEFAULT 'not_ready', packet_sent_at TEXT, created_from TEXT DEFAULT 'sign', closed_at TEXT, created_at TEXT, updated_at TEXT);
   CREATE TABLE IF NOT EXISTS inbox_comments (id TEXT PRIMARY KEY, workspace_id TEXT, inbox_item_id TEXT, user_id TEXT, body TEXT, created_at TEXT);
+  CREATE TABLE IF NOT EXISTS job_messages (id TEXT PRIMARY KEY, workspace_id TEXT, job_id TEXT, user_id TEXT, body TEXT, mentions TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS inbox_rules (id TEXT PRIMARY KEY, workspace_id TEXT, name TEXT, match_field TEXT, match_value TEXT, action TEXT, action_value TEXT, active INTEGER DEFAULT 1, created_at TEXT);
   CREATE TABLE IF NOT EXISTS canned_replies (id TEXT PRIMARY KEY, workspace_id TEXT, category TEXT, title TEXT, body TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS callbacks (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, due_at TEXT, note TEXT, status TEXT DEFAULT 'open', created_by TEXT, created_at TEXT, completed_at TEXT);
@@ -90,6 +91,7 @@ export function initSchema() {
   for (const stmt of [
     "ALTER TABLE users ADD COLUMN is_platform_admin INTEGER DEFAULT 0",
     "ALTER TABLE notifications ADD COLUMN entity_type TEXT",
+    "ALTER TABLE users ADD COLUMN avatar_url TEXT",
     "ALTER TABLE notifications ADD COLUMN entity_id TEXT",
     "ALTER TABLE workspaces ADD COLUMN logo_data TEXT",
     "ALTER TABLE approvals ADD COLUMN content_hash TEXT",
