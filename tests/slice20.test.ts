@@ -66,9 +66,9 @@ test("chase notifies the manager once; the sweeper never double-chases", async (
   const notes = dbm.db.prepare("SELECT * FROM notifications WHERE type='timesheet_missing'").all() as any[];
   assert.ok(notes.length >= 2); // manager + owners
   const ts = await import("../server/timesheets.ts");
-  const sweep = ts.chaseMissing();
+  const sweep = await ts.chaseMissing(); // v37.1: the sweep is async (a chase can send a real email now)
   assert.ok(sweep.chased >= 1); // Paul's last-week row is still unchased
-  const sweep2 = ts.chaseMissing();
+  const sweep2 = await ts.chaseMissing();
   assert.equal(sweep2.chased, 0); // dedupe via chased_at
 });
 

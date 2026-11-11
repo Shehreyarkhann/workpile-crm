@@ -54,8 +54,8 @@ test("missing reports get chased exactly once by the sweeper; My Day alerts the 
   const list = await J("/api/field-reports?date=" + yday, {}, { Cookie: cookie });
   assert.equal(list.j.rows[0].status, "missing"); assert.equal(list.j.rows[0].overdue, true);
   const fr = await import("../server/fieldreports.ts");
-  const s1 = fr.chaseMissingReports(); assert.ok(s1.chased >= 1);
-  const s2 = fr.chaseMissingReports(); assert.equal(s2.chased, 0);
+  const s1 = await fr.chaseMissingReports(); assert.ok(s1.chased >= 1); // v37.1: async (real email path)
+  const s2 = await fr.chaseMissingReports(); assert.equal(s2.chased, 0);
   const notes = dbm.db.prepare("SELECT * FROM notifications WHERE type='field_report_missing'").all() as any[];
   assert.ok(notes.length >= 2);
   const md = await J("/api/myday", {}, { Cookie: paulCookie });
