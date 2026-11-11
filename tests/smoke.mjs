@@ -26,6 +26,9 @@ try {
   if (login.status !== 200) throw new Error("login failed " + JSON.stringify(login.j));
   const cookie = login.cookie.split(";")[0];
   const H = { Cookie: cookie };
+  const pmLogin = await J("/api/auth/login", { method: "POST", body: { email: "paul@demo.test", password: "demo1234" } });
+  if (pmLogin.status !== 200) throw new Error("pm login failed");
+  const HP = { Cookie: pmLogin.cookie.split(";")[0] };
   // API ingestion with idempotency
   const payload = { contact: { name: "Smoke Test", phone: "+15165559999", email: "smoke@example.com" }, service_requested: "Water damage cleanup", est_value: 6000, message: "Flooded basement, this week", location: "Bay Shore, NY", source: "website-form" };
   const c1 = await J("/v1/leads", { method: "POST", headers: { Authorization: `Bearer ${KEY}`, "Idempotency-Key": "smoke-1" }, body: payload });
@@ -35,7 +38,7 @@ try {
   const dupe = await J("/v1/leads", { method: "POST", headers: { Authorization: `Bearer ${KEY}` }, body: payload });
   if (!dupe.j.duplicate) throw new Error("dedupe failed");
   // walk the workflow
-  const T = async (to, extra = {}) => { const r = await J(`/api/leads/${leadId}/transition`, { method: "POST", headers: H, body: { to_state: to, ...extra } }); if (r.status !== 200) throw new Error(`transition →${to} failed: ` + JSON.stringify(r.j)); };
+  const T = async (to, extra = {}, headers = H) => { const r = await J(`/api/leads/${leadId}/transition`, { method: "POST", headers, body: { to_state: to, ...extra } }); if (r.status !== 200) throw new Error(`transition →${to} failed: ` + JSON.stringify(r.j)); };
   // assign PM first (gate requires it)
   const detail = await J(`/api/leads/${leadId}`, { headers: H });
   await T("TRIAGED"); await T("QUALIFYING"); await T("QUALIFIED", { pm_id: pmId });
@@ -45,9 +48,9 @@ try {
   await J("/api/settings", { method: "PATCH", headers: H, body: { approval_policy: "always" } }); // v3 approvals are policy-driven
   const pb = await J("/api/price-book", { headers: H });
   // proposal can only be created pre-approval in real flow via builder; create draft directly through API while QUALIFIED:
-  const prop = await J(`/api/leads/${leadId}/proposals`, { method: "POST", headers: H, body: { line_items: [{ price_book_item_id: pb.j[0].id, qty: 1 }, { price_book_item_id: pb.j[1].id, qty: 2 }] } });
+  const prop = await J(`/api/leads/${leadId}/proposals`, { method: "POST", headers: HP, body: { line_items: [{ price_book_item_id: pb.j[0].id, qty: 1 }, { price_book_item_id: pb.j[1].id, qty: 2 }] } });
   if (prop.status !== 201) throw new Error("proposal failed " + JSON.stringify(prop.j));
-  await T("READY_FOR_APPROVAL"); // v3: lands in PROPOSAL stage; policy routes it to an approver
+  await T("READY_FOR_APPROVAL", {}, HP); // submitted by the PM: owners bypass gates (v25), so the policy gate fires for Paul and routes to an approver
   const appr = await J("/api/approvals", { headers: H });
   if (!appr.j.length) throw new Error("approval inbox empty");
   const dec = await J(`/api/approvals/${appr.j[0].id}/decide`, { method: "POST", headers: H, body: { decision: "approved" } });
