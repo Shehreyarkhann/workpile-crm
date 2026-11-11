@@ -268,6 +268,16 @@ function requireAuth(req: any, res: any, next: any) {
   req.session = sess;
   req.user = db.prepare("SELECT * FROM users WHERE id=?").get(sess.user_id);
   if (!req.user) return res.status(401).json({ error: { code: "unauthorized" } });
+  // V34 platform controls: a disabled account is locked out entirely; a
+  // suspended workspace refuses work (its members can still sign in, see the
+  // notice, switch workspaces, or sign out). Platform admins and active
+  // impersonation sessions are exempt so the operator can always get in.
+  if (req.user.disabled && !req.user.is_platform_admin) return res.status(403).json({ error: { code: "account_disabled", message: "This account has been disabled by the platform operator." } });
+  if (!req.user.is_platform_admin && !sess.impersonated_by) {
+    const wsr = db.prepare("SELECT suspended FROM workspaces WHERE id=?").get(req.user.workspace_id) as any;
+    const openPaths = ["/api/auth/me", "/api/auth/logout", "/api/workspaces", "/api/workspaces/switch"];
+    if (wsr?.suspended && !openPaths.includes(req.path)) return res.status(403).json({ error: { code: "workspace_suspended", message: "This workspace has been suspended by the platform operator." } });
+  }
   next();
 }
 function requireApiKey(scopes: string[]) {
@@ -308,12 +318,13 @@ function needPerm(key: keyof Perms) { return (req: any, res: any, next: any) => 
 app.post("/api/auth/login", (req, res) => {
   const u = db.prepare("SELECT * FROM users WHERE email=? AND active=1").get((req.body.email || "").toLowerCase()) as any;
   if (!u || !verifyPassword(req.body.password || "", u.password_hash)) return res.status(401).json({ error: { code: "bad_credentials" } });
+  if ((u as any).disabled && !(u as any).is_platform_admin) return res.status(403).json({ error: { code: "account_disabled", message: "This account has been disabled by the platform operator." } });
   const sid = uid("ses") + randomBytes(16).toString("hex");
   db.prepare("INSERT INTO sessions (id,user_id,created_at,expires_at) VALUES (?,?,?,?)").run(sid, u.id, now(), new Date(Date.now() + 7 * 86400000).toISOString());
   res.setHeader("Set-Cookie", `lf_session=${sid}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax`);
   res.json({ user: { id: u.id, name: u.name, email: u.email, role: u.role, workspace_id: u.workspace_id, is_platform_admin: !!u.is_platform_admin , email_verified: u.email_verified ?? 0, permissions: permsOf(u) }, session: sid });
 });
-app.get("/api/auth/me", requireAuth, (req: any, res) => { ensureMembership(req.user); const ws = db.prepare("SELECT name FROM workspaces WHERE id=?").get(req.user.workspace_id) as any; const __imp = (req as any).session?.impersonated_by ? { by_name: (db.prepare("SELECT name FROM users WHERE id=?").get((req as any).session.impersonated_by) as any)?.name || "platform admin", expires_at: (req as any).session.impersonation_expires_at } : null; res.json({ user: { id: req.user.id, name: req.user.name, email: req.user.email, role: req.user.role, avatar_url: req.user.avatar_url || null, approval_limit: req.user.approval_limit || 0, workspace_id: req.user.workspace_id, workspace_name: ws?.name, email_verified: req.user.email_verified ?? 0, is_platform_admin: !!req.user.is_platform_admin, impersonation: __imp, permissions: permsOf(req.user) }, workspaces: membershipsOf(req.user.id) }); });
+app.get("/api/auth/me", requireAuth, (req: any, res) => { ensureMembership(req.user); const ws = db.prepare("SELECT name FROM workspaces WHERE id=?").get(req.user.workspace_id) as any; const __imp = (req as any).session?.impersonated_by ? { by_name: (db.prepare("SELECT name FROM users WHERE id=?").get((req as any).session.impersonated_by) as any)?.name || "platform admin", expires_at: (req as any).session.impersonation_expires_at } : null; res.json({ user: { id: req.user.id, name: req.user.name, email: req.user.email, role: req.user.role, avatar_url: req.user.avatar_url || null, approval_limit: req.user.approval_limit || 0, workspace_id: req.user.workspace_id, workspace_name: ws?.name, workspace_suspended: !!(db.prepare("SELECT suspended FROM workspaces WHERE id=?").get(req.user.workspace_id) as any)?.suspended, email_verified: req.user.email_verified ?? 0, is_platform_admin: !!req.user.is_platform_admin, impersonation: __imp, permissions: permsOf(req.user) }, workspaces: membershipsOf(req.user.id) }); });
 
 // ---------- routes: workspace data ----------
 app.get("/api/users", requireAuth, (req: any, res) => res.json((db.prepare("SELECT * FROM users WHERE workspace_id=?").all(req.user.workspace_id) as any[]).map(u => ({ id: u.id, name: u.name, email: u.email, role: u.role, avatar_url: u.avatar_url || null, approval_limit: u.approval_limit, labor_class_id: u.labor_class_id || null, permissions: permsOf(u), has_overrides: !!u.permissions }))));
@@ -1449,7 +1460,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v33", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
+app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v34", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {
   const target = db.prepare("SELECT * FROM users WHERE id=?").get(String(req.body?.user_id || "")) as any;
@@ -1474,6 +1485,184 @@ app.post("/api/auth/impersonation/exit", requireAuth, (req: any, res) => {
   res.json({ ok: true, restored: { user_id: admin.id, name: admin.name } });
 });
 app.get("/api/admin/workspaces", requireAuth, requirePlatformAdmin, (_req: any, res) => res.json(workspaceHealth()));
+
+// ---------- V34: Platform Console — the operator's master dashboard ----------
+// Every mutation is written to platform_audit (which outlives the workspaces
+// it describes). The console manages customers (workspaces), their plans and
+// trials, suspensions, users and their access — the full CRUD the operator
+// needs, none of it available to workspace users.
+function pAudit(req: any, action: string, targetType: string, targetId: string | null, workspaceId: string | null, detail: any = {}) {
+  try { db.prepare("INSERT INTO platform_audit (id,admin_id,admin_email,action,target_type,target_id,workspace_id,detail,created_at) VALUES (?,?,?,?,?,?,?,?,?)").run(uid("paud"), req.user.id, req.user.email, action, targetType, targetId, workspaceId, JSON.stringify(detail), now()); } catch { /* audit must never break the action */ }
+}
+// Operator bootstrap: PLATFORM_ADMIN_EMAILS (comma-separated) always wins;
+// otherwise, when no platform admin exists yet, the deployment's first
+// account becomes the operator so the console is reachable on a fresh host.
+try {
+  for (const e of String(process.env.PLATFORM_ADMIN_EMAILS || "").split(",").map(s => s.trim()).filter(Boolean)) db.prepare("UPDATE users SET is_platform_admin=1 WHERE email=?").run(e);
+  const anyAdmin = (db.prepare("SELECT COUNT(*) c FROM users WHERE is_platform_admin=1").get() as any).c;
+  if (!anyAdmin) { const first = db.prepare("SELECT id FROM users ORDER BY rowid ASC LIMIT 1").get() as any; if (first) db.prepare("UPDATE users SET is_platform_admin=1 WHERE id=?").run(first.id); }
+} catch { /* schema not ready (import order) — the seed/login paths still work */ }
+
+app.get("/api/admin/overview", requireAuth, requirePlatformAdmin, (_req: any, res) => {
+  const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.c || 0;
+  const subs = db.prepare("SELECT plan, status FROM subscriptions").all() as any[];
+  let mrr = 0; for (const s of subs) if (s.status === "active") mrr += (planOf(s.plan).annual_price || 0) / 12;
+  const soon = new Date(Date.now() + 7 * 86400000).toISOString();
+  res.json({
+    workspaces: c("SELECT COUNT(*) c FROM workspaces"), users: c("SELECT COUNT(*) c FROM users"),
+    paying: subs.filter(s => s.status === "active").length, trialing: subs.filter(s => s.status === "trialing").length,
+    past_due: subs.filter(s => s.status === "past_due").length, suspended: c("SELECT COUNT(*) c FROM workspaces WHERE suspended=1"),
+    mrr_estimate: Math.round(mrr * 100) / 100,
+    signups_30d: c("SELECT COUNT(*) c FROM workspaces WHERE created_at>=?", new Date(Date.now() - 30 * 86400000).toISOString()),
+    trials_expiring_7d: c("SELECT COUNT(*) c FROM subscriptions WHERE status='trialing' AND current_period_end>? AND current_period_end<?", now(), soon),
+    disabled_users: c("SELECT COUNT(*) c FROM users WHERE disabled=1"),
+  });
+});
+
+function customerRow(w: any) {
+  const sub = db.prepare("SELECT * FROM subscriptions WHERE workspace_id=?").get(w.id) as any;
+  const owner = db.prepare("SELECT u.name, u.email FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=? AND m.role='OWNER' ORDER BY m.created_at LIMIT 1").get(w.id) as any;
+  const n = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0;
+  const lastLead = (db.prepare("SELECT MAX(created_at) m FROM leads WHERE workspace_id=?").get(w.id) as any)?.m;
+  const lastJob = (db.prepare("SELECT MAX(created_at) m FROM jobs WHERE workspace_id=?").get(w.id) as any)?.m;
+  return { id: w.id, name: w.name, vertical: w.vertical, created_at: w.created_at, suspended: !!w.suspended,
+    owner: owner || null, plan: sub ? planOf(sub.plan).key : planOf(w.plan).key, sub_status: sub?.status || "none", source: sub?.stripe_subscription_id ? "stripe" : (sub?.source === "manual" ? "manual" : null),
+    trial_ends_at: w.trial_ends_at || sub?.current_period_end || null, current_period_end: sub?.current_period_end || null,
+    stripe_customer_id: sub?.stripe_customer_id || null, stripe_subscription_id: sub?.stripe_subscription_id || null,
+    users: n("SELECT COUNT(*) c FROM memberships WHERE workspace_id=?"), leads: n("SELECT COUNT(*) c FROM leads WHERE workspace_id=?"),
+    jobs: n("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?"), signed_value: (db.prepare("SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=?").get(w.id) as any)?.v || 0,
+    last_activity: [lastLead, lastJob, w.created_at].filter(Boolean).sort().slice(-1)[0] || w.created_at };
+}
+app.get("/api/admin/customers", requireAuth, requirePlatformAdmin, (req: any, res) => {
+  const q = String(req.query.q || "").toLowerCase();
+  let rows = (db.prepare("SELECT * FROM workspaces ORDER BY created_at DESC").all() as any[]).map(customerRow);
+  if (q) rows = rows.filter(r => r.name.toLowerCase().includes(q) || (r.owner?.email || "").toLowerCase().includes(q) || (r.owner?.name || "").toLowerCase().includes(q));
+  res.json(rows);
+});
+app.get("/api/admin/customers/:id", requireAuth, requirePlatformAdmin, (req: any, res) => {
+  const w = db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.params.id) as any;
+  if (!w) return res.status(404).json({ error: { code: "not_found" } });
+  const users = db.prepare("SELECT u.id, u.name, u.email, m.role, u.disabled, u.is_platform_admin, m.created_at AS joined_at FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=? ORDER BY m.created_at").all(w.id);
+  const activity = db.prepare("SELECT action, entity, entity_id, created_at FROM audit_log WHERE workspace_id=? ORDER BY created_at DESC LIMIT 15").all(w.id);
+  const admin_actions = db.prepare("SELECT admin_email, action, detail, created_at FROM platform_audit WHERE workspace_id=? ORDER BY created_at DESC LIMIT 15").all(w.id);
+  res.json({ ...customerRow(w), users, activity, admin_actions });
+});
+app.post("/api/admin/customers/:id/plan", requireAuth, requirePlatformAdmin, (req: any, res) => {
+  const w = db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.params.id) as any;
+  if (!w) return res.status(404).json({ error: { code: "not_found" } });
+  const rawPlan = String(req.body?.plan || "");
+  if (!PLANS[rawPlan] && !PLAN_ALIASES[rawPlan]) return res.status(422).json({ error: { code: "bad_plan" } });
+  const plan = planOf(rawPlan).key;
+  const sub = ensureSubscription(w.id);
+  db.prepare("UPDATE subscriptions SET plan=?, status='active', source=?, updated_at=? WHERE workspace_id=?").run(plan, sub.stripe_subscription_id ? "stripe" : "manual", now(), w.id);
+  db.prepare("UPDATE workspaces SET plan=? WHERE id=?").run(plan, w.id);
+  pAudit(req, "customer.plan_changed", "workspace", w.id, w.id, { plan, via: sub.stripe_subscription_id ? "stripe-linked" : "manual comp" });
+  res.json(customerRow(db.prepare("SELECT * FROM workspaces WHERE id=?").get(w.id)));
+});
+app.post("/api/admin/customers/:id/trial", requireAuth, requirePlatformAdmin, (req: any, res) => {
+  const w = db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.params.id) as any;
+  if (!w) return res.status(404).json({ error: { code: "not_found" } });
+  const days = Math.max(1, Math.min(365, Number(req.body?.days || 30)));
+  const sub = ensureSubscription(w.id);
+  if (sub.status === "active" && sub.stripe_subscription_id) return res.status(422).json({ error: { code: "paying_customer", message: "This customer has a live Stripe subscription — manage the trial in Stripe." } });
+  const base = Math.max(Date.now(), new Date(sub.current_period_end || w.trial_ends_at || 0).getTime() || 0);
+  const end = new Date(base + days * 86400000).toISOString();
+  db.prepare("UPDATE subscriptions SET status='trialing', current_period_end=?, updated_at=? WHERE workspace_id=?").run(end, now(), w.id);
+  db.prepare("UPDATE workspaces SET trial_ends_at=? WHERE id=?").run(end, w.id);
+  pAudit(req, "customer.trial_extended", "workspace", w.id, w.id, { days, new_end: end });
+  res.json(customerRow(db.prepare("SELECT * FROM workspaces WHERE id=?").get(w.id)));
+});
+app.post("/api/admin/customers/:id/suspend", requireAuth, requirePlatformAdmin, (req: any, res) => {
+  const w = db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.params.id) as any;
+  if (!w) return res.status(404).json({ error: { code: "not_found" } });
+  const on = !!req.body?.suspended;
+  db.prepare("UPDATE workspaces SET suspended=? WHERE id=?").run(on ? 1 : 0, w.id);
+  pAudit(req, on ? "customer.suspended" : "customer.reactivated", "workspace", w.id, w.id, {});
+  res.json(customerRow(db.prepare("SELECT * FROM workspaces WHERE id=?").get(w.id)));
+});
+app.delete("/api/admin/customers/:id", requireAuth, requirePlatformAdmin, (req: any, res) => {
+  const w = db.prepare("SELECT * FROM workspaces WHERE id=?").get(req.params.id) as any;
+  if (!w) return res.status(404).json({ error: { code: "not_found" } });
+  if (w.id === req.user.workspace_id) return res.status(422).json({ error: { code: "own_workspace", message: "You are currently inside this workspace — switch to another workspace before deleting it." } });
+  pAudit(req, "customer.deleted", "workspace", w.id, w.id, { name: w.name });
+  const memberIds = (db.prepare("SELECT user_id FROM memberships WHERE workspace_id=?").all(w.id) as any[]).map(r => r.user_id);
+  let removed = 0;
+  db.exec("PRAGMA foreign_keys=OFF");
+  try {
+    db.exec("BEGIN");
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as any[];
+    for (const t of tables) {
+      if (t.name === "platform_audit") continue; // the operator's ledger outlives the workspace by design
+      const cols = (db.prepare(`PRAGMA table_info(${t.name})`).all() as any[]).map(c => c.name);
+      if (cols.includes("workspace_id")) { const r = db.prepare(`DELETE FROM ${t.name} WHERE workspace_id=?`).run(w.id) as any; removed += Number(r.changes || 0); }
+    }
+    // users whose only home this was: drop their sessions + accounts;
+    // members with other workspaces keep their accounts (re-homed below).
+    for (const uidX of memberIds) {
+      const left = (db.prepare("SELECT COUNT(*) c FROM memberships WHERE user_id=?").get(uidX) as any).c;
+      const u = db.prepare("SELECT workspace_id FROM users WHERE id=?").get(uidX) as any;
+      if (left === 0) { db.prepare("DELETE FROM sessions WHERE user_id=?").run(uidX); db.prepare("DELETE FROM users WHERE id=?").run(uidX); }
+      else if (u?.workspace_id === w.id) { const m = db.prepare("SELECT workspace_id, role FROM memberships WHERE user_id=? LIMIT 1").get(uidX) as any; db.prepare("UPDATE users SET workspace_id=?, role=? WHERE id=?").run(m.workspace_id, m.role, uidX); }
+    }
+    db.prepare("DELETE FROM workspaces WHERE id=?").run(w.id);
+    db.exec("COMMIT");
+  } catch (e) { try { db.exec("ROLLBACK"); } catch {} throw e; } finally { db.exec("PRAGMA foreign_keys=ON"); }
+  res.json({ ok: true, deleted_rows: removed });
+});
+app.get("/api/admin/users", requireAuth, requirePlatformAdmin, (req: any, res) => {
+  const q = String(req.query.q || "").toLowerCase();
+  let rows = db.prepare(`SELECT u.id, u.name, u.email, u.role, u.disabled, u.is_platform_admin, u.workspace_id, w.name AS workspace_name, (SELECT COUNT(*) FROM memberships m WHERE m.user_id=u.id) AS workspaces FROM users u LEFT JOIN workspaces w ON w.id=u.workspace_id ORDER BY u.rowid DESC`).all() as any[];
+  if (q) rows = rows.filter(r => r.name.toLowerCase().includes(q) || r.email.toLowerCase().includes(q));
+  res.json(rows.map(r => ({ ...r, disabled: !!r.disabled, is_platform_admin: !!r.is_platform_admin })));
+});
+app.post("/api/admin/users/:id/disable", requireAuth, requirePlatformAdmin, (req: any, res) => {
+  const u = db.prepare("SELECT * FROM users WHERE id=?").get(req.params.id) as any;
+  if (!u) return res.status(404).json({ error: { code: "not_found" } });
+  if (u.id === req.user.id) return res.status(422).json({ error: { code: "self_action", message: "You cannot disable your own account." } });
+  const on = !!req.body?.disabled;
+  db.prepare("UPDATE users SET disabled=? WHERE id=?").run(on ? 1 : 0, u.id);
+  if (on) db.prepare("DELETE FROM sessions WHERE user_id=?").run(u.id);
+  pAudit(req, on ? "user.disabled" : "user.enabled", "user", u.id, u.workspace_id, { email: u.email });
+  res.json({ ok: true, disabled: on });
+});
+app.post("/api/admin/users/:id/platform-admin", requireAuth, requirePlatformAdmin, (req: any, res) => {
+  const u = db.prepare("SELECT * FROM users WHERE id=?").get(req.params.id) as any;
+  if (!u) return res.status(404).json({ error: { code: "not_found" } });
+  const on = !!req.body?.on;
+  if (!on && u.id === req.user.id) return res.status(422).json({ error: { code: "self_action", message: "You cannot revoke your own platform admin access." } });
+  db.prepare("UPDATE users SET is_platform_admin=? WHERE id=?").run(on ? 1 : 0, u.id);
+  pAudit(req, on ? "user.admin_granted" : "user.admin_revoked", "user", u.id, u.workspace_id, { email: u.email });
+  res.json({ ok: true, is_platform_admin: on });
+});
+app.post("/api/admin/users/:id/role", requireAuth, requirePlatformAdmin, (req: any, res) => {
+  const u = db.prepare("SELECT * FROM users WHERE id=?").get(req.params.id) as any;
+  if (!u) return res.status(404).json({ error: { code: "not_found" } });
+  const wsId = String(req.body?.workspace_id || u.workspace_id); const role = String(req.body?.role || "");
+  if (!["OWNER", "APPROVER", "OPS_ADMIN", "LEAD_OWNER", "PM"].includes(role)) return res.status(422).json({ error: { code: "bad_role" } });
+  const m = db.prepare("SELECT * FROM memberships WHERE user_id=? AND workspace_id=?").get(u.id, wsId) as any;
+  if (!m) return res.status(404).json({ error: { code: "not_a_member" } });
+  db.prepare("UPDATE memberships SET role=? WHERE user_id=? AND workspace_id=?").run(role, u.id, wsId);
+  if (u.workspace_id === wsId) db.prepare("UPDATE users SET role=? WHERE id=?").run(role, u.id);
+  pAudit(req, "user.role_changed", "user", u.id, wsId, { email: u.email, role });
+  res.json({ ok: true, role });
+});
+app.delete("/api/admin/users/:id", requireAuth, requirePlatformAdmin, (req: any, res) => {
+  const u = db.prepare("SELECT * FROM users WHERE id=?").get(req.params.id) as any;
+  if (!u) return res.status(404).json({ error: { code: "not_found" } });
+  if (u.id === req.user.id) return res.status(422).json({ error: { code: "self_action" } });
+  const sole = db.prepare("SELECT m.workspace_id FROM memberships m WHERE m.user_id=? AND m.role='OWNER' AND (SELECT COUNT(*) FROM memberships x WHERE x.workspace_id=m.workspace_id AND x.role='OWNER')=1").all(u.id) as any[];
+  if (sole.length) return res.status(422).json({ error: { code: "sole_owner", message: "This user is the only owner of a workspace — transfer ownership or delete that workspace first." } });
+  pAudit(req, "user.deleted", "user", u.id, u.workspace_id, { email: u.email });
+  db.prepare("DELETE FROM sessions WHERE user_id=?").run(u.id);
+  db.prepare("DELETE FROM memberships WHERE user_id=?").run(u.id);
+  db.prepare("DELETE FROM users WHERE id=?").run(u.id);
+  res.json({ ok: true });
+});
+app.get("/api/admin/subscriptions", requireAuth, requirePlatformAdmin, (_req: any, res) => {
+  res.json((db.prepare("SELECT s.*, w.name AS workspace_name FROM subscriptions s JOIN workspaces w ON w.id=s.workspace_id ORDER BY s.created_at DESC").all() as any[]).map(s => ({ ...s, plan: planOf(s.plan).key, source: s.stripe_subscription_id ? "stripe" : (s.source === "manual" ? "manual" : null), monthly_value: s.status === "active" ? Math.round(((planOf(s.plan).annual_price || 0) / 12) * 100) / 100 : 0 })));
+});
+app.get("/api/admin/audit", requireAuth, requirePlatformAdmin, (_req: any, res) => res.json(db.prepare("SELECT * FROM platform_audit ORDER BY created_at DESC LIMIT 60").all()));
+
 app.get("/api/admin/synthetics", requireAuth, requirePlatformAdmin, async (req: any, res) => { const base = `${req.protocol}://${req.get("host")}`; res.json(await runSynthetics(base)); });
 app.get("/api/admin/dlq", requireAuth, requirePlatformAdmin, (_req: any, res) => res.json(db.prepare("SELECT * FROM outcome_deliveries WHERE last_status='dead_letter' ORDER BY created_at DESC").all()));
 

@@ -1093,11 +1093,116 @@ function Billing() {
   </div>);
 }
 
+const stPill = (s: string) => { const map: any = { trialing: ["⏳ Trialing", "#92400e", "#fef3c7"], active: ["● Active", "#166534", "#dcfce7"], past_due: ["⚠ Past due", "#991b1b", "#fee2e2"], canceled: ["Canceled", "#475569", "#e2e8f0"], none: ["No subscription", "#475569", "#e2e8f0"] }; const [label, fg, bg] = map[s] || [s, "#334155", "#e2e8f0"]; return <span style={{ background: bg, color: fg, borderRadius: 999, padding: "2px 9px", fontSize: 11.5, fontWeight: 700, whiteSpace: "nowrap" }}>{label}</span>; };
+
 function Admin() {
+  const [tab, setTab] = useState("customers"); const [ov, setOv] = useState<any>(null);
+  useEffect(() => { api("/api/admin/overview").then(setOv).catch(() => {}); }, []);
+  return (<div><h2 className="pt">Platform Console</h2><p className="sub">Master view across every customer on this deployment — plans, trials, access and data. Every action here is written to the platform audit log.</p>
+    {ov && <div className="kpis" style={{ marginBottom: 14 }}>
+      <div className="kpi"><div className="lab">Workspaces</div><div className="val">{ov.workspaces}</div><div className="hint">{ov.signups_30d} new in 30 days</div></div>
+      <div className="kpi"><div className="lab">Paying</div><div className="val">{ov.paying}</div><div className="hint">{ov.past_due} past due</div></div>
+      <div className="kpi"><div className="lab">On trial</div><div className="val">{ov.trialing}</div><div className="hint">{ov.trials_expiring_7d} expiring within 7 days</div></div>
+      <div className="kpi"><div className="lab">Est. MRR</div><div className="val">${Number(ov.mrr_estimate).toLocaleString()}</div><div className="hint">active plans, annual ÷ 12</div></div>
+      <div className="kpi"><div className="lab">Users</div><div className="val">{ov.users}</div><div className="hint">{ov.disabled_users} disabled · {ov.suspended} suspended ws</div></div>
+    </div>}
+    <div className="rowflex" style={{ marginBottom: 12 }}>{[["customers", "🏢 Customers"], ["users", "👥 Users"], ["subs", "💳 Subscriptions"], ["activity", "🧾 Activity"], ["system", "🛠 System"]].map(([k, l]) => <button key={k} className={"chip" + (tab === k ? " on" : "")} onClick={() => setTab(k)}>{l}</button>)}</div>
+    {tab === "customers" && <AdminCustomers />}
+    {tab === "users" && <AdminUsers />}
+    {tab === "subs" && <AdminSubs />}
+    {tab === "activity" && <AdminActivity />}
+    {tab === "system" && <AdminSystem />}
+  </div>);
+}
+
+function AdminCustomers() {
+  const [rows, setRows] = useState<any[]>([]); const [q, setQ] = useState(""); const [f, setF] = useState("all"); const [sel, setSel] = useState("");
+  const load = () => { api("/api/admin/customers" + (q ? "?q=" + encodeURIComponent(q) : "")).then(setRows).catch(() => {}); };
+  useEffect(() => { load(); }, [q]);
+  const shown = rows.filter(r => f === "all" ? true : f === "suspended" ? r.suspended : r.sub_status === f);
+  return (<div>
+    <div className="rowflex" style={{ marginBottom: 10 }}><input type="search" placeholder="Search workspace, owner name or email…" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 340 }} />
+      {[["all", "All"], ["trialing", "Trialing"], ["active", "Paying"], ["past_due", "Past due"], ["suspended", "Suspended"]].map(([k, l]) => <button key={k} className={"chip" + (f === k ? " on" : "")} onClick={() => setF(k)}>{l}</button>)}</div>
+    <div className="card" style={{ padding: 6, overflowX: "auto" }}><table><thead><tr><th>Workspace</th><th>Plan</th><th>Status</th><th>Trial / period ends</th><th>Users</th><th>Leads</th><th>Signed</th><th>Last activity</th><th>Joined</th></tr></thead><tbody>
+      {shown.map(w => <tr key={w.id} onClick={() => setSel(w.id)} style={{ cursor: "pointer", opacity: w.suspended ? 0.62 : 1 }}><td><b>{w.name}</b>{w.suspended && <span style={{ color: "#991b1b", fontWeight: 700 }}> · SUSPENDED</span>}<br /><span className="muted">{w.owner ? `${w.owner.name} · ${w.owner.email}` : "no owner"}</span></td><td style={{ textTransform: "capitalize" }}>{w.plan}</td><td>{stPill(w.sub_status)}</td><td>{w.current_period_end ? new Date(w.current_period_end).toLocaleDateString() : "—"}</td><td>{num(w.users)}</td><td>{num(w.leads)}</td><td>{money(w.signed_value)}</td><td>{w.last_activity ? new Date(w.last_activity).toLocaleDateString() : "—"}</td><td>{new Date(w.created_at).toLocaleDateString()}</td></tr>)}
+      {shown.length === 0 && <tr><td colSpan={9} className="muted" style={{ padding: 16 }}>No customers match.</td></tr>}
+    </tbody></table></div>
+    {sel && <AdminCustomerDrawer id={sel} close={() => setSel("")} changed={load} />}
+  </div>);
+}
+
+function AdminCustomerDrawer({ id, close, changed }: any) {
+  const [d, setD] = useState<any>(null); const [plan, setPlan] = useState("pro"); const [delName, setDelName] = useState(""); const [busy, setBusy] = useState("");
+  const load = () => { api("/api/admin/customers/" + id).then((r: any) => { setD(r); setPlan(r.plan); }).catch(() => {}); };
+  useEffect(() => { load(); }, [id]);
+  if (!d) return <div className="adminDrawer"><p className="muted">Loading…</p></div>;
+  const act = async (label: string, fn: () => Promise<any>) => { setBusy(label); try { await fn(); toast(label + " ✓"); load(); changed && changed(); } catch (e: any) { toast(e.message || "Failed"); } setBusy(""); };
+  return (<div className="adminDrawer"><div className="rowflex" style={{ justifyContent: "space-between" }}><h3 style={{ margin: 0 }}>{d.name}</h3><button className="btn ghost small" onClick={close}>✕</button></div>
+    <p className="muted" style={{ margin: "4px 0 10px" }}>{d.owner ? `${d.owner.name} · ${d.owner.email}` : "no owner"} · joined {new Date(d.created_at).toLocaleDateString()} · {d.users.length} users · {num(d.leads)} leads · {num(d.jobs)} jobs · {money(d.signed_value)} signed</p>
+    <div className="rowflex">{stPill(d.sub_status)}{d.suspended && <span style={{ background: "#fee2e2", color: "#991b1b", borderRadius: 999, padding: "2px 9px", fontSize: 11.5, fontWeight: 700 }}>SUSPENDED</span>}<span className="muted">via {d.source || "—"}{d.current_period_end ? ` · period ends ${new Date(d.current_period_end).toLocaleDateString()}` : ""}</span></div>
+    <h4 className="pcH">Plan & trial</h4>
+    <div className="rowflex"><select value={plan} onChange={e => setPlan(e.target.value)} style={{ width: 150 }}>{["starter", "pro", "business", "enterprise"].map(p => <option key={p} value={p}>{p[0].toUpperCase() + p.slice(1)}</option>)}</select>
+      <button className="btn small" disabled={busy !== ""} onClick={() => act("Plan set to " + plan, () => api(`/api/admin/customers/${id}/plan`, { method: "POST", body: { plan } }))}>Set plan</button>
+      <button className="btn ghost small" disabled={busy !== ""} onClick={() => act("Trial extended 7 days", () => api(`/api/admin/customers/${id}/trial`, { method: "POST", body: { days: 7 } }))}>Trial +7d</button>
+      <button className="btn ghost small" disabled={busy !== ""} onClick={() => act("Trial extended 30 days", () => api(`/api/admin/customers/${id}/trial`, { method: "POST", body: { days: 30 } }))}>Trial +30d</button></div>
+    <p className="muted">Setting a plan without a Stripe subscription comps the workspace (recorded as a manual plan). Stripe ids: {d.stripe_customer_id || "—"} / {d.stripe_subscription_id || "—"}</p>
+    <h4 className="pcH">Users ({d.users.length})</h4>
+    <table><thead><tr><th>User</th><th>Role</th><th></th></tr></thead><tbody>{d.users.map((u: any) => <tr key={u.id} style={{ opacity: u.disabled ? 0.55 : 1 }}><td><b>{u.name}</b>{!!u.is_platform_admin && " 🛡"}<br /><span className="muted">{u.email}</span></td>
+      <td><select style={{ width: 126 }} value={u.role} onChange={e => act("Role updated", () => api(`/api/admin/users/${u.id}/role`, { method: "POST", body: { role: e.target.value, workspace_id: id } }))}>{["OWNER", "APPROVER", "OPS_ADMIN", "LEAD_OWNER", "PM"].map(r => <option key={r} value={r}>{r}</option>)}</select></td>
+      <td><div className="rowflex"><button className="btn ghost small" onClick={async () => { await api("/api/admin/impersonate", { method: "POST", body: { user_id: u.id } }); location.reload(); }}>Impersonate</button>
+      <button className="btn ghost small" onClick={() => act(u.disabled ? "User enabled" : "User disabled", () => api(`/api/admin/users/${u.id}/disable`, { method: "POST", body: { disabled: !u.disabled } }))}>{u.disabled ? "Enable" : "Disable"}</button></div></td></tr>)}</tbody></table>
+    <h4 className="pcH">Access</h4>
+    <div className="rowflex">{d.suspended
+      ? <button className="btn" disabled={busy !== ""} onClick={() => act("Workspace reactivated", () => api(`/api/admin/customers/${id}/suspend`, { method: "POST", body: { suspended: false } }))}>▶ Reactivate workspace</button>
+      : <button className="btn ghost" disabled={busy !== ""} onClick={() => { if (confirm(`Suspend ${d.name}? Its team is locked out until you reactivate. Data is kept.`)) act("Workspace suspended", () => api(`/api/admin/customers/${id}/suspend`, { method: "POST", body: { suspended: true } })); }}>⏸ Suspend workspace</button>}</div>
+    <h4 className="pcH" style={{ color: "#991b1b" }}>Danger zone</h4>
+    <p className="muted">Delete this workspace and ALL its data (leads, proposals, jobs, files metadata, users who belong only here). This cannot be undone. Type the workspace name to confirm.</p>
+    <div className="rowflex"><input placeholder={d.name} value={delName} onChange={e => setDelName(e.target.value)} style={{ maxWidth: 220 }} />
+      <button className="btn" style={{ background: "#991b1b" }} disabled={delName !== d.name || busy !== ""} onClick={() => act("Workspace deleted", async () => { await api(`/api/admin/customers/${id}`, { method: "DELETE" }); close(); })}>Delete workspace</button></div>
+    {d.admin_actions?.length > 0 && <><h4 className="pcH">Operator actions</h4>{d.admin_actions.map((x: any, i: number) => <p key={i} className="muted" style={{ margin: "3px 0" }}>{new Date(x.created_at).toLocaleString()} · {x.admin_email} · {x.action}</p>)}</>}
+    {d.activity?.length > 0 && <><h4 className="pcH">Recent workspace activity</h4>{d.activity.map((x: any, i: number) => <p key={i} className="muted" style={{ margin: "3px 0" }}>{new Date(x.created_at).toLocaleString()} · {x.action} · {x.entity}</p>)}</>}
+  </div>);
+}
+
+function AdminUsers() {
+  const [rows, setRows] = useState<any[]>([]); const [q, setQ] = useState("");
+  const load = () => { api("/api/admin/users" + (q ? "?q=" + encodeURIComponent(q) : "")).then(setRows).catch(() => {}); };
+  useEffect(() => { load(); }, [q]);
+  const act = async (label: string, fn: () => Promise<any>) => { try { await fn(); toast(label + " ✓"); load(); } catch (e: any) { toast(e.message || "Failed"); } };
+  return (<div>
+    <input type="search" placeholder="Search name or email…" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 340, marginBottom: 10 }} />
+    <div className="card" style={{ padding: 6, overflowX: "auto" }}><table><thead><tr><th>User</th><th>Current workspace</th><th>Role</th><th>Access</th><th></th></tr></thead><tbody>
+      {rows.map(u => <tr key={u.id} style={{ opacity: u.disabled ? 0.55 : 1 }}><td><b>{u.name}</b>{u.is_platform_admin && " 🛡"}<br /><span className="muted">{u.email} · member of {u.workspaces}</span></td><td>{u.workspace_name || "—"}</td><td>{u.role}</td>
+        <td>{u.disabled ? <span style={{ color: "#991b1b", fontWeight: 700 }}>Disabled</span> : "Active"}{u.is_platform_admin && <span className="muted"> · platform admin</span>}</td>
+        <td><div className="rowflex"><button className="btn ghost small" onClick={async () => { await api("/api/admin/impersonate", { method: "POST", body: { user_id: u.id } }); location.reload(); }}>Impersonate</button>
+          <button className="btn ghost small" onClick={() => act(u.disabled ? "Enabled" : "Disabled", () => api(`/api/admin/users/${u.id}/disable`, { method: "POST", body: { disabled: !u.disabled } }))}>{u.disabled ? "Enable" : "Disable"}</button>
+          <button className="btn ghost small" onClick={() => { if (confirm((u.is_platform_admin ? "Revoke platform admin from " : "Grant platform admin to ") + u.email + "?")) act("Admin access updated", () => api(`/api/admin/users/${u.id}/platform-admin`, { method: "POST", body: { on: !u.is_platform_admin } })); }}>{u.is_platform_admin ? "Revoke admin" : "Make admin"}</button>
+          <button className="btn ghost small" onClick={() => { if (confirm(`Delete the account ${u.email}? Their authored work stays; their access ends.`)) act("User deleted", () => api(`/api/admin/users/${u.id}`, { method: "DELETE" })); }}>Delete</button></div></td></tr>)}
+      {rows.length === 0 && <tr><td colSpan={5} className="muted" style={{ padding: 16 }}>No users match.</td></tr>}
+    </tbody></table></div></div>);
+}
+
+function AdminSubs() {
+  const [rows, setRows] = useState<any[]>([]);
+  useEffect(() => { api("/api/admin/subscriptions").then(setRows).catch(() => {}); }, []);
+  return (<div className="card" style={{ padding: 6, overflowX: "auto" }}><table><thead><tr><th>Workspace</th><th>Plan</th><th>Status</th><th>Source</th><th>Started</th><th>Period ends</th><th>Monthly value</th><th>Stripe sub</th></tr></thead><tbody>
+    {rows.map(s => <tr key={s.id}><td><b>{s.workspace_name}</b></td><td style={{ textTransform: "capitalize" }}>{s.plan}</td><td>{stPill(s.status)}</td><td>{s.source || (s.stripe_subscription_id ? "stripe" : "—")}</td><td>{new Date(s.created_at).toLocaleDateString()}</td><td>{s.current_period_end ? new Date(s.current_period_end).toLocaleDateString() : "—"}</td><td>{s.monthly_value ? money(s.monthly_value) : "—"}</td><td className="muted">{s.stripe_subscription_id || "—"}</td></tr>)}
+    {rows.length === 0 && <tr><td colSpan={8} className="muted" style={{ padding: 16 }}>No subscriptions yet.</td></tr>}
+  </tbody></table></div>);
+}
+
+function AdminActivity() {
+  const [rows, setRows] = useState<any[]>([]);
+  useEffect(() => { api("/api/admin/audit").then(setRows).catch(() => {}); }, []);
+  return (<div className="card"><h3 style={{ marginTop: 0 }}>Platform audit log</h3>
+    {rows.map(x => <p key={x.id} style={{ margin: "6px 0", borderBottom: "1px solid #eef1ee", paddingBottom: 6 }}><b>{x.action}</b> <span className="muted">· {x.admin_email} · {new Date(x.created_at).toLocaleString()}{x.workspace_id ? ` · ws ${String(x.workspace_id).slice(0, 10)}…` : ""}</span><br /><span className="muted">{String(x.detail || "").slice(0, 160)}</span></p>)}
+    {rows.length === 0 && <p className="muted">No operator actions recorded yet — plan changes, suspensions, deletions and access changes land here.</p>}</div>);
+}
+
+function AdminSystem() {
   const [ws, setWs] = useState<any[]>([]); const [syn, setSyn] = useState<any>(null); const [dlq, setDlq] = useState<any[]>([]);
   useEffect(() => { api("/api/admin/workspaces").then(setWs).catch(() => {}); api("/api/admin/dlq").then(setDlq).catch(() => {}); }, []);
-  return (<div><h2 className="pt">Platform Admin</h2><p className="sub">Operator view across every workspace on this deployment.</p>
-    <ActivationCard />
+  return (<div><ActivationCard />
     <div className="card" style={{ padding: 6 }}><table><thead><tr><th>Workspace</th><th>Leads</th><th>Users</th><th>Pending approvals</th><th>Dead letters</th></tr></thead><tbody>{ws.map((w: any) => <tr key={w.id}><td>{w.name}</td><td>{num(w.leads)}</td><td>{num(w.users)}</td><td>{num(w.pending_approvals)}</td><td>{num(w.dead_letters)}</td></tr>)}</tbody></table></div>
     <div className="card"><h3>Dead-letter queue ({dlq.length})</h3>{dlq.map((d: any) => <p key={d.id} className="muted">{d.outcome} · lead {String(d.lead_id).slice(0, 14)}… · {d.last_error || ""}</p>)}{dlq.length === 0 && <p className="muted">Empty — every delivery either landed or is still retrying.</p>}
       <button className="btn" onClick={async () => setSyn(await api("/api/admin/synthetics"))}>Run SLO synthetics</button>
@@ -2527,6 +2632,8 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
     window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, [user, palOpen]);
   const [workspaces, setWorkspaces] = useState<any[]>([]); const [newWs, setNewWs] = useState("");
   useEffect(() => { if (user) api("/api/workspaces").then(r => setWorkspaces(r.workspaces || [])).catch(() => {}); }, [user?.id]);
+  const [bill, setBill] = useState<any>(null);
+  useEffect(() => { if (user) api("/api/billing").then(setBill).catch(() => {}); }, [user?.workspace_id]);
   useEffect(() => { api("/api/auth/me").then(r => { setUser(r.user); setWorkspaces(r.workspaces || []); }).catch(() => {}); }, []);
   useEffect(() => { syncOffline(); const on = () => syncOffline(); window.addEventListener("online", on); return () => window.removeEventListener("online", on); }, []);
   useEffect(() => { if (user) api("/api/notifications").then(r => { setNotifs(r.notifications); setUnread(r.unread); }).catch(() => {}); }, [user, tick]);
@@ -2541,7 +2648,9 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
   const NavGroup = ({ id, label, children }: any) => sb === "rail"
     ? <div className="navGroupRail">{children}</div>
     : (<div className="navSection"><button className="navGroupBtn" onClick={() => toggleGroup(id)}><span>{label}</span><span className="navChev">{navOpen[id] === false ? "▸" : "▾"}</span></button>{navOpen[id] !== false && <div className="navItems">{children}</div>}</div>);
+  if (user.workspace_suspended && !user.is_platform_admin) return (<div style={{ maxWidth: 520, margin: "60px auto", padding: "0 16px" }}><div className="card" style={{ textAlign: "center", padding: 28 }}><div style={{ fontSize: 34 }}>⏸</div><h2 style={{ margin: "8px 0" }}>This workspace is suspended</h2><p className="muted">{user.workspace_name} has been suspended by the platform operator. Your data is safe — contact the operator to restore access, or switch to another workspace.</p><div className="rowflex" style={{ justifyContent: "center", marginTop: 14 }}>{workspaces.filter((w: any) => w.id !== user.workspace_id).map((w: any) => <button key={w.id} className="btn ghost" onClick={async () => { await api("/api/workspaces/switch", { method: "POST", body: { workspace_id: w.id } }); location.reload(); }}>Switch to {w.name}</button>)}<button className="btn ghost" onClick={async () => { await fetch("/api/auth/logout", { method: "POST" }).catch(() => {}); location.reload(); }}>⏻ Sign out</button></div></div></div>);
   return (<div>
+    {bill?.subscription?.status === "trialing" && <div style={{ background: (bill.trial_days_left ?? 1) <= 3 ? "#fef2f2" : "#fffbeb", color: (bill.trial_days_left ?? 1) <= 3 ? "#991b1b" : "#92400e", padding: "7px 16px", display: "flex", gap: 12, alignItems: "center", fontSize: 13.5, borderBottom: "1px solid #e5e7eb" }}><span style={{ flex: 1 }}>⏳ <b>{bill.subscription.plan ? bill.subscription.plan[0].toUpperCase() + bill.subscription.plan.slice(1) : "Pro"} trial</b> — {bill.trial_days_left > 0 ? `${bill.trial_days_left} day${bill.trial_days_left === 1 ? "" : "s"} left on this workspace` : "this workspace's trial has ended"}. Every workspace carries its own plan.</span><button className="btn small" onClick={() => go({ view: "settings" })}>See plans →</button></div>}
     {user.impersonation && <div style={{ background: "#991b1b", color: "#fff", padding: "8px 16px", display: "flex", gap: 12, alignItems: "center", fontSize: 13.5 }}><span>🕵 <b>Impersonation</b> — viewing as {user.name} ({user.workspace_name}). Started by {user.impersonation.by_name}; ends {dt(user.impersonation.expires_at)}. Everything done in this window is audited.</span><span style={{ flex: 1 }} /><button className="btn small" style={{ background: "#fff", color: "#991b1b", fontWeight: 700 }} onClick={async () => { await api("/api/auth/impersonation/exit", { method: "POST", body: {} }); location.reload(); }}>Exit impersonation</button></div>}
     <div className="layout">
       <ToastHost />
