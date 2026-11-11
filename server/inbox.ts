@@ -83,6 +83,28 @@ export function parseEmailCsv(text: string): InboundEmail[] {
 }
 
 // ---------- slice 19: per-category playbooks — suggested action + reply draft ----------
+const URGENT_WORDS = /\b(urgent|asap|emergency|complaint|lawsuit|legal|attorney|injured|injury|leak|flooding|flood|fire|hazard|unsafe|past due)\b/i;
+// Deterministic inbox priority: category weight + urgent language + age/overdue
+// pressure. No model involved — the same rules for every workspace, auditable.
+export function inboxPriority(item: any): { tier: "urgent" | "hot" | "normal"; escalated: boolean; reasons: string[] } {
+  const reasons: string[] = [];
+  const open = (item.status || "open") === "open";
+  const ageD = (Date.now() - new Date(item.received_at || item.created_at || Date.now()).getTime()) / 86400000;
+  const overdue = open && item.next_action_due_at && new Date(item.next_action_due_at).getTime() < Date.now();
+  const hotCat = ["client_active_job", "proposal"].includes(item.category);
+  const word = URGENT_WORDS.test(`${item.subject || ""} ${item.body || ""}`);
+  if (word) reasons.push("urgent language");
+  if (hotCat) reasons.push(item.category === "proposal" ? "proposal mail" : "active-job mail");
+  if (item.category === "finance") reasons.push("finance mail");
+  if (overdue) reasons.push("past its next-action time");
+  let tier: "urgent" | "hot" | "normal" = "normal";
+  if (hotCat || word || item.category === "finance") tier = "hot";
+  if ((hotCat && overdue) || (word && ageD >= 1) || (overdue && ageD >= 2)) tier = "urgent";
+  const escalated = open && ((tier === "urgent" && ageD >= 1) || (overdue && ageD >= 2));
+  if (escalated) reasons.push("escalated — waiting too long");
+  return { tier, escalated, reasons };
+}
+
 export function suggestInboxAction(item: any, business: string): { action: string; why: string; draft_subject: string; draft_body: string } {
   const first = String(item.from_name || "there").split(" ")[0];
   const subj = String(item.subject || "");

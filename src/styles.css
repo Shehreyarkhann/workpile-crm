@@ -463,3 +463,9 @@ aside.rail button.on .nshort { background:#ffffff22; }
   .tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; } .tabs::-webkit-scrollbar { display: none; }
   .tabs button { flex: 0 0 auto; white-space: nowrap; }
 }
+
+/* V30: source guides + integration guide box */
+.srcGuide { border: 1px solid #e2e8f0; border-radius: 10px; padding: 9px 13px; margin: 7px 0; background: #fbfcfb; }
+.srcGuide summary { cursor: pointer; font-weight: 700; font-size: 14px; }
+.srcGuide ol { margin: 8px 0 4px; padding-left: 20px; font-size: 13.5px; line-height: 1.55; }
+.srcGuide li { margin: 3px 0; }

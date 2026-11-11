@@ -3,6 +3,8 @@
 // and RECOMMEND; every mutation runs through an explicit human-approved apply call.
 import { db, uid, now } from "./db.ts";
 import { draftProposalForLead, qualifiedLeadsMissingProposals } from "./proposals-core.ts";
+import { inboxPriority } from "./inbox.ts";
+import { notifyOwners } from "./comms.ts";
 
 const OPEN = ["NEW", "WORKING", "QUALIFIED", "PROPOSAL", "SENT", "FOLLOWUP"];
 
@@ -126,6 +128,9 @@ export function runAutomationsFor(ws: string): any {
   if (w.auto_assign) actions.push("assign");
   if (w.auto_dedupe) actions.push("dedupe");
   let result: any = { level, level_name: AGENT_LEVELS[level] };
+  // Inbox escalation runs at every level (even Observe): hot/urgent company
+  // mail that waits too long pings the owners exactly once.
+  try { const items = db.prepare("SELECT * FROM inbox_items WHERE workspace_id=? AND (status IS NULL OR status='open') AND escalated_at IS NULL").all(ws) as any[]; let esc = 0; for (const it of items) { const p = inboxPriority(it); if (p.escalated) { notifyOwners(ws, "inbox.escalated", "🔥 Inbox escalated", `${it.subject || "(no subject)"} — ${p.reasons.join(", ")}`, it.lead_id || null, { type: "inbox", id: it.id } as any); db.prepare("UPDATE inbox_items SET escalated_at=? WHERE id=?").run(now(), it.id); esc++; } } if (esc) result.inbox_escalated = esc; } catch { /* escalation must never break the sweep */ }
   if (level <= 0) {
     result.mode = "observe";
     result.insights = insights(ws).length;

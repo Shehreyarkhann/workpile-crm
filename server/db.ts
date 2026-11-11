@@ -92,6 +92,7 @@ export function initSchema() {
     "ALTER TABLE users ADD COLUMN is_platform_admin INTEGER DEFAULT 0",
     "ALTER TABLE notifications ADD COLUMN entity_type TEXT",
     "ALTER TABLE users ADD COLUMN avatar_url TEXT",
+    "ALTER TABLE inbox_items ADD COLUMN escalated_at TEXT",
     "ALTER TABLE jobs ADD COLUMN requires_site_visit INTEGER DEFAULT 0",
     "ALTER TABLE inbox_items ADD COLUMN ai_draft_body TEXT",
     "ALTER TABLE inbox_items ADD COLUMN ai_draft_subject TEXT",
