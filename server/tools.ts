@@ -8,8 +8,11 @@
 import { db, uid, now } from "./db.ts";
 import { queueAndDeliver } from "./comms.ts";
 import { draftProposalForLead } from "./proposals-core.ts";
+import { inboxSuggestion, sendInboxReply, convertInboxItem } from "./inbox-ai.ts";
+import { suggestInboxAction } from "./inbox.ts";
 
 export type Control = "read" | "draft" | "execute" | "approval";
+function inboxOf(ws: string, itemId: string): any { const it = db.prepare("SELECT * FROM inbox_items WHERE id=? AND workspace_id=?").get(String(itemId || ""), ws) as any; if (!it) throw new Error("inbox item not found in this workspace"); return it; }
 export interface ToolDef { name: string; description: string; control: Control; parameters: Record<string, any>; run: (ws: string, actor: string, args: any) => Promise<{ summary: string; refs?: any }> | { summary: string; refs?: any } }
 const leadOf = (ws: string, id: string) => db.prepare("SELECT l.*, c.name contact_name, c.email contact_email, c.phone contact_phone FROM leads l LEFT JOIN contacts c ON c.id=l.contact_id WHERE l.id=? AND l.workspace_id=?").get(id, ws) as any;
 const money = (n: number) => "$" + Math.round(n || 0).toLocaleString();
@@ -62,6 +65,22 @@ export const TOOLS: Record<string, ToolDef> = {
     run(ws, _a, args) { const l = leadOf(ws, args.lead_id); if (!l) throw new Error("lead not found in this workspace");
       const body = draftBodyFor(ws, l, String(args.intent || "check in"));
       return { summary: `Draft for ${l.contact_name || l.service_requested}: "${body.slice(0, 140)}…"`, refs: { lead_id: l.id, draft: body, channel: l.contact_email ? "email" : "sms" } }; } },
+  triage_inbox: { name: "triage_inbox", description: "List open inbox items with category, sender, subject and the suggested next action for each.", control: "read",
+    parameters: { type: "object", properties: { limit: { type: "number" } } },
+    run(ws, _a, args) { const rows = db.prepare("SELECT * FROM inbox_items WHERE workspace_id=? AND status='open' ORDER BY received_at LIMIT ?").all(ws, Math.min(25, Number(args.limit) || 25)) as any[];
+      return { summary: `${rows.length} open inbox item(s): ` + rows.map(r => `${r.from_name || r.from_email} — ${r.subject} [${suggestInboxAction(r, "").action}]`).join("; ").slice(0, 400), refs: { open: rows.length, items: rows.map(r => ({ id: r.id, category: r.category, from: r.from_name || r.from_email, subject: r.subject })) } }; } },
+  draft_inbox_reply: { name: "draft_inbox_reply", description: "Generate (or fetch the cached) reply draft for an inbox item — written from the actual email when an AI provider is configured, else the category template. NOT sent.", control: "draft",
+    parameters: { type: "object", properties: { item_id: { type: "string" } }, required: ["item_id"] },
+    async run(ws, _a, args) { const it = inboxOf(ws, args.item_id); const w = db.prepare("SELECT name FROM workspaces WHERE id=?").get(ws) as any; const s = await inboxSuggestion(ws, it, w?.name || ""); return { summary: `${s.source === "ai" ? "AI draft" : "Template draft"} for ${it.from_name || it.from_email} (${s.action}): "${s.draft_body.slice(0, 140)}…"`, refs: { item_id: it.id, draft_subject: s.draft_subject, draft_body: s.draft_body, source: s.source } }; } },
+  send_inbox_reply: { name: "send_inbox_reply", description: "Send the reply for an inbox item and close it. ALWAYS requires human approval; consent and suppression are enforced by the send boundary.", control: "approval",
+    parameters: { type: "object", properties: { item_id: { type: "string" }, body: { type: "string" } }, required: ["item_id"] },
+    async run(ws, _a, args) { const it = inboxOf(ws, args.item_id); const r = await sendInboxReply(ws, it, args.body ? String(args.body) : undefined); return { summary: `Reply to ${it.from_name || it.from_email} ${r.status === "test_mode" ? "queued in TEST MODE (no provider credentials — not delivered)" : "sent"}; item closed.`, refs: { item_id: it.id, status: r.status } }; } },
+  convert_inbox_lead: { name: "convert_inbox_lead", description: "Convert an inbox item into a new lead (sender becomes the contact) and close the item.", control: "execute",
+    parameters: { type: "object", properties: { item_id: { type: "string" } }, required: ["item_id"] },
+    run(ws, a, args) { const it = inboxOf(ws, args.item_id); const r = convertInboxItem(ws, String(a || "agent"), it); return { summary: `Converted ${it.from_name || it.from_email} ("${String(it.subject || "").slice(0, 50)}") into a new lead; inbox item closed.`, refs: { item_id: it.id, lead_id: r.lead_id } }; } },
+  file_inbox_item: { name: "file_inbox_item", description: "Mark an inbox item done/filed without replying (e.g. pure FYI mail).", control: "execute",
+    parameters: { type: "object", properties: { item_id: { type: "string" } }, required: ["item_id"] },
+    run(ws, _a, args) { const it = inboxOf(ws, args.item_id); db.prepare("UPDATE inbox_items SET status='done', completed_at=? WHERE id=?").run(now(), it.id); return { summary: `Filed "${String(it.subject || "").slice(0, 60)}" — marked done, no reply sent.`, refs: { item_id: it.id } }; } },
   send_message: { name: "send_message", description: "Send a message to a customer. ALWAYS requires human approval; consent and suppression are enforced by the send boundary.", control: "approval",
     parameters: { type: "object", properties: { lead_id: { type: "string" }, body: { type: "string" }, channel: { type: "string" } }, required: ["lead_id", "body"] },
     async run(ws, _a, args) { const l = leadOf(ws, args.lead_id); if (!l) throw new Error("lead not found in this workspace");

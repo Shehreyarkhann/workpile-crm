@@ -171,6 +171,7 @@ export function pendingApprovalFor(workspaceId: string, proposalId: string) {
 import { createHash as __createHash } from "node:crypto";
 import { emitOutbox } from "./outbox.ts";
 import { analyzeBacklog } from "./audit.ts";
+import { inboxSuggestion, sendInboxReply } from "./inbox-ai.ts";
 import { AUDIT_PAGE } from "./audit-page.ts";
 import { jobStats } from "./jobs.ts";
 import { outboxPending } from "./outbox.ts";
@@ -1129,11 +1130,17 @@ app.get("/api/inbox", requireAuth, (req: any, res) => {
   res.json(rows);
 });
 // slice 19: inbox actions — work the non-lead mail like a queue, not a museum
-app.get("/api/inbox/:id/suggestion", requireAuth, (req: any, res) => {
+app.get("/api/inbox/:id/suggestion", requireAuth, async (req: any, res) => {
   const it = db.prepare("SELECT * FROM inbox_items WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!it) return res.status(404).json({ error: { code: "not_found" } });
   const w = db.prepare("SELECT name FROM workspaces WHERE id=?").get(req.user.workspace_id) as any;
-  res.json(suggestInboxAction(it, w?.name || ""));
+  res.json(await inboxSuggestion(req.user.workspace_id, it, w?.name || "", false));
+});
+app.post("/api/inbox/:id/suggestion/regenerate", requireAuth, async (req: any, res) => {
+  const it = db.prepare("SELECT * FROM inbox_items WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!it) return res.status(404).json({ error: { code: "not_found" } });
+  const w = db.prepare("SELECT name FROM workspaces WHERE id=?").get(req.user.workspace_id) as any;
+  res.json(await inboxSuggestion(req.user.workspace_id, it, w?.name || "", true));
 });
 app.patch("/api/inbox/:id", requireAuth, (req: any, res) => {
   const it = db.prepare("SELECT * FROM inbox_items WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
@@ -1149,11 +1156,8 @@ app.post("/api/inbox/:id/reply", requireAuth, async (req: any, res) => {
   const it = db.prepare("SELECT * FROM inbox_items WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!it) return res.status(404).json({ error: { code: "not_found" } });
   if (!it.from_email) return res.status(422).json({ error: { code: "no_sender_email" } });
-  const w = db.prepare("SELECT name FROM workspaces WHERE id=?").get(req.user.workspace_id) as any;
-  const sug = suggestInboxAction(it, w?.name || "");
-  const msg: any = await queueAndDeliver(req.user.workspace_id, { lead_id: it.lead_id || undefined, channel: "email", to: it.from_email, subject: String(req.body.subject || sug.draft_subject), body: String(req.body.body || sug.draft_body) });
-  db.prepare("UPDATE inbox_items SET status='done', completed_at=? WHERE id=?").run(now(), it.id);
-  res.json({ sent: true, status: msg.status });
+  const r = await sendInboxReply(req.user.workspace_id, it, req.body.body ? String(req.body.body) : undefined, req.body.subject ? String(req.body.subject) : undefined);
+  res.json({ sent: true, status: r.status });
 });
 app.post("/api/inbox/:id/convert-lead", requireAuth, (req: any, res) => {
   const it = db.prepare("SELECT * FROM inbox_items WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
@@ -1405,7 +1409,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v25", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
+app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v26", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {
   const target = db.prepare("SELECT * FROM users WHERE id=?").get(String(req.body?.user_id || "")) as any;

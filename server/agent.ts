@@ -78,6 +78,17 @@ export function triageSteps(ws: string, level: number, cap = 25): { steps: Step[
   return { steps, count: leads.length };
 }
 
+export function inboxSteps(ws: string, level: number, cap = 6): { steps: Step[]; count: number } {
+  const items = db.prepare("SELECT * FROM inbox_items WHERE workspace_id=? AND status='open' ORDER BY received_at LIMIT ?").all(ws, cap) as any[];
+  const steps: Step[] = [mkStep("triage_inbox", { limit: cap, __label: `Triage inbox — ${items.length} open` }, level)];
+  for (const it of items) {
+    const who = it.from_name || it.from_email || "sender";
+    steps.push(mkStep("draft_inbox_reply", { item_id: it.id, __label: `Draft reply — ${who}: ${String(it.subject || "").slice(0, 42)}` }, level));
+    steps.push(mkStep("send_inbox_reply", { item_id: it.id, __label: `Send reply — ${who}` }, level));
+  }
+  return { steps, count: items.length };
+}
+
 export async function createTriageExecution(ws: string, userId: string): Promise<any> {
   const w = db.prepare("SELECT * FROM workspaces WHERE id=?").get(ws) as any;
   const level = agentLevel(w);
@@ -96,7 +107,7 @@ export async function createExecution(ws: string, userId: string, instruction: s
   const ctx = businessContext(ws);
   if (parentId) { const p = db.prepare("SELECT summary, instruction FROM agent_executions WHERE id=? AND workspace_id=?").get(parentId, ws) as any; if (p) (ctx as any).parent = { instruction: p.instruction, summary: p.summary }; }
   db.prepare("INSERT INTO agent_executions (id,workspace_id,user_id,parent_id,instruction,status,planner,plan,context,created_at,updated_at) VALUES (?,?,?,?,?,'planning','', '[]',?,?,?)").run(id, ws, userId, parentId || null, instruction, JSON.stringify(ctx), now(), now());
-  let steps: Step[] = []; let planner = "rules-v1"; let tokens = { in: 0, out: 0 };
+  let steps: Step[] = []; let planner = "rules-v1"; let tokens = { in: 0, out: 0 }; let runNow = false;
   const provider = getProvider(ws);
   if (provider) {
     try {
@@ -106,12 +117,14 @@ export async function createExecution(ws: string, userId: string, instruction: s
       for (const s of Array.isArray(raw) ? raw.slice(0, 20) : []) if (s && TOOLS[s.tool]) steps.push(mkStep(s.tool, s.args || {}, level));
       if (!steps.length) steps = rulesPlan(ws, instruction, level); // model returned nothing usable — deterministic fallback, still labeled by planner
     } catch { steps = rulesPlan(ws, instruction, level); planner = "rules-v1 (provider error — fell back)"; }
-  } else if (/untouched|first touch|handle (all )?(the )?new leads|triage/.test(" " + instruction.toLowerCase() + " ")) { steps = triageSteps(ws, level).steps; planner = "rules-v1 (mass triage)"; }
+  } else if (/\binbox\b/.test(" " + instruction.toLowerCase() + " ")) { steps = inboxSteps(ws, level).steps; planner = "rules-v1 (inbox)"; runNow = true; }
+  else if (/untouched|first touch|handle (all )?(the )?new leads|triage/.test(" " + instruction.toLowerCase() + " ")) { steps = triageSteps(ws, level).steps; planner = "rules-v1 (mass triage)"; }
   else steps = rulesPlan(ws, instruction, level);
   const awaiting = steps.some(s => s.needs_approval && s.status === "pending");
   db.prepare("UPDATE agent_executions SET planner=?, plan=?, tokens_in=?, tokens_out=?, status=?, updated_at=? WHERE id=?").run(planner, JSON.stringify(steps), tokens.in, tokens.out, awaiting ? "awaiting_approval" : "executing", now(), id);
   const ex = getExecution(ws, id);
   if (!awaiting) return runExecution(ws, id);
+  if (runNow) return runExecution(ws, id); // inbox (like mass triage): drafts run now so the human approves sends with the text in front of them
   return ex;
 }
 
