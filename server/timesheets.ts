@@ -34,8 +34,8 @@ export function ensureWeek(ws: string, weekOf: string): number {
   return created;
 }
 export function chaseRow(row: any) {
-  if (row.manager_id) notify(row.workspace_id, [row.manager_id], "timesheet_missing", `⏱ Timesheet missing — week of ${row.week_of}`, "Your timesheet for that week hasn't been logged. Open Workpile → Ops Console → Timesheets to log your hours.");
-  notifyOwners(row.workspace_id, "timesheet_missing", `⏱ Timesheet still missing: week of ${row.week_of}`, "A worker's timesheet is outstanding — it was just chased automatically.");
+  if (row.manager_id) notify(row.workspace_id, [row.manager_id], "timesheet_missing", `⏱ Timesheet missing — week of ${row.week_of}`, "Your timesheet for that week hasn't been logged. Open Workpile → Ops Console → Timesheets to log your hours.", undefined, { type: "ops", id: "timesheets" });
+  notifyOwners(row.workspace_id, "timesheet_missing", `⏱ Timesheet still missing: week of ${row.week_of}`, "A worker's timesheet is outstanding — it was just chased automatically.", undefined, { type: "ops", id: "timesheets" });
   db.prepare("UPDATE timesheets SET chased_at=? WHERE id=?").run(now(), row.id);
 }
 export function chaseMissing(): { chased: number } {

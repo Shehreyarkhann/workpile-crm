@@ -78,7 +78,7 @@ export function notify(workspaceId: string, userIds: (string | null | undefined)
   for (const u of targets) db.prepare("INSERT INTO notifications (id,workspace_id,user_id,type,title,body,lead_id,entity_type,entity_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run(uid("ntf"), workspaceId, u, type, title, body, leadId || null, entity ? entity.type : (leadId ? "lead" : null), entity ? entity.id : (leadId || null), now());
   if (targets.length) { try { enqueueJob("push.notify", { userIds: targets, title, body }); } catch { /* queue unavailable: in-app notification already stored */ } }
 }
-export function notifyOwners(workspaceId: string, type: string, title: string, body: string, leadId?: string) {
+export function notifyOwners(workspaceId: string, type: string, title: string, body: string, leadId?: string, entity?: { type: string; id: string }) {
   const owners = db.prepare("SELECT id FROM users WHERE workspace_id=? AND role IN ('OWNER','APPROVER') AND active=1").all(workspaceId) as any[];
-  notify(workspaceId, owners.map(o => o.id), type, title, body, leadId);
+  notify(workspaceId, owners.map(o => o.id), type, title, body, leadId, entity);
 }

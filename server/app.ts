@@ -1136,6 +1136,20 @@ app.get("/api/inbox/:id/suggestion", requireAuth, async (req: any, res) => {
   const w = db.prepare("SELECT name FROM workspaces WHERE id=?").get(req.user.workspace_id) as any;
   res.json(await inboxSuggestion(req.user.workspace_id, it, w?.name || "", false));
 });
+app.post("/api/ai/enhance", requireAuth, async (req: any, res) => {
+  const text = String(req.body.text || ""); const purpose = String(req.body.purpose || "business message");
+  if (!text.trim()) return res.status(422).json({ error: { code: "empty_text" } });
+  if (text.length > 6000) return res.status(422).json({ error: { code: "too_long" } });
+  const { getProvider } = await import("./llm.ts");
+  const provider = getProvider(req.user.workspace_id);
+  if (!provider) return res.json({ source: "none", text, note: "No AI provider connected — add a key in Automations → AI provider and Enhance will rewrite this with the model." });
+  try {
+    const r = await provider.chat({ system: "You improve business writing. Rewrite the user's draft to be clearer, warmer and more concise while keeping EVERY fact, name, date, number, price and commitment exactly as written — never add or remove commitments. Keep the same sign-off. Return ONLY the rewritten text, no preamble.", messages: [{ role: "user", content: `Purpose: ${purpose}\n\n${text}` }], maxTokens: 900 });
+    const out = String(r.text || "").trim();
+    if (!out) throw new Error("empty");
+    return res.json({ source: "ai", model: `${provider.kind}:${r.model}`, text: out });
+  } catch { return res.json({ source: "none", text, note: "The AI provider didn't respond — your original text is untouched." }); }
+});
 app.post("/api/inbox/:id/suggestion/regenerate", requireAuth, async (req: any, res) => {
   const it = db.prepare("SELECT * FROM inbox_items WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!it) return res.status(404).json({ error: { code: "not_found" } });
@@ -1246,7 +1260,15 @@ app.get("/sign/:token", (req, res) => {
   const termsHtml = doc ? `<h3>Terms & Conditions</h3>${doc.template.terms_html}` : "";
   const footHtml = doc ? `<p style="color:#666;font-size:13px;border-top:1px solid #ddd;padding-top:10px">${doc.template.footer}</p>` : "";
   res.type("html").send(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><title>Proposal — ${ws.name}</title>
-  <style>body{font-family:sans-serif;max-width:640px;margin:24px auto;padding:0 16px}table{width:100%;border-collapse:collapse}td{border-bottom:1px solid #ddd;padding:6px}input{width:100%;padding:10px;margin:6px 0}button{background:#14532d;color:#fff;border:0;padding:12px 20px;border-radius:8px;width:100%}</style>
+  <style>body{font-family:sans-serif;max-width:640px;margin:24px auto;padding:0 16px}table{width:100%;border-collapse:collapse}td{border-bottom:1px solid #ddd;padding:6px}input{width:100%;padding:10px;margin:6px 0;box-sizing:border-box}button{background:#14532d;color:#fff;border:0;padding:12px 20px;border-radius:8px;width:100%}
+.sigblock{border:1px solid #e5e7eb;border-radius:12px;padding:16px;margin-top:18px;background:#fafafa}.sigblock h3{margin:0 0 10px;font-size:15px}
+.siggrid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.siggrid .full{grid-column:1/-1}
+.sigblock label{display:block;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#64748b;margin:0 0 2px}
+.sigblock input{margin:2px 0 0;background:#fff;border:1px solid #cbd5e1;border-radius:8px}
+.sigblock input[name=typed_signature]{font-family:cursive;font-size:22px;border:0;border-bottom:2px solid #14532d;border-radius:0;background:transparent;padding:4px 2px}
+.consent{display:flex;gap:8px;align-items:flex-start;font-size:13px;margin:12px 0;text-transform:none;letter-spacing:0;color:#334155;font-weight:400}
+.consent input{width:auto;margin:2px 0 0}
+@media(max-width:560px){.siggrid{grid-template-columns:1fr}}</style>
   ${tplHtml}<h1>${ws.name}</h1><h2>Proposal — ${lead.service_requested}</h2><p>Prepared for ${contact.name} · ${lead.location || ""}</p>
   ${introHtml}
   ${expired ? `<p style="background:#fef3c7;padding:10px;border-radius:8px">⏰ This proposal expired on ${new Date(p.expires_at).toLocaleDateString()} — contact us and we'll re-issue it with the same scope.</p>` : ""}${p.expires_at && !s.signed_at && !expired ? `<p class="muted">Valid until ${new Date(p.expires_at).toLocaleDateString()}</p>` : ""}
@@ -1255,11 +1277,13 @@ app.get("/sign/:token", (req, res) => {
   ${s.signed_at ? `<p>✅ Signed by ${s.signer_name} on ${new Date(s.signed_at).toLocaleString()}</p>` : `
   <form method="POST" action="/sign/${req.params.token}">
     ${optionsHtml}
-    <input name="signer_name" placeholder="Your full name" required>
-    <input name="signer_email" type="email" placeholder="Email">
-    <input name="typed_signature" placeholder="Type your name to sign" required>
-    <label><input type="checkbox" name="consent" value="1" style="width:auto" required> I agree to sign electronically (ESIGN/UETA) and accept this proposal.</label>
-    <button>Sign Proposal</button></form>`}`);
+    <div class="sigblock"><h3>Accept &amp; sign</h3><div class="siggrid">
+    <div><label for="sn">Full name</label><input id="sn" name="signer_name" placeholder="Your full name" required></div>
+    <div><label for="se">Email</label><input id="se" name="signer_email" type="email" placeholder="you@company.com"></div>
+    <div class="full"><label for="ts">Signature — type your name</label><input id="ts" name="typed_signature" placeholder="Type your name to sign" required></div>
+    </div>
+    <label class="consent"><input type="checkbox" name="consent" value="1" required> <span>I agree to sign electronically (ESIGN/UETA) and accept this proposal.</span></label>
+    <button>Sign Proposal</button></div></form>`}`);
 });
 app.post("/sign/:token", express.urlencoded({ extended: false }), (req: any, res) => {
   const ctx = getByToken(req.params.token);
@@ -1409,7 +1433,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v26", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
+app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v27", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {
   const target = db.prepare("SELECT * FROM users WHERE id=?").get(String(req.body?.user_id || "")) as any;

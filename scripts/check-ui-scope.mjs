@@ -26,3 +26,21 @@ for (const d of nested) {
 }
 if (bad) process.exit(1);
 console.log(`UI scope check OK (${nested.length} nested declarations, none used outside their parent)`);
+
+// Second audit: an effect callback must never return a Promise — React treats
+// the return value as the cleanup function and calls it on unmount, which
+// throws "x is not a function" and blanks the app (the JobChat bug, v27).
+// Flags expression-bodied helpers (`const f = () => api(...)`) passed to
+// useEffect, and inline `useEffect(() => api(...))` forms.
+const effectLines = lines.map((l, i) => [l, i + 1]).filter(([l]) => /useEffect\(/.test(l));
+let badFx = 0;
+for (const [l, n] of effectLines) {
+  if (/useEffect\(\s*\(\s*\)\s*=>\s*(api|fetch)\(/.test(l)) { badFx++; console.error(`UI-SCOPE: line ${n}: useEffect returns a promise directly — wrap the call in a block body.`); }
+  const m = l.match(/useEffect\(\s*([A-Za-z_$][\w$]*)\s*[,\)]/);
+  if (m) {
+    const def = new RegExp(`const ${m[1]} = \\(\\) => (api|fetch)\\(`);
+    if (lines.some(x => def.test(x))) { badFx++; console.error(`UI-SCOPE: line ${n}: useEffect(${m[1]}) — ${m[1]} is an expression-bodied async helper, so the effect returns a promise. Give it a block body.`); }
+  }
+}
+if (badFx) process.exit(1);
+console.log("Effect-hygiene check OK (no effect returns a promise)");

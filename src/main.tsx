@@ -29,7 +29,10 @@ export const syncOffline = async () => {
   localStorage.setItem("wp_offline_posts", JSON.stringify(left));
   if (left.length < q.length) location.reload();
 };
-export const money = (n: any) => "$" + Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 0 });
+export // Live refresh (v27): refetch on window focus + every 30s while mounted, so
+// views stay current without manual reloads. Cleanup is a proper function.
+function useLive(fn: () => void, ms = 30000) { const ref = useRef(fn); ref.current = fn; useEffect(() => { const run = () => { try { ref.current(); } catch {} }; const onF = () => run(); window.addEventListener("focus", onF); const iv = setInterval(run, ms); return () => { window.removeEventListener("focus", onF); clearInterval(iv); }; }, [ms]); }
+const money = (n: any) => "$" + Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 0 });
 export const num = (n: any) => Number(n || 0).toLocaleString();
 export const dt = (s: any) => s ? new Date(s).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "—";
 export const dOnly = (s: any) => s ? new Date(s).toLocaleDateString() : "—";
@@ -338,7 +341,7 @@ function MessagesPanel({ lead }: any) {
     <div className="chipRow"><button className={`chip ${ch === "email" ? "on" : ""}`} onClick={() => setCh("email")}>✉ Email {lead.contact_email || "(none on file)"}</button><button className={`chip ${ch === "sms" ? "on" : ""}`} onClick={() => setCh("sms")}>💬 SMS {lead.contact_phone || "(none)"}{lead.consent_contact_ok ? "" : " · no consent"}</button></div>
     {ch === "email" && <input placeholder="Subject" value={subject} onChange={e => setSubject(e.target.value)} style={{ marginBottom: 8 }} />}
     <textarea placeholder={ch === "sms" ? "Text message…" : "Message…"} value={body} onChange={e => setBody(e.target.value)} rows={4} style={{ width: "100%" }} />
-    <div className="rowflex" style={{ marginTop: 8 }}><button className="btn" disabled={!body.trim()} onClick={send}>Send {ch === "sms" ? "text" : "email"}</button>{note && <span className="muted">{note}</span>}</div>
+    <div className="rowflex" style={{ marginTop: 8 }}><button className="btn" disabled={!body.trim()} onClick={send}>Send {ch === "sms" ? "text" : "email"}</button><EnhanceBtn text={body} onText={setBody} purpose="customer message" />{note && <span className="muted">{note}</span>}</div>
     <h4 style={{ marginBottom: 6 }}>History</h4>
     {msgs.length === 0 && <p className="muted">Nothing sent yet.</p>}
     {msgs.map((m: any) => <p key={m.id} style={{ margin: "6px 0", borderBottom: "1px solid #eef2f7", paddingBottom: 6, ...(m.direction === "in" ? { background: "#f0f9ff", borderRadius: 8, padding: 8 } : {}) }}><b>{m.direction === "in" ? "↩ Customer reply" : m.channel === "sms" ? "💬" : "✉"} {m.direction === "in" ? "" : m.to_addr}</b> · <span className="tinyBadge">{m.status}</span> <span className="muted">{dt(m.created_at)}</span>{m.subject ? <><br /><b>{m.subject}</b></> : ""}<br /><span className="muted">{m.body.slice(0, 220)}</span></p>)}
@@ -614,6 +617,12 @@ function Handoffs() {
   </div>);
 }
 
+function EnhanceBtn({ text, onText, purpose }: any) {
+  const [busy, setBusy] = useState(false); const [note, setNote] = useState("");
+  const go = async () => { if (!String(text || "").trim() || busy) return; setBusy(true); setNote(""); const r = await api("/api/ai/enhance", { method: "POST", body: { text, purpose: purpose || "business message" } }).catch((e: any) => ({ source: "none", note: e.message })); if (r.source === "ai") { onText(r.text); setNote("✨ Enhanced by AI — review before sending"); } else setNote(r.note || "No AI provider connected yet."); setBusy(false); };
+  return <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}><button className="btn ghost small" disabled={!String(text || "").trim() || busy} onClick={go}>{busy ? "✨ Enhancing…" : "✨ Enhance with AI"}</button>{note && <span className="muted" style={{ fontSize: 12 }}>{note}</span>}</span>;
+}
+
 function InboxQueue({ inbox, reload }: any) {
   const [cat, setCat] = useState("all"); const [openId, setOpenId] = useState(""); const [sug, setSug] = useState<any>(null); const [draft, setDraft] = useState(""); const [msg, setMsg] = useState("");
   const cats = ["all", "client_active_job", "proposal", "field", "vendor", "finance", "admin"];
@@ -633,10 +642,10 @@ function InboxQueue({ inbox, reload }: any) {
         {i.overdue && !doneIt && <span className="st fail">overdue</span>}{doneIt ? <span className="st pass">done</span> : <span className="muted">due {dOnly(i.next_action_due_at)} · {i.owner_name || "unassigned"}</span>}</div>
       {openId === i.id && <div style={{ margin: "10px 0 4px", padding: 12, background: "#f8fafc", borderRadius: 10 }}>
         <div className="origMail"><div className="origHead"><b>📧 Original email</b><span className="muted">From {i.from_name || ""} &lt;{i.from_email || ""}&gt; · {dt(i.received_at || i.created_at)}</span></div><div className="origBody">{String(i.body || "(no body captured)")}</div></div>
-        {sug ? <div><p style={{ margin: "0 0 4px" }}><b>🤖 Suggested: {sug.action}</b> {sug.source === "ai" ? <span className="tinyBadge" style={{ background: "#e7f6ec", color: "#14532d" }}>✨ AI draft — written from this email{sug.model ? " · " + sug.model : ""}</span> : <span className="tinyBadge" style={{ background: "#fef9c3", color: "#854d0e" }}>📄 Template draft — add an AI key in Automations for drafts written from the actual email</span>}{sug.source === "ai" && <button className="btn ghost small" style={{ marginLeft: 8 }} onClick={async () => { const r = await api("/api/inbox/" + i.id + "/suggestion/regenerate", { method: "POST", body: {} }).catch(() => null); if (r) { setSug(r); setDraft(r.draft_body); } }}>↻ Regenerate</button>}</p><p className="muted" style={{ margin: "0 0 8px" }}>{sug.why}</p>
+        {sug ? <div><p style={{ margin: "0 0 4px" }}><b>🤖 Suggested: {sug.action}</b> {sug.source === "ai" ? <span className="tinyBadge" style={{ background: "#e7f6ec", color: "#14532d" }}>✨ AI draft — written from this email{sug.model ? " · " + sug.model : ""}</span> : <span className="tinyBadge" style={{ background: "#fef9c3", color: "#854d0e" }}>📄 Template draft — add an AI key in Automations for drafts written from the actual email</span>}<button className="btn ghost small" style={{ marginLeft: 8 }} onClick={async () => { const r = await api("/api/inbox/" + i.id + "/suggestion/regenerate", { method: "POST", body: {} }).catch(() => null); if (r) { setSug(r); setDraft(r.draft_body); if (r.source !== "ai") setMsg("No AI provider connected yet — add a key in Automations → AI provider and this button writes the reply from the email itself."); } }}>{sug.source === "ai" ? "↻ Regenerate" : "✨ Enhance with AI"}</button></p><p className="muted" style={{ margin: "0 0 8px" }}>{sug.why}</p>
           <label className="f">Reply — edit freely, sends from your workspace</label>
           <textarea rows={7} value={draft} onChange={e => setDraft(e.target.value)} />
-          <div className="rowflex"><select style={{ width: 230 }} defaultValue="" onChange={e => { const c = canned.find((x: any) => x.id === e.target.value); if (c) setDraft(c.body); e.target.value = ""; }}><option value="">Insert a canned reply…</option>{canned.map((c: any) => <option key={c.id} value={c.id}>{c.title}</option>)}</select>{i.claimed_by && <span className="tinyBadge">👀 being handled</span>}</div>
+          <div className="rowflex"><select style={{ width: 230 }} defaultValue="" onChange={e => { const c = canned.find((x: any) => x.id === e.target.value); if (c) setDraft(c.body); e.target.value = ""; }}><option value="">Insert a canned reply…</option>{canned.map((c: any) => <option key={c.id} value={c.id}>{c.title}</option>)}</select><EnhanceBtn text={draft} onText={setDraft} purpose="email reply" />{i.claimed_by && <span className="tinyBadge">👀 being handled</span>}</div>
           <div className="rowflex" style={{ marginTop: 8 }}>
             <button className="btn small" onClick={() => act(async () => { const r = await api("/api/inbox/" + i.id + "/reply", { method: "POST", body: { body: draft } }); return r; }, "Reply queued/sent ✓ — item closed")}>✉ Send reply & close</button>
             {!doneIt ? <button className="btn ghost small" onClick={() => act(() => api("/api/inbox/" + i.id, { method: "PATCH", body: { status: "done" } }), "Marked done ✓")}>✓ Mark done</button> : <button className="btn ghost small" onClick={() => act(() => api("/api/inbox/" + i.id, { method: "PATCH", body: { status: "open" } }), "Reopened ✓")}>Reopen</button>}
@@ -1077,6 +1086,27 @@ class EB extends React.Component<any, any> { state = { err: "" }; static getDeri
 function LogoMark({ size = 30 }: any) { return (<svg width={size} height={size} viewBox="0 0 64 64" aria-label="Workpile" style={{ flex: "none", display: "block" }}><rect width="64" height="64" rx="14" fill="#0e5c3a"/><rect x="12" y="41" width="40" height="9" rx="4.5" fill="#ffffff"/><rect x="17" y="29.5" width="30" height="9" rx="4.5" fill="#ffffff" opacity="0.92"/><rect x="22" y="18" width="20" height="9" rx="4.5" fill="#4ade80"/></svg>); }
 function Logo({ light }: any) { return <span className="logo" style={light ? { color: "#fff" } : {}}><LogoMark size={30} /><span className="ltxt">Workpile</span></span>; }
 
+function JobFiles({ jobId }: any) {
+  const [files, setFiles] = useState<any[]>([]); const [msg, setMsg] = useState("");
+  const load = () => { api(`/api/attachments?entity_type=job&entity_id=${jobId}`).then(setFiles).catch(() => {}); };
+  useEffect(load, [jobId]);
+  useLive(load);
+  const upload = (f: File) => { const r = new FileReader(); r.onload = async () => { try { const b64 = String(r.result || "").split(",")[1] || ""; await api("/api/attachments", { method: "POST", body: { entity_type: "job", entity_id: jobId, name: f.name, mime: f.type || "application/octet-stream", data_base64: b64 } }); setMsg("Uploaded ✓"); load(); } catch (e: any) { setMsg(e.message); } }; r.readAsDataURL(f); };
+  const del = async (id: string) => { await api(`/api/attachments/${id}`, { method: "DELETE" }).catch(() => {}); load(); };
+  const photos = files.filter(f => String(f.mime || "").startsWith("image/"));
+  const assets = files.filter(f => !String(f.mime || "").startsWith("image/"));
+  return (<div>
+    <h4 style={{ marginTop: 16 }}>📷 Job photos <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>from the field — before, during, after</span></h4>
+    {photos.length === 0 ? <p className="muted" style={{ margin: "4px 0" }}>No photos yet — site conditions, completed work, readings: if it matters, it's photographed and filed here.</p> :
+      <div className="photoGrid">{photos.map(f => <figure key={f.id} className="photoCell"><a href={`/api/attachments/${f.id}/download?inline=1`} target="_blank" rel="noreferrer"><img src={`/api/attachments/${f.id}/download?inline=1`} alt={f.name} loading="lazy" /></a><figcaption><span className="photoName">{f.name}</span><button className="btn ghost small" style={{ padding: "0 5px" }} onClick={() => del(f.id)}>✕</button></figcaption></figure>)}</div>}
+    <div className="rowflex"><label className="btn ghost small" style={{ cursor: "pointer" }}>📷 Add photo<input type="file" accept="image/*" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) upload(f); e.target.value = ""; }} /></label></div>
+    <h4 style={{ marginTop: 16 }}>🗂 Job assets <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>permits, manifests, equipment docs, signed paperwork</span></h4>
+    {assets.map(f => <div key={f.id} className="rowflex" style={{ padding: "4px 0" }}><a href={`/api/attachments/${f.id}/download`}>{f.name}</a><span className="muted">{Math.max(1, Math.round(f.size / 1024))} KB · {dt(f.created_at)}</span><span style={{ flex: 1 }} /><button className="btn ghost small" onClick={() => del(f.id)}>Delete</button></div>)}
+    {assets.length === 0 && <p className="muted" style={{ margin: "4px 0" }}>No files yet.</p>}
+    <div className="rowflex"><label className="btn ghost small" style={{ cursor: "pointer" }}>📎 Add file<input type="file" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) upload(f); e.target.value = ""; }} /></label>{msg && <span className="ok">{msg}</span>}</div>
+  </div>);
+}
+
 function AttachmentsPanel({ entityType, entityId }: any) {
   const [files, setFiles] = useState<any[]>([]); const [msg, setMsg] = useState("");
   const load = () => { api(`/api/attachments?entity_type=${entityType}&entity_id=${entityId}`).then(setFiles).catch(() => {}); };
@@ -1107,6 +1137,7 @@ function InboxPage() {
   const [inbox, setInbox] = useState<any[]>([]);
   const load = () => { api("/api/inbox").then(setInbox).catch(() => {}); };
   useEffect(load, []);
+  useLive(load);
   return (<div><h2 className="pt">Inbox</h2><p className="sub">Every inbound message, triaged into seven categories with a suggested action — convert, reply, file, or ignore. Nothing sits unread and unowned.</p><InboxQueue inbox={inbox} reload={load} /></div>);
 }
 
@@ -1728,6 +1759,7 @@ function WorkQueue({ openLead, openJob, go }: any) {
   const bulk = async (action: string, extra: any = {}) => { if (!selItems.length) return; const r = await api("/api/queue/bulk", { method: "POST", body: { lead_ids: selItems.map((i: any) => i.lead_id), action, ...extra } }).catch((e: any) => ({ error: e.message })); if ((r as any).error) { setBulkMsg((r as any).error); return; } setBulkMsg(`${action === "assign" ? "Assigned" : action === "snooze" ? "Snoozed" : "Tasks created for"} ${r.affected} lead${r.affected === 1 ? "" : "s"} ✓`); toast(`Bulk ${action}: ${r.affected} leads ✓`); setSel(new Set()); load(); };
   const load = () => { api("/api/queue").then(setQ).catch(() => {}); };
   useEffect(load, []);
+  useLive(load);
   const items = (q?.items || []).filter((i: any) => typeF === "all" || i.type === typeF);
   useEffect(() => { const h = (e: KeyboardEvent) => { if (!keysOn) return; const t = e.target as HTMLElement; if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
     if (e.key.toLowerCase() === "j") setFocus(f => Math.min(items.length - 1, f + 1));
@@ -1755,6 +1787,7 @@ function JobsBoard({ openJob }: any) {
   const [jobs, setJobs] = useState<any[]>([]); const [dragId, setDragId] = useState("");
   const load = () => { api("/api/jobs").then(setJobs).catch(() => {}); };
   useEffect(load, []);
+  useLive(load);
   const drop = async (st: string) => { if (!dragId) return; await api(`/api/jobs/${dragId}/stage`, { method: "POST", body: { to: st } }).catch(() => {}); setDragId(""); load(); };
   return (<div><h2 className="pt">Jobs</h2><p className="sub">Won work, run as operations: schedule it, crew it, work it, paper it, invoice it. Drag cards to move — both directions, always.</p>
     <div className="kanban">{JOB_STAGES.map(st => <div className="kcol" key={st} onDragOver={e => e.preventDefault()} onDrop={() => drop(st)}><h4>{st.replaceAll("_", " ")}<span>{num(jobs.filter(j => j.stage === st).length)}</span></h4>
@@ -1774,7 +1807,7 @@ function Avatar({ u, size = 30 }: any) {
 function JobChat({ jobId, me, users }: any) {
   const [msgs, setMsgs] = useState<any[]>([]); const [draft, setDraft] = useState(""); const [mids, setMids] = useState<string[]>([]);
   const [query, setQuery] = useState<string | null>(null); const boxRef = useRef<any>(null);
-  const load = () => api("/api/jobs/" + jobId + "/messages").then(r => setMsgs(r.messages || [])).catch(() => {});
+  const load = () => { api("/api/jobs/" + jobId + "/messages").then(r => setMsgs(r.messages || [])).catch(() => {}); };
   useEffect(load, [jobId]);
   useEffect(() => { const el = boxRef.current; if (el) el.scrollTop = el.scrollHeight; }, [msgs.length]);
   const team = (users || []).filter((u: any) => u.active !== 0);
@@ -1825,17 +1858,19 @@ function JobDetail({ id, users, me, priceBook, close, refresh, openLead }: any) 
   const [co, setCo] = useState<any>({ delta_scope: "", delta_total: "" }); const [sched, setSched] = useState<any>({ worker_name: "", work_date: new Date().toISOString().slice(0, 10), note: "" }); const [schedPick, setSchedPick] = useState<any>(null);
   const load = () => { api("/api/jobs/" + id).then(setD).catch(e => setMsg(e.message)); };
   useEffect(load, [id]);
+  useLive(load);
   useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key === "Escape") close(); }; window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, []);
   if (!d) return <div className="modalWrap"><div className="modal">Loading job… {msg}</div></div>;
   const j = d.job;
-  const stageTo = async (st: string) => { if (st === "SCHEDULED") { const tmr = new Date(Date.now() + 86400000); setSchedPick({ date: j.scheduled_start ? String(j.scheduled_start).slice(0, 10) : tmr.toISOString().slice(0, 10), time: j.scheduled_start ? String(j.scheduled_start).slice(11, 16) : "09:00" }); return; } await api(`/api/jobs/${id}/stage`, { method: "POST", body: { to: st } }); toast(`Job moved to ${st.replaceAll("_", " ")} ✓`); load(); refresh && refresh(); };
+  const stageTo = async (st: string) => { if (st === "SCHEDULED" && !j.scheduled_start) { const tmr = new Date(Date.now() + 86400000); setSchedPick({ date: tmr.toISOString().slice(0, 10), time: "09:00" }); return; } await api(`/api/jobs/${id}/stage`, { method: "POST", body: { to: st } }); toast(`Job moved to ${st.replaceAll("_", " ")} ✓`); load(); refresh && refresh(); };
   const doSchedule = async () => { if (!schedPick) return; const r = await api(`/api/jobs/${id}/stage`, { method: "POST", body: { to: "SCHEDULED", scheduled_start: `${schedPick.date}T${schedPick.time}:00` } }); setSchedPick(null); toast(`🗓 Scheduled for ${schedPick.date} at ${schedPick.time} — crew synced to the Ops schedule${r.scheduling?.crew_scheduled ? ` (${r.scheduling.crew_scheduled} crew)` : ""}, timesheets ready for that week`); load(); refresh && refresh(); };
   return (<div className="modalWrap"><div className="modal">
     <div className="rowflex" style={{ justifyContent: "space-between" }}><h3 style={{ margin: 0 }}>{j.service_requested} — {j.contact_name}</h3><button className="btn ghost small" onClick={close}>✕ Close</button></div>
     <p className="muted" style={{ margin: "6px 0" }}>{j.contact_phone || ""} {j.contact_email ? "· " + j.contact_email : ""} · {j.location || ""} · job value <b style={{ color: "#14532d" }}>{money(j.value)}</b> · labor {money(j.labor_cost)} ({j.labor_pct ?? 0}% of value)</p>
     {d.origin && <div className="crumbs"><span className="clickable" onClick={() => openLead && openLead(d.origin.lead_id)}>🎯 Lead: {d.origin.service_requested || "originating lead"}</span>{d.origin.proposal_id ? <span className="clickable" onClick={() => openLead && openLead(d.origin.lead_id)}>→ 📄 Proposal {money(d.origin.proposal_total)} · {d.origin.proposal_status}</span> : <span className="muted">→ no signed proposal (manual / legacy win)</span>}<span>→ 🔧 This job</span></div>}
-    <div className="path">{JOB_STAGES.filter(st => st !== "ON_HOLD" && st !== "CANCELLED").map(st => <div key={st} className={`stage ${st === j.stage ? "cur" : ""}`} onClick={() => stageTo(st)}>{st.replaceAll("_", " ")}</div>)}</div>
-    <p className="muted" style={{ fontSize: 12 }}>Click any stage — jobs move both ways. Current: <b>{j.stage.replaceAll("_", " ")}</b></p>
+    {(() => { const PATH = JOB_STAGES.filter(st => st !== "ON_HOLD" && st !== "CANCELLED"); const eff = j.stage === "ON_HOLD" ? "IN_PROGRESS" : j.stage; const ci = PATH.indexOf(eff); const prev = ci > 0 ? PATH[ci - 1] : null; const next = ci >= 0 && ci < PATH.length - 1 ? PATH[ci + 1] : null; return (<>
+    <div className="path">{PATH.map((st, i) => <div key={st} className={`stage ${i < ci ? "done" : ""} ${st === eff ? "cur" : ""}`} onClick={() => stageTo(st)}>{i < ci ? "✓ " : ""}{st.replaceAll("_", " ")}</div>)}</div>
+    <div className="rowflex" style={{ margin: "2px 0 6px" }}><span className="muted" style={{ fontSize: 12 }}>Click any stage — jobs move both ways. Current: <b>{j.stage.replaceAll("_", " ")}</b>{j.stage === "ON_HOLD" && <> · <button className="btn ghost small" onClick={() => stageTo("IN_PROGRESS")}>▶ Resume work</button></>}</span><span style={{ flex: 1 }} />{prev && <button className="btn ghost small" onClick={() => stageTo(prev)}>← Back: {prev.replaceAll("_", " ")}</button>}{next && <button className="btn small" onClick={() => stageTo(next)}>Next: {next.replaceAll("_", " ")} →</button>}{j.stage !== "ON_HOLD" && j.stage !== "CLOSED" && j.stage !== "CANCELLED" && <button className="btn ghost small" onClick={() => stageTo("ON_HOLD")}>⏸ Put on hold</button>}</div></>); })()}
     {j.scheduled_start && ["SCHEDULED", "IN_PROGRESS"].includes(j.stage) && <p style={{ fontSize: 13, margin: "2px 0 6px" }}>🗓 <b>Scheduled: {String(j.scheduled_start).slice(0, 10)} · {String(j.scheduled_start).slice(11, 16)}</b> <span className="muted">— on the Ops Console crew schedule that day, with timesheets for the week.</span></p>}
     {schedPick && <div className="card" style={{ background: "#f0fdf4", margin: "6px 0 10px" }}><b>🗓 Schedule this job</b><div className="rowflex" style={{ marginTop: 8 }}><input type="date" value={schedPick.date} onChange={e => setSchedPick({ ...schedPick, date: e.target.value })} /><input type="time" value={schedPick.time} onChange={e => setSchedPick({ ...schedPick, time: e.target.value })} /><button className="btn small" onClick={doSchedule}>Schedule it →</button><button className="btn ghost small" onClick={() => setSchedPick(null)}>Cancel</button></div><p className="muted" style={{ fontSize: 12, margin: "6px 0 0" }}>The job's crew lands on the Ops crew schedule for that day and the week's timesheets are created — one move, whole workflow.</p></div>}
     {msg && <div className="ok">{msg}</div>}
@@ -1849,6 +1884,7 @@ function JobDetail({ id, users, me, priceBook, close, refresh, openLead }: any) 
       {d.documents.length === 0 && <p className="muted">No documents tracked for this job yet.</p>}
       <h4 style={{ marginTop: 16 }}>💬 Team chat <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>internal — customers never see this · @ tags notify</span></h4>
       <JobChat jobId={id} me={me} users={users} />
+      <JobFiles jobId={id} />
       <h4 style={{ marginTop: 16 }}>Invoices</h4>
       {(d.invoices || []).map((inv: any) => <div className="check" key={inv.id}><span style={{ flex: 1 }}><b>{inv.number}</b> · {money(inv.total)} · {inv.status} · balance {money(inv.balance)}{inv.due_at ? ` · due ${new Date(inv.due_at).toLocaleDateString()}` : ""}</span>{inv.balance > 0 && inv.status !== "void" && <><input id={"jpay-" + inv.id} type="number" placeholder="$" style={{ width: 90 }} /><button className="btn ghost small" onClick={async () => { const v = Number((document.getElementById("jpay-" + inv.id) as HTMLInputElement).value); if (!(v > 0)) return; try { await api(`/api/invoices/${inv.id}/payments`, { method: "POST", body: { amount: v } }); toast("Payment recorded ✓"); load(); } catch (e: any) { setMsg(e.message); } }}>Record payment</button></>}</div>)}
       {!(d.invoices || []).some((x: any) => ["sent", "partially_paid"].includes(x.status)) && j.stage !== "CANCELLED" && <button className="btn ghost small" onClick={async () => { try { await api(`/api/jobs/${j.id}/invoice`, { method: "POST", body: {} }); toast("Invoice created ✓"); load(); } catch (e: any) { setMsg(e.message); } }}>🧾 Create invoice ({money(j.value)})</button>}
@@ -2351,6 +2387,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
   useEffect(() => { api("/api/auth/me").then(r => { setUser(r.user); setWorkspaces(r.workspaces || []); }).catch(() => {}); }, []);
   useEffect(() => { syncOffline(); const on = () => syncOffline(); window.addEventListener("online", on); return () => window.removeEventListener("online", on); }, []);
   useEffect(() => { if (user) api("/api/notifications").then(r => { setNotifs(r.notifications); setUnread(r.unread); }).catch(() => {}); }, [user, tick]);
+  useLive(() => setTick(t => t + 1));
   useEffect(() => { if (user) { api("/api/users").then(setUsers).catch(() => {}); api("/api/price-book").then(setPriceBook).catch(() => {}); api("/api/approvals").then(r => setPending(r.length)).catch(() => {}); } }, [user, tick]);
   if (!user) return <Landing onAuth={(u: any) => { setUser(u); }} />;
   const go = (n: Nav) => setNav(n);
@@ -2401,7 +2438,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
         {bellOpen && <div className="bellPanel"><div className="rowflex" style={{ justifyContent: "space-between" }}><b>Notifications</b><button className="btn ghost small" onClick={async () => { await api("/api/notifications/read-all", { method: "POST", body: {} }); setUnread(0); setNotifs(notifs.map(n => ({ ...n, read_at: n.read_at || "now" }))); }}>Mark all read</button></div>
         <button className="btn ghost small" style={{ margin: "6px 0" }} onClick={async () => { const k = await api("/api/push/key").catch(() => null); if (!k?.configured) { alert("Phone push activates when the server has VAPID keys configured — the in-app bell works today."); return; } const perm = await Notification.requestPermission(); if (perm !== "granted") return; const reg = await navigator.serviceWorker.ready; const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: Uint8Array.from(atob(k.public_key.replaceAll("-", "+").replaceAll("_", "/")), c => c.charCodeAt(0)) as any }); await api("/api/push/subscribe", { method: "POST", body: { subscription: sub } }); alert("Phone alerts on for this device ✓"); }}>📱 Enable phone alerts</button>
         {notifs.length === 0 && <p className="muted">Nothing yet \u2014 approvals, signatures, deposits, and new leads land here.</p>}
-        {notifs.map(n => <div key={n.id} className="bellItem" style={n.read_at ? {} : { background: "#f0f9f1" }} onClick={async () => { await api(`/api/notifications/${n.id}/read`, { method: "POST", body: {} }).catch(() => {}); setUnread(u => Math.max(0, u - (n.read_at ? 0 : 1))); setNotifs(ns => ns.map(x => x.id === n.id ? { ...x, read_at: x.read_at || "now" } : x)); const et = n.entity_type || (n.lead_id ? "lead" : null); const eid = n.entity_id || n.lead_id; setBellOpen(false); if (et === "lead" && eid) openLead(eid); else if (et === "job" && eid) setJobOpen(eid); else if (et === "account" && eid) setCustOpen(eid); else if (n.lead_id) openLead(n.lead_id); }}><b>{n.title}</b><br /><span className="muted">{n.body}</span><br /><span className="muted" style={{ fontSize: 11.5 }}>{dt(n.created_at)} · {(n.entity_type || (n.lead_id ? "lead" : "")) ? "tap to open →" : ""}</span></div>)}</div>}</div>
+        {notifs.map(n => <div key={n.id} className="bellItem" style={n.read_at ? {} : { background: "#f0f9f1" }} onClick={async () => { await api(`/api/notifications/${n.id}/read`, { method: "POST", body: {} }).catch(() => {}); setUnread(u => Math.max(0, u - (n.read_at ? 0 : 1))); setNotifs(ns => ns.map(x => x.id === n.id ? { ...x, read_at: x.read_at || "now" } : x)); const et = n.entity_type || (n.lead_id ? "lead" : null); const eid = n.entity_id || n.lead_id; setBellOpen(false); const typ = String(n.type || ""); if (et === "job" && eid) setJobOpen(eid); else if (et === "account" && eid) setCustOpen(eid); else if (et === "ops" || typ.includes("timesheet") || typ.includes("field_report")) go({ view: "ops" }); else if (typ.startsWith("approval")) go({ view: "approvals" }); else if (typ === "job.mention" && eid) setJobOpen(eid); else if (et === "lead" && eid) openLead(eid); else if (n.lead_id) openLead(n.lead_id); else go({ view: "home" }); }}><b>{n.title}</b><br /><span className="muted">{n.body}</span><br /><span className="muted" style={{ fontSize: 11.5 }}>{dt(n.created_at)} · tap to open →</span></div>)}</div>}</div>
         <button className="btn ghost" title="Toggle dark mode" onClick={() => setTheme(t => t === "dark" ? "light" : "dark")}>{theme === "dark" ? "☀️" : "🌙"}</button>
         <OnlinePill /><button className="btn ghost" onClick={() => setAgentOpen(true)}>✦ Agent</button><button className="btn ghost" title="Log time (T)" onClick={() => setLtOpen(true)}>⏱ Log time</button><button className="btn" onClick={() => setCreating(true)}>+ New Lead</button><button className="avatarBtn" onClick={() => setProfOpen(true)} title={"Your profile — " + user.name}><Avatar u={user} size={32} /></button></div>
       {user && user.email_verified === 0 && <div className="verifyBar">✉️ Verify your email to secure your account and enable password recovery. <button className="btn ghost small" onClick={async () => { const r = await api("/api/auth/resend-verify", { method: "POST", body: {} }).catch((e: any) => ({ error: e.message })); setVerifyMsg(r.verify_url ? "Test mode \u2014 verify here: " + r.verify_url : r.error ? r.error : "Verification email sent \u2014 check your inbox."); }}>Resend verification</button>{verifyMsg && <span style={{ marginLeft: 8 }}>{verifyMsg}</span>}</div>}
@@ -2433,15 +2470,15 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       {nav.view === "billing" && <Billing />}
       {nav.view === "admin" && <Admin />}
       </EB>
-      {jobOpen && <JobDetail id={jobOpen} users={users} me={user} priceBook={priceBook} close={() => setJobOpen(null)} refresh={() => setTick(t => t + 1)} openLead={(lid: string) => { setJobOpen(null); setLeadId(lid); }} />}
-      {custOpen && <CustomerDetail id={custOpen} close={() => setCustOpen(null)} openLead={openLead} openJob={(id: string) => setJobOpen(id)} />}
+      {jobOpen && <EB key={"job" + jobOpen}><JobDetail id={jobOpen} users={users} me={user} priceBook={priceBook} close={() => setJobOpen(null)} refresh={() => setTick(t => t + 1)} openLead={(lid: string) => { setJobOpen(null); setLeadId(lid); }} /></EB>}
+      {custOpen && <EB key={"cust" + custOpen}><CustomerDetail id={custOpen} close={() => setCustOpen(null)} openLead={openLead} openJob={(id: string) => setJobOpen(id)} /></EB>}
       {agentOpen && <AgentPanel close={() => setAgentOpen(false)} focusId={agentFocus} />}
       {profOpen && <ProfileModal user={user} close={() => setProfOpen(false)} onSaved={(u: any) => setUser({ ...user, ...u })} />}
       {ltOpen && <LogTimeModal close={() => setLtOpen(false)} done={() => setTick(t => t + 1)} />}
       {creating && <CreateLead users={users} done={(id: any) => { setCreating(false); setTick(t => t + 1); if (id) openLead(id); }} />}
       {palOpen && <CommandPalette close={() => setPalOpen(false)} go={go} openLead={openLead} newLead={() => setCreating(true)} />}
       {helpOpen && <div className="modalWrap" onClick={() => setHelpOpen(false)}><div className="card" style={{ maxWidth: 430, margin: "10vh auto" }} onClick={e => e.stopPropagation()}><h3 style={{ marginTop: 0 }}>Keyboard shortcuts</h3><table><tbody>{[["⌘K or /", "Command palette — search + jump"], ["N", "New lead"], ["G then M / D / P / L / A / R / S / B", "Go to My Day / Dashboard / Pulse / Leads / Approvals / Reports / Settings / Billing"], ["?", "This help"], ["Esc", "Close dialogs"]].map(([k, v]) => <tr key={k}><td style={{ whiteSpace: "nowrap" }}><span className="kbd">{k}</span></td><td>{v}</td></tr>)}</tbody></table></div></div>}
-      {leadId && <LeadDetail id={leadId} users={users} priceBook={priceBook} close={() => setLeadId(null)} refresh={() => setTick(t => t + 1)} openJob={(jid: string) => { setLeadId(null); setJobOpen(jid); }} openApprovals={() => { setLeadId(null); go({ view: "approvals" }); }} />}
+      {leadId && <EB key={"lead" + leadId}><LeadDetail id={leadId} users={users} priceBook={priceBook} close={() => setLeadId(null)} refresh={() => setTick(t => t + 1)} openJob={(jid: string) => { setLeadId(null); setJobOpen(jid); }} openApprovals={() => { setLeadId(null); go({ view: "approvals" }); }} /></EB>}
     </main></div></div>);
 }
 function BookingPage({ slug }: any) {

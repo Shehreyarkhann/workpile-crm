@@ -23,7 +23,7 @@ export function ensureDay(ws: string, date: string): number {
   return created;
 }
 export function chaseReport(row: any) {
-  if (row.manager_id) notify(row.workspace_id, [row.manager_id], "field_report_missing", `📋 Field report missing — ${row.report_date}`, "Your daily field report for that date hasn't been submitted. Open Workpile → Ops Console → Field reports to file it.");
+  if (row.manager_id) notify(row.workspace_id, [row.manager_id], "field_report_missing", `📋 Field report missing — ${row.report_date}`, "Your daily field report for that date hasn't been submitted. Open Workpile → Ops Console → Field reports to file it.", undefined, { type: "ops", id: "field-reports" });
   notifyOwners(row.workspace_id, "field_report_missing", `📋 Field report still missing: ${row.report_date}`, "A field manager's daily report is outstanding — it was just chased automatically.");
   db.prepare("UPDATE field_reports SET chased_at=? WHERE id=?").run(now(), row.id);
 }
