@@ -6,6 +6,7 @@
 // send_message is approval-class at EVERY level. Steps execute once (status-guarded),
 // verify their write, and record evidence on the execution.
 import { db, uid, now } from "./db.ts";
+import { UNTOUCHED_WHERE, touchLead } from "./touch.ts";
 import { TOOLS, TOOL_LIST, draftBodyFor } from "./tools.ts";
 import { getProvider, providerStatus } from "./llm.ts";
 import { agentLevel } from "./ai.ts";
@@ -26,7 +27,7 @@ function mkStep(tool: string, args: any, level: number): Step { const t = TOOLS[
 function businessContext(ws: string): any {
   const c = (sql: string) => (db.prepare(sql).get(ws) as any).c;
   return { leads_open: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state NOT IN ('WON','LOST','NO_RESPONSE','JUNK','DUPLICATE','UNSERVICEABLE','CLOSED')"),
-    untouched: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='NEW' AND first_response_at IS NULL"),
+    untouched: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND " + UNTOUCHED_WHERE),
     qualified_no_proposal: qualifiedLeadsMissingProposals(ws, 25).length,
     stale_open: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state IN ('WORKING','PROPOSAL','SENT','FOLLOWUP') AND julianday('now') - julianday(updated_at) >= 14"),
     jobs_active: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=? AND stage NOT IN ('CLOSED','CANCELLED')"),
@@ -66,7 +67,7 @@ const SYSTEM = `You are Workpile Agent, the execution layer of a CRM for field-s
 // approval-class step — internal work runs immediately; every customer-facing send waits for
 // one human approval pass. Capped so one run stays reviewable.
 export function triageSteps(ws: string, level: number, cap = 25): { steps: Step[]; count: number } {
-  const leads = db.prepare(`SELECT l.*, c.name contact_name, c.email contact_email, c.phone contact_phone FROM leads l LEFT JOIN contacts c ON c.id=l.contact_id WHERE l.workspace_id=? AND l.state='NEW' AND l.first_response_at IS NULL AND l.state<>'JUNK' ORDER BY COALESCE(l.ai_score,0) DESC, l.est_value DESC LIMIT ?`).all(ws, cap) as any[];
+  const leads = db.prepare(`SELECT l.*, c.name contact_name, c.email contact_email, c.phone contact_phone FROM leads l LEFT JOIN contacts c ON c.id=l.contact_id WHERE l.workspace_id=? AND l.first_touch_at IS NULL AND l.first_response_at IS NULL AND l.state='NEW' ORDER BY COALESCE(l.ai_score,0) DESC, l.est_value DESC LIMIT ?`).all(ws, cap) as any[];
   const steps: Step[] = [];
   for (const l of leads) {
     const who = l.contact_name || l.service_requested;

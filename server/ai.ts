@@ -2,6 +2,7 @@
 // Invariant (§26): ingested content is data, never instructions. Agents score, group,
 // and RECOMMEND; every mutation runs through an explicit human-approved apply call.
 import { db, uid, now } from "./db.ts";
+import { touchLead } from "./touch.ts";
 import { draftProposalForLead, qualifiedLeadsMissingProposals } from "./proposals-core.ts";
 import { inboxPriority } from "./inbox.ts";
 import { notifyOwners } from "./comms.ts";
@@ -58,7 +59,7 @@ export function cleanupApply(ws: string, actorId: string, actions: string[]) {
   if (actions.includes("score")) { for (const l of leadsOf(ws)) { const sc = scoreLead(l); db.prepare("UPDATE leads SET ai_score=?, ai_flags=? WHERE id=?").run(sc.score, JSON.stringify({ temperature: sc.temperature, flags: sc.flags }), l.id); result.scored++; } }
   if (actions.includes("assign")) {
     const owners = db.prepare("SELECT id FROM users WHERE workspace_id=? AND role IN ('LEAD_OWNER','OWNER') AND active=1").all(ws) as any[];
-    if (owners.length) { const un = db.prepare("SELECT id FROM leads WHERE workspace_id=? AND owner_id IS NULL").all(ws) as any[]; un.forEach((l, i) => { db.prepare("UPDATE leads SET owner_id=?, updated_at=? WHERE id=?").run(owners[i % owners.length].id, now(), l.id); result.assigned++; }); }
+    if (owners.length) { const un = db.prepare("SELECT id FROM leads WHERE workspace_id=? AND owner_id IS NULL").all(ws) as any[]; un.forEach((l, i) => { db.prepare("UPDATE leads SET owner_id=?, updated_at=? WHERE id=?").run(owners[i % owners.length].id, now(), l.id); touchLead(ws, l.id, "assign"); result.assigned++; }); }
   }
   return result;
 }

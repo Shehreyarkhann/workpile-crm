@@ -59,7 +59,7 @@ export function mergeFields(text: string, ctx: Record<string, string>): string {
 // explicit template choice — by the API create route and the agent drafter.
 export function resolveDocTemplateId(workspaceId: string, service?: string | null): string | null {
   try {
-    const rows = db.prepare("SELECT id, applies_to, is_default FROM doc_templates WHERE workspace_id=?").all(workspaceId) as any[];
+    const rows = db.prepare("SELECT id, applies_to, is_default FROM doc_templates WHERE workspace_id=? AND (kind IS NULL OR kind='proposal')").all(workspaceId) as any[];
     const norm = (s: any) => String(s || "").toLowerCase().trim().replace(/\s+/g, " ");
     const svc = norm(service);
     if (svc) {
@@ -83,7 +83,7 @@ export function proposalDocument(proposalId: string) {
   // Template resolution: the proposal's own template if one was pinned,
   // otherwise the workspace's DEFAULT doc template, otherwise the single
   // workspace template. Users never pick templates while composing (v31).
-  const tplId = p.template_id || (() => { try { return (db.prepare("SELECT id FROM doc_templates WHERE workspace_id=? AND is_default=1").get(p.workspace_id) as any)?.id || null; } catch { return null; } })();
+  const tplId = p.template_id || (() => { try { return (db.prepare("SELECT id FROM doc_templates WHERE workspace_id=? AND is_default=1 AND (kind IS NULL OR kind='proposal')").get(p.workspace_id) as any)?.id || null; } catch { return null; } })();
   if (tplId) { try { const dt = db.prepare("SELECT * FROM doc_templates WHERE id=? AND workspace_id=?").get(tplId, p.workspace_id) as any; if (dt) { tpl = { ...tpl, intro_html: dt.intro_html || tpl.intro_html, terms_html: dt.terms_html || tpl.terms_html, footer: dt.footer || tpl.footer, logo: dt.include_logo ? (tpl.logo || null) : null }; docName = dt.name; } } catch { /* doc templates not initialized yet */ } }
   // Human proposal number: sequential per workspace from 1001, assigned at
   // creation. Legacy rows (pre-v31) get their number frozen on first render
@@ -111,4 +111,18 @@ export function proposalDocument(proposalId: string) {
       terms_html: sanitizeHtml(mergeFields(tpl.terms_html, ctx)),
     },
   };
+}
+
+// V39: invoices get their OWN template kind. The resolved invoice template
+// (default of kind 'invoice', else the first) supplies the note, the payment
+// terms and the footer on the pay page, the DOCX and the packet bundle —
+// the workspace letterhead (company, contact, logo) stays shared.
+export function getInvoiceTemplate(wsId: string) {
+  const base = getTemplate(wsId);
+  try {
+    const rows = db.prepare("SELECT * FROM doc_templates WHERE workspace_id=? AND kind='invoice' ORDER BY is_default DESC, created_at").all(wsId) as any[];
+    const t = rows[0];
+    if (!t) return { ...base, invoice_template_name: null as string | null };
+    return { ...base, intro_html: t.intro_html || base.intro_html, terms_html: t.terms_html || base.terms_html, footer: t.footer || base.footer, include_logo: t.include_logo, invoice_template_name: t.name as string | null };
+  } catch { return { ...base, invoice_template_name: null as string | null }; }
 }

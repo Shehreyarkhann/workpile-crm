@@ -14,8 +14,9 @@ await J("/api/auth/register", { method: "POST", body: { name: "Olive Owner", bus
 const O = (await J("/api/auth/login", { method: "POST", body: { email: "o@v33.test", password: "password123" } })).ck; assert.ok(O);
 const tpls = (await J("/api/doc-templates", {}, O)).j as any[];
 assert.ok(tpls.length >= 2, "seeded templates");
-const def = tpls.find(t => t.is_default) || tpls[0];
-const other = tpls.find(t => t.id !== def.id);
+const propsOnly = tpls.filter(t => (t.kind || "proposal") === "proposal");
+const def = propsOnly.find(t => t.is_default) || propsOnly[0];
+const other = propsOnly.find(t => t.id !== def.id);
 const patched = await J(`/api/doc-templates/${other.id}`, { method: "PATCH", body: { applies_to: "Tank Testing", intro_html: "<p>TANK-SPECIAL intro for {customer}</p>" } }, O);
 assert.equal(patched.s, 200, JSON.stringify(patched.j).slice(0, 140)); assert.equal(patched.j.applies_to, "Tank Testing");
 const me = await J("/api/auth/me", {}, O); const WS = me.j.user.workspace_id;

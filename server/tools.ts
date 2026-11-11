@@ -6,6 +6,7 @@
 //   execute  — operational writes (assign, tasks, visits, jobs), auto at autonomy >= L3
 //   approval — customer-facing or financial; ALWAYS requires per-step human approval
 import { db, uid, now } from "./db.ts";
+import { touchLead } from "./touch.ts";
 import { queueAndDeliver } from "./comms.ts";
 import { draftProposalForLead } from "./proposals-core.ts";
 import { inboxSuggestion, sendInboxReply, convertInboxItem } from "./inbox-ai.ts";
@@ -53,11 +54,13 @@ export const TOOLS: Record<string, ToolDef> = {
       let target = args.assignee_id ? db.prepare("SELECT * FROM users WHERE id=? AND workspace_id=? AND active=1").get(args.assignee_id, ws) as any : null;
       if (!target) { const team = db.prepare("SELECT * FROM users WHERE workspace_id=? AND active=1 ORDER BY name").all(ws) as any[]; if (!team.length) throw new Error("no active team members"); target = team[Math.floor(Math.random() * team.length)]; }
       db.prepare("UPDATE leads SET owner_id=?, updated_at=? WHERE id=?").run(target.id, now(), l.id);
+      touchLead(ws, l.id, "assign", _a);
       return { summary: `Assigned ${l.service_requested} to ${target.name}.`, refs: { lead_id: l.id, assignee_id: target.id } }; } },
   create_followup_task: { name: "create_followup_task", description: "Create a follow-up task on a lead.", control: "execute",
     parameters: { type: "object", properties: { lead_id: { type: "string" }, title: { type: "string" }, assignee_id: { type: "string" } }, required: ["lead_id"] },
     run(ws, actor, args) { const l = leadOf(ws, args.lead_id); if (!l) throw new Error("lead not found in this workspace");
       const id = uid("tsk"); db.prepare("INSERT INTO tasks (id,workspace_id,lead_id,assignee_id,type,title,due_at,status,created_at) VALUES (?,?,?,?,?,?,?,?,?)").run(id, ws, l.id, args.assignee_id || l.owner_id || actor, "follow_up", String(args.title || "Follow up").slice(0, 140), new Date(Date.now() + 86400000).toISOString(), "open", now());
+      touchLead(ws, l.id, "task", actor);
       const chk = db.prepare("SELECT id FROM tasks WHERE id=?").get(id); if (!chk) throw new Error("task insert failed verification");
       return { summary: `Task created on ${l.service_requested}: "${String(args.title || "Follow up").slice(0, 60)}".`, refs: { lead_id: l.id, task_id: id } }; } },
   draft_message: { name: "draft_message", description: "Draft a personalized follow-up for a lead (stored as a draft step result — NOT sent).", control: "draft",

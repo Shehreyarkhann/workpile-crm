@@ -4,7 +4,7 @@
 // proposal meta table, shaded investment table with a total band, terms,
 // and an acceptance block with the v31 signature layout.
 import { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, Footer, AlignmentType, BorderStyle, ShadingType, ImageRun, PageNumber } from "docx";
-import { proposalDocument, htmlToParagraphs, getTemplate } from "./proptemplate.ts";
+import { proposalDocument, htmlToParagraphs, getTemplate, getInvoiceTemplate } from "./proptemplate.ts";
 import { db } from "./db.ts";
 
 const PINE = "0E5C3A", INK = "101613", GRAY = "5B6B62", LINE = "D9DEDB", BAND = "EDF2EE";
@@ -113,7 +113,7 @@ export async function proposalDocx(proposalId: string): Promise<{ buffer: Buffer
 export async function invoiceDocx(invoiceId: string, payUrl: string): Promise<{ buffer: Buffer; filename: string } | null> {
   const inv = db.prepare("SELECT * FROM invoices WHERE id=?").get(invoiceId) as any;
   if (!inv) return null;
-  const t = getTemplate(inv.workspace_id);
+  const t = getInvoiceTemplate(inv.workspace_id);
   const lead = db.prepare("SELECT * FROM leads WHERE id=?").get(inv.lead_id) as any;
   const contact = lead?.contact_id ? db.prepare("SELECT * FROM contacts WHERE id=?").get(lead.contact_id) as any : null;
   const job = inv.job_id ? db.prepare("SELECT * FROM jobs WHERE id=?").get(inv.job_id) as any : null;
@@ -159,7 +159,9 @@ export async function invoiceDocx(invoiceId: string, payUrl: string): Promise<{ 
     meta,
     H("Charges"),
     itemsTable,
-    ...(balance > 0 ? [H("Payment"), P(`Please pay the balance of ${money(balance)}${inv.due_at ? " by " + new Date(inv.due_at).toLocaleDateString() : ""}. You can pay online here: ${payUrl}`), P("Questions about this invoice? Reply to the email it arrived with, or call us — we're happy to help.")] : [H("Payment"), P("Paid in full — thank you. This invoice is settled.")]),
+    ...htmlToParagraphs(t.intro_html || "").map((s: string) => P(s)),
+    ...(balance > 0 ? [H("Payment"), P(`Please pay the balance of ${money(balance)}${inv.due_at ? " by " + new Date(inv.due_at).toLocaleDateString() : ""}. You can pay online here: ${payUrl}`)] : [H("Payment"), P("Paid in full — thank you. This invoice is settled.")]),
+    H("Terms"), ...htmlToParagraphs(t.terms_html || "").map((s: string) => P(s)),
   ] }] });
   const buffer = await Packer.toBuffer(doc);
   return { buffer: Buffer.from(buffer), filename: `${inv.number}.docx` };

@@ -6,7 +6,7 @@ import { triageLead, packetCheck, demandGap, demandPool, injectionScan } from ".
 import { metrics, morningBrief } from "./metrics.ts";
 import { parseEmail, parseMbox, parseEmailCsv, suggestInboxAction, inboxPriority } from "./inbox.ts";
 import { proposalDocx, invoiceDocx } from "./docx.ts";
-import { getTemplate, proposalDocument, sanitizeHtml, resolveDocTemplateId } from "./proptemplate.ts";
+import { getTemplate, getInvoiceTemplate, proposalDocument, sanitizeHtml, resolveDocTemplateId } from "./proptemplate.ts";
 import { ensureSignToken, getByToken, sign } from "./sign.ts";
 import { createDeposit, createInvoicePayment, markPaid, verifyStripeSignature, handleStripeEvent, stripeMode } from "./payments.ts";
 import { getFlags, setFlag, workspaceHealth, runSynthetics } from "./admin.ts";
@@ -15,6 +15,7 @@ import { cleanupPreview, cleanupApply, insights, insightsV2, reactivateStale, sc
 import { emitEvent, EVENTS } from "./integrations.ts";
 import { queueAndDeliver, notify, notifyOwners, emailConfigured, smsConfigured } from "./comms.ts";
 import { weekStartOf, ensureWeek, chaseRow, sumDays } from "./timesheets.ts";
+import { touchLead, UNTOUCHED_WHERE } from "./touch.ts";
 import { rateFor, logTime, jobLabor, DEFAULT_CLASSES, resolveWorker, listWorkers } from "./labor.ts";
 import { ensureDay, chaseReport, todayStr } from "./fieldreports.ts";
 import { weeklyReport } from "./statusreport.ts";
@@ -405,9 +406,16 @@ app.post("/api/leads/:id/hold", requireAuth, (req: any, res) => {
   else { db.prepare("UPDATE leads SET hold_flag=1, hold_reason=?, hold_until=?, updated_at=? WHERE id=?").run(req.body.reason || "On hold", req.body.until || null, now(), l.id); logEvent(req.user.workspace_id, l.id, req.user.id, "hold_set", null, null, { reason: req.body.reason, until: req.body.until }); }
   res.json({ lead: leadView(db.prepare("SELECT * FROM leads WHERE id=?").get(l.id)) });
 });
+app.post("/api/leads/:id/touch", requireAuth, (req: any, res) => {
+  const l = db.prepare("SELECT id FROM leads WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!l) return res.status(404).json({ error: { code: "not_found" } });
+  const kind = ["open", "assign", "contact", "message", "task"].includes(String(req.body?.kind || "")) ? String(req.body.kind) : "open";
+  res.json({ touched: touchLead(req.user.workspace_id, l.id, kind, req.user.id) });
+});
 app.post("/api/leads/:id/contact", requireAuth, (req: any, res) => {
   const l = db.prepare("SELECT * FROM leads WHERE id=?").get(req.params.id) as any;
   if (!l.first_response_at) db.prepare("UPDATE leads SET first_response_at=? WHERE id=?").run(now(), l.id);
+  touchLead(req.user.workspace_id, l.id, "contact", req.user.id);
   db.prepare("INSERT INTO activities (id,lead_id,workspace_id,user_id,type,body,outcome,created_at) VALUES (?,?,?,?,?,?,?,?)")
     .run(uid("act"), l.id, req.user.workspace_id, req.user.id, req.body.type || "call", req.body.body || "", req.body.outcome || "", now());
   if (req.body.next_action_due_at) db.prepare("UPDATE leads SET next_action=?, next_action_due_at=? WHERE id=?").run(req.body.next_action || "Follow up", req.body.next_action_due_at, l.id);
@@ -721,7 +729,7 @@ function invoiceByToken(token: string) {
   const lead = db.prepare("SELECT * FROM leads WHERE id=?").get(inv.lead_id) as any;
   const contact = lead?.contact_id ? db.prepare("SELECT * FROM contacts WHERE id=?").get(lead.contact_id) as any : null;
   const job = inv.job_id ? db.prepare("SELECT * FROM jobs WHERE id=?").get(inv.job_id) as any : null;
-  return { inv, lead, contact, job, tpl: getTemplate(inv.workspace_id) };
+  return { inv, lead, contact, job, tpl: getInvoiceTemplate(inv.workspace_id) };
 }
 app.get("/invoice/:token", (req, res) => {
   const ctx = invoiceByToken(req.params.token);
@@ -758,7 +766,9 @@ app.get("/invoice/:token", (req, res) => {
   ${(inv.paid_amount || 0) > 0 ? `<tr class="tot"><td colspan="3" class="r">Paid</td><td class="r">−${money(inv.paid_amount)}</td></tr>` : ""}
   <tr class="band"><td colspan="3" class="r">BALANCE DUE</td><td class="r">${money(balance)}</td></tr></table>
   ${paid ? `<div class="paidbox">✅ This invoice is paid in full. Thank you!</div>` : inv.status === "void" ? `<div class="note">This invoice has been voided.</div>` : `<form method="POST" action="/invoice/${e(inv.token)}/pay"><button class="paybtn">Pay ${money(balance)} →</button></form><p class="note">You'll be taken to a secure payment page. ${stripeMode() === "test" ? "This deployment is in test mode — no real charge is made." : ""}</p>`}
-  <div class="docfoot">${e(tpl.company)} · Invoice ${e(inv.number)}</div>`);
+  ${tpl.intro_html ? `<div class="note" style="text-align:left">${tpl.intro_html}</div>` : ""}
+  ${tpl.terms_html ? `<div class="note" style="text-align:left"><b>Terms.</b> ${tpl.terms_html}</div>` : ""}
+  <div class="docfoot">${tpl.footer ? e(tpl.footer) + " · " : ""}${e(tpl.company)} · Invoice ${e(inv.number)}</div>`);
 });
 app.post("/invoice/:token/pay", express.urlencoded({ extended: false }), async (req, res) => {
   const ctx = invoiceByToken(req.params.token);
@@ -1466,7 +1476,7 @@ app.post("/api/queue/bulk", requireAuth, (req: any, res) => {
   const action = String(req.body.action || "");
   let affected = 0;
   if (action === "assign") { const uidv = String(req.body.assignee_id || ""); const u = db.prepare("SELECT id FROM users WHERE id=? AND workspace_id=? AND active=1").get(uidv, ws); if (!u) return res.status(422).json({ error: { code: "bad_assignee" } });
-    for (const id of ids) { const r = db.prepare("UPDATE leads SET owner_id=?, updated_at=? WHERE id=? AND workspace_id=?").run(uidv, now(), id, ws) as any; if (r.changes) { logEvent(ws, id, req.user.id, "bulk_assigned", null, null, { assignee: uidv }); affected++; } } }
+    for (const id of ids) { const r = db.prepare("UPDATE leads SET owner_id=?, updated_at=? WHERE id=? AND workspace_id=?").run(uidv, now(), id, ws) as any; if (r.changes) { logEvent(ws, id, req.user.id, "bulk_assigned", null, null, { assignee: uidv }); touchLead(ws, id, "assign", req.user.id); affected++; } } }
   else if (action === "snooze") { const days = Math.min(14, Math.max(1, Number(req.body.days || 1)));
     for (const id of ids) { const l = db.prepare("SELECT next_action_due_at FROM leads WHERE id=? AND workspace_id=?").get(id, ws) as any; if (!l) continue; const base = l.next_action_due_at && new Date(l.next_action_due_at) > new Date() ? new Date(l.next_action_due_at) : new Date(); const r = db.prepare("UPDATE leads SET next_action_due_at=?, updated_at=? WHERE id=?").run(new Date(base.getTime() + days * 86400000).toISOString(), now(), id) as any; if (r.changes) affected++; } }
   else if (action === "task") { const uidv = String(req.body.assignee_id || req.user.id); const title = String(req.body.title || "Follow up").slice(0, 140);
@@ -1496,7 +1506,7 @@ app.get("/api/queue", requireAuth, (req: any, res) => {
     if (!mine2(l)) continue; const v = leadView(l);
     items.push({ id: "q_over_" + l.id, type: "followup_overdue", score: 85 + Math.min(15, ageH(l.next_action_due_at)), title: `${v.contact_name || "Lead"} — ${l.next_action || "Follow up"}`, subtitle: `${l.service_requested} · due ${ageH(l.next_action_due_at)}h ago · ${moneyFmt(l.est_value)}`, lead_id: l.id, age_hours: ageH(l.next_action_due_at), primary: { kind: "open_lead", label: "Work it" } });
   }
-  for (const l of db.prepare("SELECT * FROM leads WHERE workspace_id=? AND state='NEW' AND first_response_at IS NULL ORDER BY created_at LIMIT 60").all(ws) as any[]) {
+  for (const l of db.prepare("SELECT * FROM leads WHERE workspace_id=? AND " + UNTOUCHED_WHERE + " ORDER BY created_at LIMIT 60").all(ws) as any[]) {
     if (!mine2(l)) continue; const v = leadView(l);
     items.push({ id: "q_new_" + l.id, type: "lead_untouched", score: 80 + Math.min(18, ageH(l.created_at) / 4), title: `Untouched lead — ${v.contact_name || "New lead"}`, subtitle: `${l.service_requested} · arrived ${ageH(l.created_at)}h ago · ${moneyFmt(l.est_value)}`, lead_id: l.id, age_hours: ageH(l.created_at), primary: { kind: "open_lead", label: "First touch" } });
   }
@@ -1592,7 +1602,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v38", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
+app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v39", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {
   const target = db.prepare("SELECT * FROM users WHERE id=?").get(String(req.body?.user_id || "")) as any;
@@ -1992,6 +2002,7 @@ app.post("/api/leads/:id/message", requireAuth, async (req: any, res) => {
   const refs = channel === "email" ? validateAttachRefs(req.user.workspace_id, req.body.attachments) : [];
   const r: any = await queueAndDeliver(req.user.workspace_id, { lead_id: l.id, channel, to, subject: req.body.subject, body: String(req.body.body || ""), attachments: refs });
   logEvent(req.user.workspace_id, l.id, req.user.id, "message_" + channel, null, null, { status: r.status, to });
+  touchLead(req.user.workspace_id, l.id, "message", req.user.id);
   res.status(201).json({ id: r.id, status: r.status, channel, to });
 });
 app.get("/api/leads/:id/messages", requireAuth, (req: any, res) => { res.json(db.prepare("SELECT * FROM messages_outbox WHERE lead_id=? AND workspace_id=? ORDER BY created_at DESC").all(req.params.id, req.user.workspace_id)); });
@@ -2176,10 +2187,11 @@ app.patch("/api/leads/:id", requireAuth, (req: any, res) => {
   for (const f of fields) if (req.body[f] !== undefined) { sets.push(`${f}=?`); vals.push(req.body[f]); }
   if (req.body.contact) { const c = req.body.contact; db.prepare("UPDATE contacts SET name=COALESCE(?,name), phone=COALESCE(?,phone), email=COALESCE(?,email), address=COALESCE(?,address) WHERE id=?").run(c.name ?? null, c.phone ?? null, c.email ?? null, c.address ?? null, l.contact_id); }
   if (sets.length) { sets.push("updated_at=?"); vals.push(now(), l.id); db.prepare(`UPDATE leads SET ${sets.join(",")} WHERE id=?`).run(...vals); }
+  if (req.body.owner_id) touchLead(req.user.workspace_id, l.id, "assign", req.user.id);
   audit(req.user.workspace_id, req.user.id, "lead.edit", "lead", l.id, req.body);
   res.json({ lead: leadView(db.prepare("SELECT * FROM leads WHERE id=?").get(l.id)) });
 });
-app.post("/api/tasks", requireAuth, (req: any, res) => { const id = uid("tsk"); db.prepare("INSERT INTO tasks (id,workspace_id,lead_id,assignee_id,type,title,due_at,status,created_at) VALUES (?,?,?,?,?,?,?,?,?)").run(id, req.user.workspace_id, req.body.lead_id || null, req.body.assignee_id || req.user.id, req.body.type || "follow_up", req.body.title || "Follow up", req.body.due_at || new Date(Date.now() + 86400000).toISOString(), "open", now()); res.status(201).json(db.prepare("SELECT * FROM tasks WHERE id=?").get(id)); });
+app.post("/api/tasks", requireAuth, (req: any, res) => { const id = uid("tsk"); db.prepare("INSERT INTO tasks (id,workspace_id,lead_id,assignee_id,type,title,due_at,status,created_at) VALUES (?,?,?,?,?,?,?,?,?)").run(id, req.user.workspace_id, req.body.lead_id || null, req.body.assignee_id || req.user.id, req.body.type || "follow_up", req.body.title || "Follow up", req.body.due_at || new Date(Date.now() + 86400000).toISOString(), "open", now()); if (req.body.lead_id) touchLead(req.user.workspace_id, req.body.lead_id, "task", req.user.id); res.status(201).json(db.prepare("SELECT * FROM tasks WHERE id=?").get(id)); });
 app.delete("/api/tasks/:id", requireAuth, (req: any, res) => { db.prepare("DELETE FROM tasks WHERE id=? AND workspace_id=?").run(req.params.id, req.user.workspace_id); res.json({ ok: true }); });
 app.post("/api/leads/:id/visits", requireAuth, (req: any, res) => { const id = uid("vis"); db.prepare("INSERT INTO site_visits (id,workspace_id,lead_id,assigned_to,scheduled_at,status,notes) VALUES (?,?,?,?,?,?,?)").run(id, req.user.workspace_id, req.params.id, req.body.assigned_to || null, req.body.scheduled_at, "scheduled", req.body.notes || "");
   // Mirror onto the job's crew schedule so a visit booked from a job also shows

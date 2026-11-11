@@ -31,7 +31,7 @@ export const syncOffline = async () => {
 };
 export // Live refresh (v27): refetch on window focus + every 30s while mounted, so
 // views stay current without manual reloads. Cleanup is a proper function.
-function useLive(fn: () => void, ms = 30000) { const ref = useRef(fn); ref.current = fn; useEffect(() => { const run = () => { try { ref.current(); } catch {} }; const onF = () => run(); window.addEventListener("focus", onF); const iv = setInterval(run, ms); return () => { window.removeEventListener("focus", onF); clearInterval(iv); }; }, [ms]); }
+function useLive(fn: () => void, ms = 30000) { const ref = useRef(fn); ref.current = fn; useEffect(() => { const run = () => { try { ref.current(); } catch {} }; const onF = () => run(); window.addEventListener("focus", onF); window.addEventListener("wp-refresh", onF); const iv = setInterval(run, ms); return () => { window.removeEventListener("focus", onF); window.removeEventListener("wp-refresh", onF); clearInterval(iv); }; }, [ms]); }
 const money = (n: any) => "$" + Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 0 });
 export const num = (n: any) => Number(n || 0).toLocaleString();
 export const dt = (s: any) => s ? new Date(s).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "—";
@@ -74,25 +74,54 @@ function InvoiceActions({ inv, onDone }: any) {
   </span>);
 }
 
+// V39: every agenda row can be completed where it sits. The server's
+// /api/calendar/complete dispatcher writes back to the master record and
+// advances its workflow (visit → gate cleared, crew day → visit too,
+// invoice → real payment, job → next stage, follow-up → next step).
+function AgendaComplete({ u, onDone }: any) {
+  const [busy, setBusy] = useState(false);
+  if (!u?.ref_id && !u?.task_id) return null;
+  if (u.kind === "schedule" && u.done) return <span className="tiny" style={{ color: "#157347", fontWeight: 700 }}>✓ Done</span>;
+  const LABELS: Record<string, string> = { task: "✓ Done", callback: "✓ Done", visit: "✓ Visit done", schedule: "✓ Day done", followup: "✓ Step done", invoice: "💵 Paid in full", doc: "✓ Renewed", expiry: "⏳ Extend +14d" };
+  let label = LABELS[u.kind] || "";
+  if (u.kind === "job") label = u.stage === "SCHEDULED" ? "▶ Start work" : u.stage === "IN_PROGRESS" ? "✓ Work done" : "";
+  if (!label) return null;
+  return (<button className="btn small upDone" disabled={busy} onClick={async (e) => { e.stopPropagation(); setBusy(true); try { const r = await api("/api/calendar/complete", { method: "POST", body: { kind: u.kind, ref_id: u.ref_id || u.task_id } }); toast(r.message || "Done ✓"); onDone && onDone(); } catch (err: any) { toast(err.message || "Could not complete that"); setBusy(false); } }}>{busy ? "…" : label}</button>);
+}
+
 function FinancesStrip({ f, openLead }: any) {
   const [drillKey, setDrillKey] = useState("");
   if (!f) return null;
-  const cell = (label: string, x: any, key: string, accent?: string) => (<div key={key} role="button" tabIndex={0} title={(x?.definition || "") + " — click to see the records"} onClick={() => setDrillKey(key)} onKeyDown={e => { if (e.key === "Enter") setDrillKey(key); }} style={{ flex: "1 1 150px", minWidth: 140, cursor: "pointer", borderRadius: 10, padding: "6px 8px", margin: "-6px -8px" }} className="finCell">
-    <div className="tiny muted" style={{ fontWeight: 700, letterSpacing: 0.3 }}>{label} <span style={{ color: "var(--pine, #0E5C3A)" }}>→</span></div>
-    <div style={{ fontSize: 21, fontWeight: 800, color: accent || "var(--ink)" }}>{money(x?.value || 0)}</div>
-    <div className="tiny muted" style={{ lineHeight: 1.35 }}>{x?.definition || ""}</div>
-  </div>);
-  return (<div className="card wpRise" style={{ marginTop: 12 }}>
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}><b>💰 Money — kept separate, on purpose</b><span className="tiny muted">Estimates are not revenue. Every figure opens its records.</span></div>
-    <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 10 }}>
-      {cell("ESTIMATED PIPELINE", f.estimated_pipeline, "estimated_pipeline")}
-      {cell("PROPOSALS OUT", f.proposal_value_outstanding, "proposal_value_outstanding")}
-      {cell("APPROVED", f.approved_proposal_value, "approved_proposal_value")}
-      {cell("SIGNED CONTRACTS", f.signed_contract_value, "signed_contract_value", "#157347")}
-      {cell("INVOICED", f.invoiced_value, "invoiced_value")}
-      {cell("COLLECTED CASH", f.collected_cash, "collected_cash", "#157347")}
-      {cell("RECEIVABLES OPEN", f.outstanding_receivables, "outstanding_receivables", "#b45309")}
-      {cell("OVERDUE", f.overdue_receivables, "overdue_receivables", "#b91c1c")}
+  // The money journey, in order — six steps from estimate to cash in hand,
+  // then the two "owed to you" figures. Never blended, each one a real card
+  // in the brand system, each opening its own records.
+  const CARDS: [string, string, string, any, string][] = [
+    ["estimated_pipeline", "🎯", "Estimated pipeline", f.estimated_pipeline, "Step 1 · Estimate"],
+    ["proposal_value_outstanding", "📤", "Proposals out", f.proposal_value_outstanding, "Step 2 · Asked"],
+    ["approved_proposal_value", "✅", "Approved", f.approved_proposal_value, "Step 3 · Approved"],
+    ["signed_contract_value", "✍️", "Signed contracts", f.signed_contract_value, "Step 4 · Signed"],
+    ["invoiced_value", "🧾", "Invoiced", f.invoiced_value, "Step 5 · Billed"],
+    ["collected_cash", "💵", "Collected cash", f.collected_cash, "Step 6 · In hand"],
+    ["outstanding_receivables", "⏳", "Receivables open", f.outstanding_receivables, "Owed to you"],
+    ["overdue_receivables", "🔴", "Overdue", f.overdue_receivables, "Owed · late"],
+  ];
+  return (<div style={{ marginTop: 14 }}>
+    <div className="rowflex" style={{ justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
+      <h3 style={{ margin: 0, fontSize: 17 }}>💰 Money — kept separate, on purpose</h3>
+      <span className="tiny muted">Estimates are not revenue. Click any card to see the records behind it.</span>
+    </div>
+    <div className="finGrid">
+      {CARDS.map(([key, icon, label, x, stage]) => {
+        const hot = key === "overdue_receivables" && (x?.value || 0) > 0;
+        const win = key === "collected_cash" && (x?.value || 0) > 0;
+        return (<div key={key} className={"finCard" + (hot ? " hot" : win ? " win" : "")} role="button" tabIndex={0} title={(x?.definition || "") + " — click to see the records"} onClick={() => setDrillKey(key)} onKeyDown={e => { if (e.key === "Enter") setDrillKey(key); }}>
+          <div className="finTop"><span className="finIc">{icon}</span><span className="finStage">{stage}</span></div>
+          <div className="finLab">{label}</div>
+          <div className="finVal">{money(x?.value || 0)}</div>
+          <div className="finDef">{x?.definition || ""}</div>
+          <div className="finGo">View records <span>→</span></div>
+        </div>);
+      })}
     </div>
     {drillKey && <MoneyDrill dkey={drillKey} close={() => setDrillKey("")} openLead={openLead} />}
   </div>);
@@ -130,6 +159,7 @@ function OnboardingCard({ go }: any) {
 
 function HomeDash({ go, openLead, m, d }: any) {
   const [home, setHome] = useState<any>(null); const [ins, setIns] = useState<any[]>([]);
+  const reloadHome = () => { api("/api/home").then(setHome).catch(() => {}); };
   const [runOpen, setRunOpen] = useState(false); const [toasts, setToasts] = useState<any[]>([]); const [actRange, setActRange] = useState(30);
   const [calDay, setCalDay] = useState(new Date().toISOString().slice(0, 10)); const [calDone, setCalDone] = useState<Set<string>>(new Set());
   useEffect(() => { api("/api/home").then(setHome).catch(() => {}); api("/api/ai/insights").then(setIns).catch(() => {}); }, []);
@@ -193,8 +223,9 @@ function HomeDash({ go, openLead, m, d }: any) {
         <div className="card animIn" style={{ animationDelay: "150ms" }}><h3 style={{ marginTop: 0 }}>📅 Calendar <span style={{ float: "right", display: "flex", gap: 4 }}><button className="btn ghost small" onClick={() => { const d = new Date(calDay + "T12:00:00"); d.setDate(d.getDate() - 7); setCalDay(d.toISOString().slice(0, 10)); }}>‹ Week</button><button className="btn ghost small" onClick={() => setCalDay(todayStr)}>Today</button><button className="btn ghost small" onClick={() => { const d = new Date(calDay + "T12:00:00"); d.setDate(d.getDate() + 7); setCalDay(d.toISOString().slice(0, 10)); }}>Week ›</button></span></h3>
           {(() => { const monday = new Date(calDay + "T12:00:00"); monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7)); const days = [...Array(7)].map((_, i) => { const d = new Date(monday); d.setDate(d.getDate() + i); const key = d.toISOString().slice(0, 10); return { key, dow: d.toLocaleDateString(undefined, { weekday: "narrow" }), num: d.getDate(), n: home.upcoming.filter((u: any) => u.date === key).length }; });
             const dayItems = home.upcoming.filter((u: any) => u.date === calDay);
-            const overdue = calDay === todayStr ? home.upcoming.filter((u: any) => u.date < todayStr && !calDone.has(u.task_id || "")) : [];
-            const row = (u: any, i: number) => <div className="upCard" key={(u.task_id || u.kind + u.date + u.title) + i} style={{ background: (KINDC[u.kind] || ["#f1f5f9"])[0], animationDelay: `${i * 40}ms`, opacity: calDone.has(u.task_id || "") ? .45 : 1 }} onClick={() => u.lead_id && openLead(u.lead_id)}><span className="upIc">{(KINDC[u.kind] || ["", "•"])[1]}</span><span className="upMain"><b>{u.title}</b><span className="upSub">{u.sub}{u.time && u.time !== "00:00" ? ` · ${u.time}` : ""}</span></span><span className="upAct">{u.kind === "task" && u.task_id && !calDone.has(u.task_id) ? <button className="btn small upDone" onClick={async (e) => { e.stopPropagation(); await api(`/api/tasks/${u.task_id}/complete`, { method: "POST", body: {} }).catch(() => {}); setCalDone(prev => new Set(prev).add(u.task_id)); toast("Task done ✓"); }}>✓ Done</button> : (u.time && u.time !== "00:00" ? <span className="upTime">{u.time}</span> : null)}</span></div>;
+            const rowKey = (u: any) => u.kind + ":" + (u.ref_id || u.task_id || u.title);
+            const overdue = calDay === todayStr ? home.upcoming.filter((u: any) => u.date < todayStr && !calDone.has(rowKey(u))) : [];
+            const row = (u: any, i: number) => <div className="upCard" key={(u.task_id || u.kind + u.date + u.title) + i} style={{ background: (KINDC[u.kind] || ["#f1f5f9"])[0], animationDelay: `${i * 40}ms`, opacity: calDone.has(rowKey(u)) ? .45 : 1 }} onClick={() => u.lead_id && openLead(u.lead_id)}><span className="upIc">{(KINDC[u.kind] || ["", "•"])[1]}</span><span className="upMain"><b>{u.title}</b><span className="upSub">{u.sub}{u.time && u.time !== "00:00" ? ` · ${u.time}` : ""}</span></span><span className="upAct">{!calDone.has(rowKey(u)) ? <AgendaComplete u={u} onDone={() => { setCalDone(prev => new Set(prev).add(rowKey(u))); reloadHome(); }} /> : null}{calDone.has(rowKey(u)) ? <span className="tiny" style={{ color: "#157347", fontWeight: 700 }}>✓ Done</span> : (u.time && u.time !== "00:00" ? <span className="upTime">{u.time}</span> : null)}</span></div>;
             return (<>
               <div className="weekStrip">{days.map(wd => <div key={wd.key} onClick={() => setCalDay(wd.key)} style={{ cursor: "pointer" }}><div className="wd">{wd.dow}</div><div className={`wn ${wd.key === todayStr ? "today" : ""} ${wd.n ? "has" : ""}`} style={wd.key === calDay ? { outline: "2.5px solid #166534", outlineOffset: 1 } : undefined}>{wd.num}</div>{wd.n > 0 && <div style={{ fontSize: 10, textAlign: "center", color: "#64748b" }}>{wd.n} item{wd.n === 1 ? "" : "s"}</div>}</div>)}</div>
               {overdue.length > 0 && <div style={{ marginTop: 6 }}><div className="muted" style={{ fontSize: 12, fontWeight: 700, color: "#b3261e" }}>⚠ Overdue ({overdue.length})</div>{overdue.slice(0, 5).map(row)}{overdue.length > 5 && <p className="muted" style={{ fontSize: 12 }}>+{overdue.length - 5} more overdue — work them in the Queue.</p>}</div>}
@@ -450,6 +481,7 @@ function LeadDetail({ id, users, priceBook, close, refresh, openJob, openApprova
   useEffect(() => { if (tplTouched || !docTpls.length) return; const norm = (s: any) => String(s || "").toLowerCase().trim().replace(/\s+/g, " "); const svc = norm(d?.lead?.service_requested); const pick = (svc && docTpls.find((t: any) => t.applies_to && norm(t.applies_to) === svc)) || docTpls.find((t: any) => t.is_default) || docTpls[0]; if (pick) setDocTpl(pick.id); }, [docTpls, d?.lead?.service_requested, tplTouched]);
   const load = () => { api("/api/leads/" + id).then(r => { setD(r); setEdit({ ...r.lead }); }).catch(e => setMsg(e.message)); };
   useEffect(load, [id]);
+  useEffect(() => { api(`/api/leads/${id}/touch`, { method: "POST", body: { kind: "open" } }).catch(() => {}); }, [id]);
   useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key === "Escape") close(); }; window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, []);
   if (!d) return <div className="modalWrap"><div className="modal">Loading… {msg}</div></div>;
   const l = d.lead;
@@ -1698,7 +1730,10 @@ function RichText({ value, onChange, minH }: any) {
 function DocTemplatesEditor() {
   const [list, setList] = useState<any[]>([]); const [selId, setSelId] = useState(""); const [form, setForm] = useState<any>(null);
   const [head, setHead] = useState<any>(null); const [msg, setMsg] = useState(""); const [showPrev, setShowPrev] = useState(false);
-  const load = async (keep?: string) => { const l = await api("/api/doc-templates").catch(() => []); setList(l); const pick = l.find((t: any) => t.id === (keep || selId)) || l.find((t: any) => t.is_default) || l[0]; if (pick) { setSelId(pick.id); setForm({ name: pick.name, intro_html: pick.intro_html, terms_html: pick.terms_html, footer: pick.footer, include_logo: !!pick.include_logo, applies_to: pick.applies_to || "" }); } };
+  const [kind, setKind] = useState("proposal");
+  const formOf = (t: any) => ({ name: t.name, intro_html: t.intro_html, terms_html: t.terms_html, footer: t.footer, include_logo: !!t.include_logo, applies_to: t.applies_to || "" });
+  const load = async (keep?: string, k?: string) => { const l = await api("/api/doc-templates").catch(() => []); setList(l); const kk = k || kind; const fl = l.filter((t: any) => (t.kind || "proposal") === kk); const pick = fl.find((t: any) => t.id === (keep || selId)) || fl.find((t: any) => t.is_default) || fl[0]; if (pick) { setSelId(pick.id); setForm(formOf(pick)); } };
+  const switchKind = (k: string) => { setKind(k); const fl = list.filter((t: any) => (t.kind || "proposal") === k); const pick = fl.find((t: any) => t.is_default) || fl[0]; if (pick) { setSelId(pick.id); setForm(formOf(pick)); } };
   const [svcs, setSvcs] = useState<any[]>([]);
   useEffect(() => { load(); api("/api/proposal-template").then(setHead).catch(() => {}); api("/api/services").then(setSvcs).catch(() => {}); }, []);
   const sel = list.find(t => t.id === selId);
@@ -1706,7 +1741,8 @@ function DocTemplatesEditor() {
   const pickFile = (cb: (d: string) => void, maxW = 480) => { const inp = document.createElement("input"); inp.type = "file"; inp.accept = "image/*"; inp.onchange = () => { const f = inp.files?.[0]; if (!f) return; const img = new Image(); img.onload = () => { const c = document.createElement("canvas"); const sc = Math.min(1, maxW / img.width); c.width = Math.round(img.width * sc); c.height = Math.round(img.height * sc); c.getContext("2d")?.drawImage(img, 0, 0, c.width, c.height); cb(c.toDataURL("image/png")); }; img.src = URL.createObjectURL(f); }; inp.click(); };
   if (!form || !head) return <p className="muted">Loading templates…</p>;
   return (<div>
-    <h3 style={{ marginTop: 0 }}>Proposal templates — a variety, not just one</h3>
+    <h3 style={{ marginTop: 0 }}>Document templates — proposals & invoices</h3>
+    <div className="rowflex" style={{ marginBottom: 10 }}><button className={`chip ${kind === "proposal" ? "on" : ""}`} onClick={() => switchKind("proposal")}>📄 Proposal templates</button><button className={`chip ${kind === "invoice" ? "on" : ""}`} onClick={() => switchKind("invoice")}>🧾 Invoice templates</button><span className="muted">{kind === "invoice" ? "The default invoice template renders on every invoice — the pay page, the DOCX and the packet bundle." : "Proposals pick a template when they're built; the default preselects."}</span></div>
     <p className="muted">Every proposal picks a template when it's built — different words for a homeowner, a school district, or a government bid. The header (company, logo) is shared; intro, terms, and footer live on each template. Printouts, DOCX, and the customer's sign page all render the chosen template.</p>
     {msg && <div className="ok">{msg}</div>}
     <div className="card" style={{ background: "#f8fafc" }}><b>Company header & logo (shared by all templates)</b>
@@ -1722,27 +1758,27 @@ function DocTemplatesEditor() {
         <button className="btn small" onClick={async () => { const r = await api("/api/proposal-template", { method: "PUT", body: { company: head.company, tagline: head.tagline, contact_line: head.contact_line, address: head.address, intro_html: head.intro_html || "", terms_html: head.terms_html || "", footer: head.footer || "", logo_data: head.logo ?? null } }); setHead(r); setMsg("Header & logo saved ✓"); }}>Save header & logo</button></div>
     </div>
     <div className="rowflex" style={{ margin: "14px 0 8px" }}>
-      {list.map(t => <button key={t.id} className={`chip ${selId === t.id ? "on" : ""}`} onClick={() => { setSelId(t.id); setForm({ name: t.name, intro_html: t.intro_html, terms_html: t.terms_html, footer: t.footer, include_logo: !!t.include_logo }); }}>{t.name}{t.is_default ? " ⭐ default" : ""}</button>)}
-      <button className="btn ghost small" onClick={async () => { const t = await api("/api/doc-templates", { method: "POST", body: { name: "New template" } }); await load(t.id); setMsg("Template added — make it yours and save"); }}>+ New</button>
+      {list.filter((t: any) => (t.kind || "proposal") === kind).map(t => <button key={t.id} className={`chip ${selId === t.id ? "on" : ""}`} onClick={() => { setSelId(t.id); setForm(formOf(t)); }}>{t.name}{t.is_default ? " ⭐ default" : ""}</button>)}
+      <button className="btn ghost small" onClick={async () => { const t = await api("/api/doc-templates", { method: "POST", body: { name: kind === "invoice" ? "New invoice template" : "New template", kind } }); await load(t.id, kind); setMsg("Template added — make it yours and save"); }}>+ New</button>
       <button className="btn ghost small" onClick={async () => { const t = await api("/api/doc-templates", { method: "POST", body: { from_id: selId } }); await load(t.id); setMsg("Duplicated ✓"); }}>Duplicate</button>
       {list.length > 1 && <button className="btn ghost small" onClick={async () => { if (!confirm(`Delete "${sel?.name}"? Proposals already built keep the template they were built with in their history.`)) return; await api("/api/doc-templates/" + selId, { method: "DELETE" }); setSelId(""); await load(""); setMsg("Deleted ✓"); }}>Delete</button>}
     </div>
     <div className="formgrid">
       <div><label className="f">Template name</label><input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></div>
-      <div><label className="f">Auto-use for service (smart picker)</label><select value={form.applies_to || ""} onChange={e => setForm({ ...form, applies_to: e.target.value })}><option value="">— No auto-match (default / manual only)</option>{svcs.map((s: any) => <option key={s.id} value={s.name}>{s.name}</option>)}</select><p className="muted" style={{ marginTop: 4 }}>When a lead requests this service, this template is preselected in the proposal builder — and used by the AI drafter. Anyone can still pick a different template while composing.</p></div>
+      {kind === "proposal" && <div><label className="f">Auto-use for service (smart picker)</label><select value={form.applies_to || ""} onChange={e => setForm({ ...form, applies_to: e.target.value })}><option value="">— No auto-match (default / manual only)</option>{svcs.map((s: any) => <option key={s.id} value={s.name}>{s.name}</option>)}</select><p className="muted" style={{ marginTop: 4 }}>When a lead requests this service, this template is preselected in the proposal builder — and used by the AI drafter. Anyone can still pick a different template while composing.</p></div>}
       <div><label className="f">Logo on this template</label><label className="check" style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}><input type="checkbox" style={{ width: "auto" }} checked={!!form.include_logo} onChange={e => setForm({ ...form, include_logo: e.target.checked })} /> Print the company logo at the top</label></div>
       <div className="full"><label className="f">Intro — above the line items</label><RichText value={form.intro_html} onChange={(v: string) => setForm({ ...form, intro_html: v })} /></div>
       <div className="full"><label className="f">Terms & conditions — below the total</label><RichText value={form.terms_html} onChange={(v: string) => setForm({ ...form, terms_html: v })} /></div>
       <div className="full"><label className="f">Footer</label><input value={form.footer} onChange={e => setForm({ ...form, footer: e.target.value })} /></div>
     </div>
     <div className="rowflex" style={{ marginTop: 10 }}>
-      <button className="btn" onClick={async () => { const t = await api("/api/doc-templates/" + selId, { method: "PATCH", body: form }); await load(t.id); setMsg("Template saved ✓ — pick it when building a proposal"); }}>Save template</button>
-      {!sel?.is_default && <button className="btn ghost" onClick={async () => { await api("/api/doc-templates/" + selId, { method: "PATCH", body: { is_default: true } }); await load(selId); setMsg("Set as the default ✓ — new proposals preselect it"); }}>⭐ Make default</button>}
+      <button className="btn" onClick={async () => { const t = await api("/api/doc-templates/" + selId, { method: "PATCH", body: form }); await load(t.id, kind); setMsg(kind === "invoice" ? "Template saved ✓ — it renders on invoices wherever this template is the default" : "Template saved ✓ — pick it when building a proposal"); }}>Save template</button>
+      {!sel?.is_default && <button className="btn ghost" onClick={async () => { await api("/api/doc-templates/" + selId, { method: "PATCH", body: { is_default: true } }); await load(selId, kind); setMsg(kind === "invoice" ? "Set as THE default invoice template ✓ — every invoice now renders with it" : "Set as the default ✓ — new proposals preselect it"); }}>⭐ Make default</button>}
       <button className="btn ghost" onClick={() => setShowPrev(!showPrev)}>{showPrev ? "Hide preview" : "Preview with sample data"}</button>
     </div>
     {showPrev && <div className="printdoc" style={{ marginTop: 14, border: "1px solid #dbe4ee" }}>
       <div className="pd-head">{form.include_logo && head.logo && <img src={head.logo} alt="" style={{ maxHeight: 60, maxWidth: 220, marginBottom: 6 }} />}<div className="pd-company">{head.company}</div>{head.tagline && <div className="pd-tag">{head.tagline}</div>}{head.contact_line && <div className="pd-meta">{head.contact_line}</div>}{head.address && <div className="pd-meta">{head.address}</div>}</div>
-      <h2>Proposal — Mold remediation · PROP-1001</h2>
+      <h2>{kind === "invoice" ? "Invoice — Mold Testing · INV-0001" : "Proposal — Mold remediation · PROP-1001"}</h2>
       <p className="pd-meta">Prepared for: Angela Ruiz · Bay Shore, NY · Nov 10, 2026 · Template: {form.name}</p>
       <div dangerouslySetInnerHTML={{ __html: sample(form.intro_html) }} />
       <table className="pd-table"><thead><tr><th>Item</th><th>Qty</th><th>Unit price</th><th>Amount</th></tr></thead><tbody><tr><td>Mold remediation — primary bath</td><td>1</td><td>$3,900.00</td><td>$3,900.00</td></tr><tr><td>HEPA air scrubber (per day)</td><td>3</td><td>$300.00</td><td>$900.00</td></tr></tbody></table>
@@ -2022,7 +2058,7 @@ function CallbackForm({ leadId, done }: any) {
     {msg && <p className="muted" style={{ marginTop: 6 }}>{msg}</p>}<p className="muted" style={{ fontSize: 12.5 }}>"Call me Thursday" is a promise — it lands in the queue when it's due, with your note attached.</p></div>);
 }
 
-function WorkQueue({ openLead, openJob, go }: any) {
+function WorkQueue({ openLead, openJob, go, me }: any) {
   const [q, setQ] = useState<any>(null); const [typeF, setTypeF] = useState("all"); const [focus, setFocus] = useState(0);
   const [sel, setSel] = useState<Set<string>>(new Set()); const [team, setTeam] = useState<any[]>([]); const [bulkMsg, setBulkMsg] = useState("");
   useEffect(() => { api("/api/users").then(setTeam).catch(() => {}); }, []);
@@ -2041,6 +2077,7 @@ function WorkQueue({ openLead, openJob, go }: any) {
     window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, [items, focus, keysOn]);
   const act = (i: any) => { if (i.type === "approval") go({ view: "approvals" }); else if (i.job_id && i.type !== "followup_overdue" && i.type !== "lead_untouched" && i.type !== "proposal_cold" && i.type !== "proposal_viewed") openJob(i.job_id); else if (i.type === "inbox") go({ view: "ops" }); else if (i.type === "field_report" || i.type === "timesheet") go({ view: "ops" }); else if (i.lead_id) openLead(i.lead_id); };
   const doneQuick = async (i: any) => { if (i.type === "callback") await api(`/api/callbacks/${i.callback_id}/done`, { method: "POST", body: {} }); load(); };
+  const assignMine = async (i: any) => { if (!me?.id || !i.lead_id) return; await api("/api/queue/bulk", { method: "POST", body: { lead_ids: [i.lead_id], action: "assign", assignee_id: me.id } }); setQ((prev: any) => prev ? { ...prev, items: prev.items.filter((x: any) => x.id !== i.id), total: Math.max(0, prev.total - 1) } : prev); toast("Assigned to you — it's off the untouched pile ✓"); };
   if (!q) return <p className="muted">Loading your pile…</p>;
   const LBL: Record<string, string> = { handoff_failed: "⚠ Handoff failed", approval: "✋ Approval", callback: "📞 Callback", followup_overdue: "⏰ Overdue", lead_untouched: "🆕 Untouched", proposal_viewed: "👁 Viewed, unsigned", inbox: "✉ Inbox", proposal_cold: "🧊 Going cold", job_crew: "👷 Needs crew", paperwork: "📄 Paperwork", field_report: "📋 Field report", timesheet: "⏱ Timesheet" };
   return (<div><h2 className="pt">Work Queue</h2><p className="sub">Everything that needs a human, worst-first — leads, email, approvals, jobs, paperwork. Work it to zero. <span className="muted">Keys: J/K move · Enter open</span></p>
@@ -2051,7 +2088,7 @@ function WorkQueue({ openLead, openJob, go }: any) {
       <span className="qCheck">{i.lead_id && i.type !== "approval" ? <input type="checkbox" checked={sel.has(i.id)} onChange={() => toggleSel(i.id)} onClick={e => e.stopPropagation()} style={{ width: 17, height: 17 }} /> : null}</span>
       <span className="tinyBadge qBadge">{LBL[i.type] || i.type}</span>
       <div className="qTitle"><b>{i.title}</b><span className="muted">{i.subtitle}</span></div>
-      <span className="qQuick">{i.type === "callback" ? <button className="btn ghost small qDoneBtn" onClick={() => doneQuick(i)}>✓ Done</button> : null}</span>
+      <span className="qQuick">{i.type === "callback" ? <button className="btn ghost small qDoneBtn" onClick={() => doneQuick(i)}>✓ Done</button> : i.type === "lead_untouched" ? <button className="btn ghost small qDoneBtn" title="Assign this lead to me — it leaves the untouched pile" onClick={() => assignMine(i)}>👤 Mine</button> : null}</span>
       <button className="btn small qBtn" onClick={() => act(i)}>{i.primary?.label || "Open"}</button></div>)}
   </div>);
 }
@@ -2566,7 +2603,7 @@ function CalendarView({ openLead, embedded }: any) {
     </div>
     <div className="card" style={{ marginTop: 14 }}><h3 style={{ marginTop: 0 }}>📋 Agenda — {new Date(sel + "T12:00:00").toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })} ({dayList.length})</h3>
       {dayList.map(e => <div key={e.id} style={{ display: "flex", gap: 10, alignItems: "center", padding: "8px 0", borderBottom: "1px solid #eef2f7" }}><span className="calIc">{KINDS[e.kind]?.[0] || "•"}</span><div style={{ flex: 1, minWidth: 0 }}><b style={{ textDecoration: e.kind === "task_done" ? "line-through" : "none" }}>{e.title}</b> <span className="tinyBadge">{KINDS[e.kind]?.[1] || e.kind}</span><br /><span className="muted">{e.sub}</span></div>
-        <span className="calAct">{e.kind === "task" && <button className="btn ghost small" onClick={async () => { await api(`/api/tasks/${e.id.slice(4)}/complete`, { method: "POST", body: {} }); const from = new Date(cur.getFullYear(), cur.getMonth(), 1).toISOString().slice(0, 10); const to = new Date(cur.getFullYear(), cur.getMonth() + 1, 0).toISOString().slice(0, 10); api(`/api/calendar?from=${from}&to=${to}&done=1`).then(setEvs).catch(() => {}); }}>✓ Done</button>}
+        <span className="calAct">{e.kind !== "task_done" && <AgendaComplete u={e} onDone={() => { const from = new Date(cur.getFullYear(), cur.getMonth(), 1).toISOString().slice(0, 10); const to = new Date(cur.getFullYear(), cur.getMonth() + 1, 0).toISOString().slice(0, 10); api(`/api/calendar?from=${from}&to=${to}&done=1`).then(setEvs).catch(() => {}); }} />}
         {e.lead_id && <button className="btn small" onClick={() => openLead(e.lead_id)}>Open record →</button>}</span></div>)}
       {dayList.length === 0 && <p className="muted">Nothing scheduled this day{kindF !== "all" ? " for this filter" : ""}. Click any other day to see its agenda.</p>}
     </div></div>);
@@ -2742,7 +2779,8 @@ function App() {
   useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key !== "Escape") return; const wraps = document.querySelectorAll(".modalWrap"); const last = wraps[wraps.length - 1] as HTMLElement | undefined; if (!last) return; const btns = Array.from(last.querySelectorAll("button")); const closer = btns.find(b => (b.textContent || "").includes("✕")); if (closer) (closer as HTMLButtonElement).click(); }; window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, []);
   const [user, setUser] = useState<any>(null); const [login, setLogin] = useState({ email: "", password: "" }); const [err, setErr] = useState("");
   const [nav, setNav] = useState<Nav>({ view: "queue" }); const [agentOpen, setAgentOpen] = useState(false); const [agentFocus, setAgentFocus] = useState("");
-  useEffect(() => { const h = (e: any) => { setAgentFocus(e.detail?.executionId || ""); setAgentOpen(true); }; window.addEventListener("wp-agent", h); return () => window.removeEventListener("wp-agent", h); }, []); const [users, setUsers] = useState<any[]>([]); const [priceBook, setPriceBook] = useState<any[]>([]);
+  useEffect(() => { const h = (e: any) => { setAgentFocus(e.detail?.executionId || ""); setAgentOpen(true); }; window.addEventListener("wp-agent", h); return () => window.removeEventListener("wp-agent", h); }, []);
+const [users, setUsers] = useState<any[]>([]); const [priceBook, setPriceBook] = useState<any[]>([]);
 const [sb, setSb] = useState(() => localStorage.getItem("wp_sb") || "open"); const [mOpen, setMOpen] = useState(false);
   const [notifs, setNotifs] = useState<any[]>([]); const [unread, setUnread] = useState(0); const [bellOpen, setBellOpen] = useState(false); const [verifyMsg, setVerifyMsg] = useState("");
   const [profOpen, setProfOpen] = useState(false);
@@ -2750,6 +2788,7 @@ const [sb, setSb] = useState(() => localStorage.getItem("wp_sb") || "open"); con
   const toggleGroup = (g: string) => { const n = { ...navOpen, [g]: navOpen[g] === false ? true : false }; setNavOpen(n); try { localStorage.setItem("wp_nav_groups", JSON.stringify(n)); } catch {} };
 const [pending, setPending] = useState(0); const [creating, setCreating] = useState(false); const [leadId, setLeadId] = useState<string | null>(null); const [tick, setTick] = useState(0);
   const [palOpen, setPalOpen] = useState(false); const [helpOpen, setHelpOpen] = useState(false); const [jobOpen, setJobOpen] = useState<string | null>(null); const [ltOpen, setLtOpen] = useState(false); const [custOpen, setCustOpen] = useState<string | null>(null);
+  useEffect(() => { if (!leadId && !jobOpen && !custOpen) window.dispatchEvent(new Event("wp-refresh")); }, [leadId, jobOpen, custOpen]);
   const [appMode, setAppMode] = useState(() => localStorage.getItem("wp_app") || "all"); const [favs, setFavs] = useState<any[]>([]); const [tabSignal, setTabSignal] = useState<any>(null);
   const [theme, setTheme] = useState(() => localStorage.getItem("wp_theme") || "light");
   useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem("wp_theme", theme); }, [theme]);
@@ -2836,7 +2875,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
         <OnlinePill /><button className="btn ghost" onClick={() => setAgentOpen(true)}>✦ Agent</button><button className="btn ghost" title="Log time (T)" onClick={() => setLtOpen(true)}>⏱ Log time</button><button className="btn" onClick={() => setCreating(true)}>+ New Lead</button><button className="avatarBtn" onClick={() => setProfOpen(true)} title={"Your profile — " + user.name}><Avatar u={user} size={32} /></button></div>
       {user && user.email_verified === 0 && <div className="verifyBar">✉️ Verify your email to secure your account and enable password recovery. <button className="btn ghost small" onClick={async () => { const r = await api("/api/auth/resend-verify", { method: "POST", body: {} }).catch((e: any) => ({ error: e.message })); setVerifyMsg(r.verify_url ? "Test mode \u2014 verify here: " + r.verify_url : r.error ? r.error : "Verification email sent \u2014 check your inbox."); }}>Resend verification</button>{verifyMsg && <span style={{ marginLeft: 8 }}>{verifyMsg}</span>}</div>}
       <EB key={nav.view}>
-      {nav.view === "queue" && <WorkQueue openLead={openLead} openJob={(id: string) => setJobOpen(id)} go={go} />}
+      {nav.view === "queue" && <WorkQueue openLead={openLead} openJob={(id: string) => setJobOpen(id)} go={go} me={user} />}
       {nav.view === "jobs" && <JobsBoard openJob={(id: string) => setJobOpen(id)} signal={tick} onChange={() => setTick(t => t + 1)} />}
       {nav.view === "customers" && <Customers openCustomer={(id: string) => setCustOpen(id)} tabSignal={tabSignal} />}
       {(nav.view === "people") && <Customers openCustomer={(id: string) => setCustOpen(id)} tabSignal={{ view: "customers", tab: "people", n: 1 }} />}

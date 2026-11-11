@@ -62,7 +62,7 @@ const execBrief: Tool = {
     const wk = (col: string, tbl: string, extra = "") => (db.prepare(`SELECT COUNT(*) c FROM ${tbl} WHERE workspace_id=? AND ${col} >= datetime('now','-7 days') ${extra}`).get(ws) as any).c;
     const signed = (db.prepare("SELECT COALESCE(SUM(total),0) s FROM proposals WHERE workspace_id=? AND status='signed' AND signed_at >= datetime('now','-7 days')").get(ws) as any).s;
     const collected = (db.prepare("SELECT COALESCE(SUM(amount),0) s FROM payments WHERE workspace_id=? AND status='paid' AND created_at >= datetime('now','-7 days')").get(ws) as any).s;
-    const stuck = db.prepare("SELECT service_requested, est_value FROM leads WHERE workspace_id=? AND state IN ('NEW','WORKING') AND first_response_at IS NULL ORDER BY est_value DESC LIMIT 3").all(ws) as any[];
+    const stuck = db.prepare("SELECT service_requested, est_value FROM leads WHERE workspace_id=? AND state IN ('NEW','WORKING') AND first_touch_at IS NULL AND first_response_at IS NULL ORDER BY est_value DESC LIMIT 3").all(ws) as any[];
     const items = stuck.map(l => ({ label: `Never contacted: ${l.service_requested} — ${money(l.est_value)}`, value: l.est_value }));
     return { tool: this.name, mode: "executed", summary: `Last 7 days: ${wk("created_at", "leads")} new leads · ${wk("sent_at", "proposals", "AND sent_at IS NOT NULL")} proposals sent · ${money(signed)} signed · ${money(collected)} collected. ${items.length ? "Biggest stuck items below." : "No untouched high-value leads."}`, items };
   },

@@ -32,7 +32,7 @@ before(async () => {
 test("50: doc templates seed a variety with one default; CRUD + duplicate + delete guard", async () => {
   const list = (await J("/api/doc-templates", {}, { Cookie: cookie })).j;
   assert.ok(list.length >= 4, "seeded variety");
-  assert.equal(list.filter((t: any) => t.is_default).length, 1, "exactly one default");
+  assert.equal(list.filter((t: any) => t.is_default && (t.kind || "proposal") === "proposal").length, 1, "exactly one default per kind (v39: invoices carry their own default)");
   assert.ok(list.some((t: any) => /Government/.test(t.name)) && list.some((t: any) => /Short/.test(t.name)));
   const nu = await J("/api/doc-templates", { method: "POST", body: { name: "Hospital System", intro_html: "<p>Hospital intro</p>", terms_html: "<p>Net 45</p>" } }, { Cookie: cookie });
   assert.equal(nu.status, 201);
@@ -41,7 +41,7 @@ test("50: doc templates seed a variety with one default; CRUD + duplicate + dele
   const def = await J(`/api/doc-templates/${nu.j.id}`, { method: "PATCH", body: { is_default: true } }, { Cookie: cookie });
   assert.equal(def.j.is_default, 1);
   const list2 = (await J("/api/doc-templates", {}, { Cookie: cookie })).j;
-  assert.equal(list2.filter((t: any) => t.is_default).length, 1, "default moved, still exactly one");
+  assert.equal(list2.filter((t: any) => t.is_default && (t.kind || "proposal") === "proposal").length, 1, "default moved, still exactly one within the proposal kind");
   await J(`/api/doc-templates/${dup.j.id}`, { method: "DELETE" }, { Cookie: cookie });
 });
 

@@ -474,3 +474,24 @@ aside.rail button.on .nshort { background:#ffffff22; }
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}
 .adminDrawer{position:fixed;top:0;right:0;bottom:0;width:min(560px,94vw);background:var(--card,#fff);z-index:60;box-shadow:-18px 0 44px rgba(8,30,18,.22);padding:20px;overflow-y:auto}
 .pcH{margin:18px 0 8px;font-size:12.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--pine,#0E5C3A)}
+
+/* V39.1 — Money strip as real cards in the brand system (was a flat text strip) */
+.finGrid { display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; }
+@media (max-width: 1100px) { .finGrid { grid-template-columns:repeat(2, 1fr); } }
+@media (max-width: 460px) { .finGrid { grid-template-columns:repeat(2, 1fr); gap:9px; } }
+.finCard { background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:14px 15px 12px; box-shadow:var(--shadow); cursor:pointer; transition:transform .08s, box-shadow .15s, border-color .15s; display:flex; flex-direction:column; }
+.finCard:hover { transform:translateY(-2px); box-shadow:0 8px 22px rgba(15,23,42,.13); border-color:#0E5C3A; }
+.finCard:focus-visible { outline:2px solid #0E5C3A; outline-offset:2px; }
+.finCard.hot { background:#FEF2F2; border-color:#FECACA; }
+.finCard.win { background:#F0FDF4; border-color:#BBF7D0; }
+.finTop { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+.finIc { width:34px; height:34px; border-radius:9px; background:#EDF2EE; display:inline-flex; align-items:center; justify-content:center; font-size:17px; }
+.finCard.hot .finIc { background:#FEE2E2; } .finCard.win .finIc { background:#DCFCE7; }
+.finStage { font-size:10.5px; font-weight:700; letter-spacing:.07em; text-transform:uppercase; color:var(--mut); }
+.finLab { font-size:12px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; color:var(--mut); }
+.finVal { font-size:27px; font-weight:800; letter-spacing:-.03em; margin:2px 0 3px; color:var(--ink); }
+.finCard.hot .finVal { color:#B91C1C; } .finCard.win .finVal { color:#0E5C3A; }
+.finDef { font-size:12px; color:var(--mut); line-height:1.45; flex:1; }
+.finGo { margin-top:10px; padding-top:9px; border-top:1px solid var(--line); font-size:12.5px; font-weight:700; color:#0E5C3A; display:flex; justify-content:space-between; }
+.finCard:hover .finGo span { transform:translateX(3px); } .finGo span { transition:transform .15s; }
+.upDone { white-space:nowrap; }
