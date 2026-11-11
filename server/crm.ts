@@ -6,7 +6,7 @@
 import { db, uid, now, audit, withTx } from "./db.ts";
 import { VERTICAL_PACKS } from "./templates.ts";
 import { storagePut, storageGet, storageDelete } from "./storage.ts";
-import { financialSummary } from "./metrics.ts";
+import { financialSummary, financeDrill } from "./metrics.ts";
 import { notify } from "./comms.ts";
 
 const J = (s: any, fb: any = null) => { try { return JSON.parse(s ?? ""); } catch { return fb; } };
@@ -157,6 +157,7 @@ export function registerCrm(app: any, requireAuth: any, needPerm: any = null) {
     for (const j of jobs as any[]) tl.push({ at: j.created_at, icon: "🔧", text: `Job created — ${j.service_requested} · $${j.value}`, lead_id: j.lead_id, job_id: j.id });
     if (leadIds.length) { const ph2 = leadIds.map(() => "?").join(","); for (const co of db.prepare(`SELECT * FROM change_orders WHERE lead_id IN (${ph2}) ORDER BY created_at DESC LIMIT 20`).all(...leadIds) as any[]) tl.push({ at: co.created_at, icon: "📝", text: `Change order — ${co.delta_scope || "scope change"} · $${co.delta_total || 0}`, lead_id: co.lead_id }); }
     tl.sort((x, y) => String(y.at).localeCompare(String(x.at)));
+    for (const i of invoices360 as any[]) { if (!i.token) { i.token = uid("invtok") + Math.random().toString(16).slice(2, 14); try { db.prepare("UPDATE invoices SET token=? WHERE id=? AND (token IS NULL OR token='')").run(i.token, i.id); } catch {} } i.link = "/invoice/" + i.token; i.balance = Math.round(((i.total || 0) - (i.paid_amount || 0)) * 100) / 100; }
     res.json({ account: { ...a, custom: J(a.custom, {}) }, contacts, leads, jobs, lifetime_value: lifetime, proposals: proposals360, payments: payments360, documents: docs360, timeline: tl.slice(0, 80), invoices: invoices360, money360: { collected: collected360, refunded: refunded360, net_collected: net360, proposals_value: proposed360, signed_value: signed360, outstanding: Math.max(0, signed360 - net360), invoiced: invoiced360, ar_outstanding: ar360, ar_overdue: overdue360, definitions: { proposed: "Current proposal version per lead", signed: "Signed current versions", collected: "Settled payments", net_collected: "Collected minus refunds", outstanding: "Uncollected contract value: signed minus net collected — includes work not yet invoiced; NOT accounts receivable", invoiced: "Invoices issued to this customer", ar_outstanding: "True receivables: invoiced and unpaid", ar_overdue: "Receivables past due" } } });
   });
   // V36 Client File (dossier): the complete, printable record for one
@@ -435,6 +436,7 @@ export function registerDocTemplates(app: any, requireAuth: any, needPerm: any =
 // ---------- v6: home command-center aggregate (article pattern: signals + agent state, assembled) ----------
 export function registerHome(app: any, requireAuth: any) {
   app.get("/api/finances", requireAuth, (req: any, res: any) => { res.json(financialSummary(req.user.workspace_id)); });
+  app.get("/api/finances/drill/:key", requireAuth, (req: any, res: any) => { const d = financeDrill(req.user.workspace_id, String(req.params.key)); if (!d) return res.status(404).json({ error: { code: "bad_key" } }); for (const r of d.rows) { if (r.kind === "invoice" && r.invoice_id) { const inv = db.prepare("SELECT token FROM invoices WHERE id=?").get(r.invoice_id) as any; let tok = inv?.token; if (!tok) { tok = uid("invtok") + Math.random().toString(16).slice(2, 14); try { db.prepare("UPDATE invoices SET token=? WHERE id=? AND (token IS NULL OR token='')").run(tok, r.invoice_id); } catch {} } r.link = "/invoice/" + tok; } } const total = Math.round(d.rows.reduce((a: number, r: any) => a + (r.amount || 0), 0) * 100) / 100; res.json({ key: req.params.key, title: d.title, definition: d.definition, total, count: d.rows.length, rows: d.rows }); });
   app.get("/api/home", requireAuth, (req: any, res: any) => {
     const w = req.user.workspace_id;
     // 30-day activity series (every lead event = work happening)

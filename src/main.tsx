@@ -59,25 +59,62 @@ function useCountUp(target: number, dur = 750) {
   return v;
 }
 
-function FinancesStrip({ f }: any) {
+export function absInvLink(inv: any): string { if (!inv?.link) return ""; return inv.link.startsWith("http") ? inv.link : location.origin + inv.link; }
+function InvoiceActions({ inv, onDone }: any) {
+  const [msg, setMsg] = useState("");
+  if (!inv || inv.status === "void") return null;
+  const url = absInvLink(inv);
+  return (<span className="rowflex" style={{ flexWrap: "wrap" }}>
+    {url && <a className="btn ghost small" href={url} target="_blank" rel="noreferrer">👁 View / pay page</a>}
+    {url && <button className="btn ghost small" onClick={async () => { try { await navigator.clipboard.writeText(url); toast("Pay link copied ✓"); } catch { toast(url); } }}>🔗 Copy link</button>}
+    <a className="btn ghost small" href={`/api/invoices/${inv.id}/document`}>⬇ DOCX</a>
+    <button className="btn ghost small" onClick={async () => { try { const r = await api(`/api/invoices/${inv.id}/send`, { method: "POST", body: {} }); toast(r.test_mode ? "Invoice sent (test mode — recorded, not delivered) ✓" : "Invoice sent ✓"); onDone && onDone(); } catch (e: any) { setMsg(e.message); toast(e.message); } }}>✉ Send to customer</button>
+    {inv.sent_at && <span className="muted">sent {new Date(inv.sent_at).toLocaleDateString()}</span>}
+    {msg && <span className="err">{msg}</span>}
+  </span>);
+}
+
+function FinancesStrip({ f, openLead }: any) {
+  const [drillKey, setDrillKey] = useState("");
   if (!f) return null;
-  const cell = (label: string, x: any, accent?: string) => (<div style={{ flex: "1 1 150px", minWidth: 140 }} title={x?.definition || ""}>
-    <div className="tiny muted" style={{ fontWeight: 700, letterSpacing: 0.3 }}>{label}</div>
+  const cell = (label: string, x: any, key: string, accent?: string) => (<div key={key} role="button" tabIndex={0} title={(x?.definition || "") + " — click to see the records"} onClick={() => setDrillKey(key)} onKeyDown={e => { if (e.key === "Enter") setDrillKey(key); }} style={{ flex: "1 1 150px", minWidth: 140, cursor: "pointer", borderRadius: 10, padding: "6px 8px", margin: "-6px -8px" }} className="finCell">
+    <div className="tiny muted" style={{ fontWeight: 700, letterSpacing: 0.3 }}>{label} <span style={{ color: "var(--pine, #0E5C3A)" }}>→</span></div>
     <div style={{ fontSize: 21, fontWeight: 800, color: accent || "var(--ink)" }}>{money(x?.value || 0)}</div>
     <div className="tiny muted" style={{ lineHeight: 1.35 }}>{x?.definition || ""}</div>
   </div>);
   return (<div className="card wpRise" style={{ marginTop: 12 }}>
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}><b>💰 Money — kept separate, on purpose</b><span className="tiny muted">Estimates are not revenue. Each figure has one definition.</span></div>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}><b>💰 Money — kept separate, on purpose</b><span className="tiny muted">Estimates are not revenue. Every figure opens its records.</span></div>
     <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 10 }}>
-      {cell("ESTIMATED PIPELINE", f.estimated_pipeline)}
-      {cell("PROPOSALS OUT", f.proposal_value_outstanding)}
-      {cell("APPROVED", f.approved_proposal_value)}
-      {cell("SIGNED CONTRACTS", f.signed_contract_value, "#157347")}
-      {cell("INVOICED", f.invoiced_value)}
-      {cell("COLLECTED CASH", f.collected_cash, "#157347")}
-      {cell("RECEIVABLES OPEN", f.outstanding_receivables, "#b45309")}
+      {cell("ESTIMATED PIPELINE", f.estimated_pipeline, "estimated_pipeline")}
+      {cell("PROPOSALS OUT", f.proposal_value_outstanding, "proposal_value_outstanding")}
+      {cell("APPROVED", f.approved_proposal_value, "approved_proposal_value")}
+      {cell("SIGNED CONTRACTS", f.signed_contract_value, "signed_contract_value", "#157347")}
+      {cell("INVOICED", f.invoiced_value, "invoiced_value")}
+      {cell("COLLECTED CASH", f.collected_cash, "collected_cash", "#157347")}
+      {cell("RECEIVABLES OPEN", f.outstanding_receivables, "outstanding_receivables", "#b45309")}
+      {cell("OVERDUE", f.overdue_receivables, "overdue_receivables", "#b91c1c")}
     </div>
+    {drillKey && <MoneyDrill dkey={drillKey} close={() => setDrillKey("")} openLead={openLead} />}
   </div>);
+}
+function MoneyDrill({ dkey, close, openLead }: any) {
+  const [d, setD] = useState<any>(null); const [err, setErr] = useState("");
+  useEffect(() => { api("/api/finances/drill/" + dkey).then(setD).catch((e: any) => setErr(e.message)); }, [dkey]);
+  const openRow = (r: any) => { if (r.kind === "job" || (r.kind !== "lead" && r.job_id)) { (window as any).wpOpenJob?.(r.job_id); close(); } else if (r.lead_id) { openLead ? openLead(r.lead_id) : (window as any).wpOpenLead?.(r.lead_id); close(); } };
+  return (<div className="modalWrap" style={{ zIndex: 70 }}><div className="modal" style={{ maxWidth: 620 }}>
+    <div className="rowflex" style={{ justifyContent: "space-between" }}><h3 style={{ margin: 0 }}>{d ? d.title : "Loading…"}</h3><button className="btn ghost small" onClick={close}>✕</button></div>
+    {err && <div className="err" style={{ marginTop: 10 }}>{err}</div>}
+    {d && <><p className="muted" style={{ margin: "6px 0" }}>{d.definition}</p>
+      <div className="rowflex" style={{ margin: "4px 0 8px" }}><span style={{ fontSize: 20, fontWeight: 800 }}>{money(d.total)}</span><span className="muted">across {d.count} record{d.count === 1 ? "" : "s"} — this list is the figure, record for record.</span></div>
+      {d.rows.length === 0 && <p className="muted">Nothing here yet — when a record lands in this bucket, it will appear in this list.</p>}
+      <div style={{ maxHeight: 380, overflow: "auto" }}>{d.rows.map((r: any, i: number) => <div key={i} className="rowflex" onClick={() => openRow(r)} style={{ padding: "8px 6px", borderTop: "1px solid #eef2f7", cursor: (r.job_id || r.lead_id) ? "pointer" : "default", alignItems: "baseline" }}>
+        <span style={{ flex: 1 }}><b>{r.title}</b><br /><span className="muted" style={{ fontSize: 12.5 }}>{r.sub}</span></span>
+        <b>{money(r.amount)}</b>
+        {r.kind === "invoice" && r.link && <a className="btn ghost small" href={r.link.startsWith("http") ? r.link : location.origin + r.link} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}>👁 Invoice</a>}
+        {(r.job_id || r.lead_id) && <span className="muted">→</span>}
+      </div>)}</div>
+      <p className="tiny muted" style={{ marginTop: 8 }}>Click a row to open the {d.rows[0]?.kind === "invoice" ? "job" : "record"} behind it.</p></>}
+  </div></div>);
 }
 function OnboardingCard({ go }: any) {
   const [ob, setOb] = useState<any>(null); const [hide, setHide] = useState(localStorage.getItem("wp_ob_hide") === "1");
@@ -118,7 +155,7 @@ function HomeDash({ go, openLead, m, d }: any) {
           <div className="statCard animIn" style={{ animationDelay: "180ms", ["--glow" as any]: "#e879f9" }} onClick={() => go({ view: "leads", leads: { bucket: "won" } })}><div className="ic" style={{ background: "#fce7f3" }}>🏆</div><div className="v">${num(wonM)}</div><div className="l">Won value — {num(m.won)} deals all time</div></div>
         </div>
 
-        <FinancesStrip f={home.finances} />
+        <FinancesStrip f={home.finances} openLead={openLead} />
     <PeriodsStrip />
 
                 <div className="agentCard animIn" style={{ animationDelay: "120ms" }}>
@@ -1281,9 +1318,11 @@ function InvoicesCard() {
   useEffect(load, []);
   const open = invs.filter(i => ["sent", "partially_paid"].includes(i.status));
   return (<div className="card" style={{ marginBottom: 14 }}><h3 style={{ marginTop: 0 }}>🧾 Invoices & receivables</h3>
-    <p className="sub" style={{ marginTop: 0 }}>{money(open.reduce((a, i) => a + (i.balance || 0), 0))} outstanding across {open.length} open invoice{open.length === 1 ? "" : "s"}{open.some(i => i.overdue) ? ` · ${money(open.filter(i => i.overdue).reduce((a, i) => a + i.balance, 0))} overdue` : ""}. Create invoices from any job; record payments against them here or on the job.</p>
-    {invs.slice(0, 12).map(i => <div key={i.id} className="rowflex" style={{ padding: "5px 0", borderTop: "1px solid #eef2f7" }}><span style={{ flex: 1 }}><b>{i.number}</b> · {i.service_requested || "Job"} · {money(i.total)} · {i.status}{i.overdue ? " · ⚠ overdue" : ""}</span>{i.status !== "void" && <><a className="btn ghost small" href={i.link} target="_blank" rel="noreferrer">👁 View</a><button className="btn ghost small" onClick={async () => { try { await navigator.clipboard.writeText(location.origin + i.link); toast("Pay link copied ✓"); } catch { toast(location.origin + i.link); } }}>🔗 Link</button><a className="btn ghost small" href={`/api/invoices/${i.id}/document`}>⬇</a><button className="btn ghost small" onClick={async () => { try { const r = await api(`/api/invoices/${i.id}/send`, { method: "POST", body: {} }); toast(r.test_mode ? "Invoice sent (test mode) ✓" : "Invoice sent ✓"); load(); } catch (e: any) { setMsg(e.message); } }}>✉ Send</button></>}
-    {i.balance > 0 && i.status !== "void" && <><input id={"pay-" + i.id} type="number" placeholder="Amount" style={{ width: 100 }} /><button className="btn ghost small" onClick={async () => { const v = Number((document.getElementById("pay-" + i.id) as HTMLInputElement).value); if (!(v > 0)) return; try { await api(`/api/invoices/${i.id}/payments`, { method: "POST", body: { amount: v } }); toast("Payment recorded ✓"); load(); } catch (e: any) { setMsg(e.message); } }}>Record payment</button></>}</div>)}
+    <p className="sub" style={{ marginTop: 0 }}>{money(open.reduce((a, i) => a + (i.balance || 0), 0))} outstanding across {open.length} open invoice{open.length === 1 ? "" : "s"}{open.some(i => i.overdue) ? ` · ${money(open.filter(i => i.overdue).reduce((a, i) => a + i.balance, 0))} overdue` : ""}. Every number on Home drills into its records — click a figure there, or work the invoices here.</p>
+    {invs.slice(0, 12).map(i => <div key={i.id} className="rowflex" style={{ padding: "5px 0", borderTop: "1px solid #eef2f7", flexWrap: "wrap" }}><span style={{ flex: 1 }}><b>{i.number}</b> · {i.service_requested || "Job"} · {money(i.total)} · {i.status}{i.overdue ? " · ⚠ overdue" : ""}{i.job_id ? <> · <a href="#" onClick={e => { e.preventDefault(); (window as any).wpOpenJob?.(i.job_id); }}>open job →</a></> : ""}</span><InvoiceActions inv={i} onDone={load} />
+      {i.balance > 0 && i.status !== "void" && <span className="rowflex"><input id={"pay-" + i.id} type="number" placeholder="Amount" style={{ width: 100 }} /><button className="btn ghost small" onClick={async () => { const v = Number((document.getElementById("pay-" + i.id) as HTMLInputElement).value); if (!(v > 0)) return; try { await api(`/api/invoices/${i.id}/payments`, { method: "POST", body: { amount: v } }); toast(`Payment of ${money(v)} recorded ✓`); load(); } catch (e: any) { setMsg(e.message); } }}>Record payment</button></span>}
+    </div>)}
+    {invs.length === 0 && <p className="muted">No invoices yet — create one from a job that's ready to bill.</p>}
     {msg && <div className="err">{msg}</div>}
     <button className="btn ghost small" style={{ marginTop: 8 }} onClick={async () => { const r = await api("/api/invoices/backfill", { method: "POST", body: {} }); setMsg(`Backfill created ${r.made} invoice records from previously flagged jobs.`); load(); }}>Backfill invoices for already-flagged jobs</button>
   </div>);
@@ -2212,7 +2251,7 @@ function JobDetail({ id, users, me, priceBook, close, refresh, openLead }: any) 
       <JobFiles jobId={id} />
       <h4 style={{ marginTop: 16 }}>Invoices</h4>
       {(d.invoices || []).map((inv: any) => <div className="check" key={inv.id}><span style={{ flex: 1 }}><b>{inv.number}</b> · {money(inv.total)} · {inv.status} · balance {money(inv.balance)}{inv.due_at ? ` · due ${new Date(inv.due_at).toLocaleDateString()}` : ""}</span>{inv.balance > 0 && inv.status !== "void" && <><input id={"jpay-" + inv.id} type="number" placeholder="$" style={{ width: 90 }} /><button className="btn ghost small" onClick={async () => { const v = Number((document.getElementById("jpay-" + inv.id) as HTMLInputElement).value); if (!(v > 0)) return; try { await api(`/api/invoices/${inv.id}/payments`, { method: "POST", body: { amount: v } }); toast("Payment recorded ✓"); load(); } catch (e: any) { setMsg(e.message); } }}>Record payment</button></>}
-      {inv.status !== "void" && <span className="rowflex" style={{ width: "100%", marginTop: 4 }}><a className="btn ghost small" href={inv.link} target="_blank" rel="noreferrer">👁 View / pay page</a><button className="btn ghost small" onClick={async () => { try { await navigator.clipboard.writeText(location.origin + inv.link); toast("Pay link copied ✓"); } catch { toast(location.origin + inv.link); } }}>🔗 Copy link</button><a className="btn ghost small" href={`/api/invoices/${inv.id}/document`}>⬇ DOCX</a><button className="btn ghost small" onClick={async () => { try { const r = await api(`/api/invoices/${inv.id}/send`, { method: "POST", body: {} }); toast(r.test_mode ? "Invoice sent (test mode — no live mail yet) ✓" : "Invoice sent ✓"); load(); } catch (e: any) { setMsg(e.message); } }}>✉ Send to customer</button>{inv.sent_at && <span className="muted">sent {new Date(inv.sent_at).toLocaleDateString()}</span>}</span>}</div>)}
+      <div style={{ width: "100%", marginTop: 4 }}><InvoiceActions inv={inv} onDone={load} /></div></div>)}
       {!(d.invoices || []).some((x: any) => ["sent", "partially_paid"].includes(x.status)) && j.stage !== "CANCELLED" && <button className="btn ghost small" onClick={async () => { try { await api(`/api/jobs/${j.id}/invoice`, { method: "POST", body: {} }); toast("Invoice created ✓"); load(); } catch (e: any) { setMsg(e.message); } }}>🧾 Create invoice ({money(j.value)})</button>}
       <h4>Change orders</h4>
       {d.change_orders.map((c: any) => <p key={c.id} style={{ margin: "5px 0" }}><b>{money(c.delta_total)}</b> — {c.delta_scope} · <span className="tinyBadge">{c.status}</span> {c.status === "draft" && <button className="btn ghost small" onClick={async () => { await api(`/api/change-orders/${c.id}/status`, { method: "POST", body: { status: "approved" } }); setMsg("Change order approved — added to the job value ✓"); load(); }}>Approve (adds to job value)</button>}</p>)}
@@ -2440,7 +2479,7 @@ function CustomerDetail({ id, close, openLead, openJob }: any) {
     <h4>Proposals ({(d.proposals || []).length}) · {money((d.money360 || {}).proposals_value || 0)} proposed (current versions) · {money((d.money360 || {}).signed_value || 0)} signed · {money((d.money360 || {}).outstanding || 0)} uncollected contract value</h4>
     {(d.proposals || []).map((p: any) => <p key={p.id} style={{ margin: "4px 0" }} className="clickable" onClick={() => openLead(p.lead_id)}>📄 <b>{p.service_requested}</b> — {money(p.total)} · <span className="tinyBadge">{p.status}</span>{p.sent_at ? " · sent " + dOnly(p.sent_at) : ""}{p.signed_at ? " · ✍️ signed " + dOnly(p.signed_at) : ""} →</p>)}
     {(d.proposals || []).length === 0 && <p className="muted">No proposals yet.</p>}
-    {(d.invoices || []).length > 0 && <><h4>Invoices ({(d.invoices || []).length}) · {money((d.money360 || {}).invoiced || 0)} invoiced · {money((d.money360 || {}).ar_outstanding || 0)} receivable{(d.money360 || {}).ar_overdue > 0 ? ` · ${money(d.money360.ar_overdue)} OVERDUE` : ""}</h4>{(d.invoices || []).map((i: any) => <p key={i.id} style={{ margin: "4px 0", fontSize: 13 }}>{i.number} · {money(i.total)} · {i.status}{i.paid_amount > 0 ? ` · ${money(i.paid_amount)} paid` : ""}{i.due_at ? ` · due ${new Date(i.due_at).toLocaleDateString()}` : ""}</p>)}</>}
+    {(d.invoices || []).length > 0 && <><h4>Invoices ({(d.invoices || []).length}) · {money((d.money360 || {}).invoiced || 0)} invoiced · {money((d.money360 || {}).ar_outstanding || 0)} receivable{(d.money360 || {}).ar_overdue > 0 ? ` · ${money(d.money360.ar_overdue)} OVERDUE` : ""}</h4>{(d.invoices || []).map((i: any) => <div key={i.id} className="rowflex" style={{ margin: "4px 0", fontSize: 13, flexWrap: "wrap" }}><span style={{ flex: 1 }}>{i.number} · {money(i.total)} · {i.status}{i.paid_amount > 0 ? ` · ${money(i.paid_amount)} paid` : ""}{i.due_at ? ` · due ${new Date(i.due_at).toLocaleDateString()}` : ""}</span><InvoiceActions inv={i} onDone={load} /></div>)}</>}
     <h4>Payments · {money((d.money360 || {}).collected || 0)} collected{(d.money360 || {}).refunded ? " · " + money(d.money360.refunded) + " refunded" : ""} · net {money((d.money360 || {}).net_collected || 0)}</h4>
     {(d.payments || []).map((p: any) => <p key={p.id} style={{ margin: "4px 0" }} className="clickable" onClick={() => p.lead_id && openLead(p.lead_id)}>{p.kind === "refund" ? "↩️" : "💳"} {money(p.amount)} · {p.kind} · <span className="tinyBadge">{p.status}</span> · {dOnly(p.created_at)} →</p>)}
     {(d.payments || []).length === 0 && <p className="muted">No payments recorded.</p>}
@@ -2715,7 +2754,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
   const [theme, setTheme] = useState(() => localStorage.getItem("wp_theme") || "light");
   useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem("wp_theme", theme); }, [theme]);
   useEffect(() => { if (user && "serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {}); }, [user?.id]);
-  useEffect(() => { (window as any).wpLogTime = () => setLtOpen(true); (window as any).wpOpenJob = (id: string) => setJobOpen(id); (window as any).wpOpenAccount = (id: string) => setCustOpen(id); (window as any).wpGoTab = (view: string, tab: string) => { setTabSignal({ view, tab, n: Date.now() }); go({ view }); }; }, []);
+  useEffect(() => { (window as any).wpLogTime = () => setLtOpen(true); (window as any).wpOpenJob = (id: string) => setJobOpen(id); (window as any).wpOpenLead = (id: string) => openLead(id); (window as any).wpOpenAccount = (id: string) => setCustOpen(id); (window as any).wpGoTab = (view: string, tab: string) => { setTabSignal({ view, tab, n: Date.now() }); go({ view }); }; }, []);
   useEffect(() => { localStorage.setItem("wp_app", appMode); }, [appMode]);
   useEffect(() => { if (user) api("/api/favorites").then(setFavs).catch(() => {}); }, [user, tick]);
   const openLead = (id: string) => { setLeadId(id); try { const r = JSON.parse(localStorage.getItem("wp_recent") || "[]").filter((x: string) => x !== id); r.unshift(id); localStorage.setItem("wp_recent", JSON.stringify(r.slice(0, 6))); } catch {} };
