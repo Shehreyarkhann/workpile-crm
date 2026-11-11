@@ -16,16 +16,20 @@ import { validateAttachRefs } from "./comms.ts";
 export function suggestAttachments(wsId: string, item: any): { kind: string; id: string; label: string; why: string }[] {
   const text = `${item.subject || ""} ${item.body || ""}`.toLowerCase();
   const out: { kind: string; id: string; label: string; why: string }[] = [];
-  const companyDocs = db.prepare("SELECT id, name FROM attachments WHERE workspace_id=? AND entity_type='workspace' ORDER BY created_at DESC").all(wsId) as any[];
+  const companyDocs = db.prepare("SELECT id, name, doc_type FROM attachments WHERE workspace_id=? AND entity_type='workspace' ORDER BY created_at DESC").all(wsId) as any[];
   const docByName = (re: RegExp) => companyDocs.find(d => re.test(String(d.name).toLowerCase()));
+  // A classified document (doc_type set at upload) always beats a filename
+  // guess — the standing naming rule: system names are exact, human
+  // filenames are hints.
+  const docByType = (t: string, re: RegExp) => companyDocs.find(d => (d as any).doc_type === t) || docByName(re);
   let leadId: string | null = item.lead_id || null;
   if (!leadId && item.from_email) {
     const ct = db.prepare("SELECT id FROM contacts WHERE workspace_id=? AND lower(email)=lower(?)").get(wsId, item.from_email) as any;
     if (ct) { const ld = db.prepare("SELECT id FROM leads WHERE workspace_id=? AND contact_id=? ORDER BY created_at DESC").get(wsId, ct.id) as any; leadId = ld?.id || null; }
   }
-  if (/w-?9\b/.test(text)) { const d = docByName(/w-?9/); if (d) out.push({ kind: "attachment", id: d.id, label: d.name, why: "They asked for your W-9" }); }
-  if (/certificate of insurance|\bcoi\b|proof of insurance|insurance cert/.test(text)) { const d = docByName(/insur|coi|certificate/); if (d) out.push({ kind: "attachment", id: d.id, label: d.name, why: "They asked for proof of insurance" }); }
-  if (/licen[cs]e/.test(text)) { const d = docByName(/licen/); if (d) out.push({ kind: "attachment", id: d.id, label: d.name, why: "They asked for your license" }); }
+  if (/w-?9\b/.test(text)) { const d = docByType("w9", /w-?9/); if (d) out.push({ kind: "attachment", id: d.id, label: d.name, why: "They asked for your W-9" }); }
+  if (/certificate of insurance|\bcoi\b|proof of insurance|insurance cert/.test(text)) { const d = docByType("insurance", /insur|coi|certificate/); if (d) out.push({ kind: "attachment", id: d.id, label: d.name, why: "They asked for proof of insurance" }); }
+  if (/licen[cs]e/.test(text)) { const d = docByType("license", /licen/); if (d) out.push({ kind: "attachment", id: d.id, label: d.name, why: "They asked for your license" }); }
   if (leadId) {
     if (/invoice|balance|amount (due|owed)|\bbill\b/.test(text)) { const inv = db.prepare("SELECT id, number, total, paid_amount FROM invoices WHERE workspace_id=? AND lead_id=? AND status<>'void' ORDER BY created_at DESC").get(wsId, leadId) as any; if (inv) out.push({ kind: "invoice", id: inv.id, label: `Invoice ${inv.number} (DOCX)`, why: "The invoice for this customer" }); }
     if (/receipt|proof of payment/.test(text)) { const inv = db.prepare("SELECT id, number FROM invoices WHERE workspace_id=? AND lead_id=? AND status='paid' ORDER BY created_at DESC").get(wsId, leadId) as any; if (inv) out.push({ kind: "invoice", id: inv.id, label: `Invoice ${inv.number} — paid (DOCX)`, why: "Receipt: their paid invoice" }); }

@@ -105,7 +105,7 @@ export async function proposalDocx(proposalId: string): Promise<{ buffer: Buffer
     sigTable,
   ] }] });
   const buffer = await Packer.toBuffer(doc);
-  return { buffer, filename: `proposal-${String(d.lead.service_requested).replace(/\W+/g, "-").toLowerCase()}-v${d.proposal.version}.docx` };
+  return { buffer, filename: `${d.ref}-${String(d.lead.service_requested || "proposal").replace(/\W+/g, "-").toLowerCase()}-v${d.proposal.version}.docx` };
 }
 
 // V35: invoices get the same professional document as proposals — letterhead,
