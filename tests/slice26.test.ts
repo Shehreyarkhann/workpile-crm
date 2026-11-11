@@ -27,17 +27,17 @@ test("public plans carry both prices + exact sale percentages", async () => {
   const r = await J("/api/plans"); // no auth — the landing page uses this
   assert.equal(r.status, 200);
   const by = Object.fromEntries(r.j.plans.map((p: any) => [p.key, p]));
-  assert.equal(by.solo.save_pct, 33); assert.equal(by.team.save_pct, 29); assert.equal(by.crew.save_pct, 27);
-  assert.equal(by.solo.list_price, 29.99); assert.equal(by.solo.annual_price, 19.99);
+  assert.equal(by.starter.save_pct, 20); assert.equal(by.pro.save_pct, 20); assert.equal(by.business.save_pct, 14);
+  assert.equal(by.starter.list_price, 49); assert.equal(by.starter.annual_price, 39);
   assert.equal(by.enterprise.custom, true);
 });
 
 test("checkout honors the period and reports it back (monthly + annual)", async () => {
-  const m = await J("/api/billing/checkout", { method: "POST", body: { plan: "team", period: "monthly" } }, { Cookie: cookie });
+  const m = await J("/api/billing/checkout", { method: "POST", body: { plan: "pro", period: "monthly" } }, { Cookie: cookie });
   assert.equal(m.j.configured, false); assert.equal(m.j.period, "monthly");
-  const a = await J("/api/billing/checkout", { method: "POST", body: { plan: "team", period: "annual" } }, { Cookie: cookie });
+  const a = await J("/api/billing/checkout", { method: "POST", body: { plan: "pro", period: "annual" } }, { Cookie: cookie });
   assert.equal(a.j.period, "annual");
-  const dflt = await J("/api/billing/checkout", { method: "POST", body: { plan: "team" } }, { Cookie: cookie });
+  const dflt = await J("/api/billing/checkout", { method: "POST", body: { plan: "pro" } }, { Cookie: cookie });
   assert.equal(dflt.j.period, "annual"); // no period = the sale (annual) by default
   const ent = await J("/api/billing/checkout", { method: "POST", body: { plan: "enterprise", period: "monthly" } }, { Cookie: cookie });
   assert.equal(ent.j.custom, true);

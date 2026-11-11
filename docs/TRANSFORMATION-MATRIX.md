@@ -103,3 +103,13 @@ test-mode sends (B-4); global reduced-motion gate (U-5); honest agent status lab
 tsc --noEmit gate in CI + glob test discovery (A-3/A-4) — 7 latent type errors fixed.
 Founder decisions tee'd up, NOT taken: pricing model (B-2), ICP (Q3), Postgres/host
 split (A-1/R-1), MFA tranche (S-2), counsel (S-8).
+
+## V24 — Pricing v2: workspace + usage (2026-11-11, founder-adopted)
+Per-seat model (2026-11-10) replaced: Starter $39 / Pro $119 / Business $299 per mo
+billed annually (monthly $49/$149/$349); meter = active requests (non-final leads);
+office users included 2/5/15 (only hard cap); roster crew free; never-block intake
+rule (usage warns, never refuses); trials on Pro; legacy keys resolve (solo→starter,
+team/crew/growth→pro, grandfathered Stripe prices untouched); API keys gated to Pro+.
+Old pricing-contract tests updated to the v2 contract. Follow-up noted: SMS plan
+gate enforcement lands with the Twilio go-live (comms are test-mode until then, so
+the gate has no real-world effect yet). Decision record: PRICING-V2-PROPOSAL.md.

@@ -929,10 +929,10 @@ function IntegrationConfig({ id, s, setS, keys, hooks, oauth, loadAll, onJump, m
 }
 
 const PLANS_FALLBACK: any[] = [
-  { key: "solo", name: "Solo", seats: 1, list_price: 29.99, annual_price: 19.99, leads_per_month: 500, save_pct: 33, blurb: "For the owner who IS the office — clear the pile, send proposals, get approvals from your phone." },
-  { key: "team", name: "Team", seats: 2, list_price: 69.99, annual_price: 49.99, leads_per_month: 2000, save_pct: 29, blurb: "Owner + coordinator: one sells, one runs the pile. The classic two-seat shop." },
-  { key: "crew", name: "Crew", seats: 3, list_price: 109.99, annual_price: 79.99, leads_per_month: 5000, save_pct: 27, blurb: "Owner + coordinator + a field lead: scheduling, crew time, and labor costing included." },
-  { key: "enterprise", name: "Enterprise", seats: 0, list_price: 0, annual_price: 0, leads_per_month: 1000000, save_pct: 0, custom: true, blurb: "4+ seats, multiple locations, custom integrations and onboarding — priced to your operation." },
+  { key: "starter", name: "Starter", users: 2, active_requests: 150, list_price: 49, annual_price: 39, save_pct: 20, blurb: "For the small office getting its pile under control — price book, proposals, e-sign, email follow-ups." },
+  { key: "pro", name: "Pro", users: 5, active_requests: 750, list_price: 149, annual_price: 119, save_pct: 20, blurb: "The full execution system: SMS follow-ups, API + webhooks, your own sending domain." },
+  { key: "business", name: "Business", users: 15, active_requests: 3000, list_price: 349, annual_price: 299, save_pct: 14, blurb: "For multi-crew operations: audit-log export, advanced permissions, priority support and onboarding." },
+  { key: "enterprise", name: "Enterprise", users: 0, active_requests: 1000000, list_price: 0, annual_price: 0, save_pct: 0, custom: true, blurb: "SSO/SAML, DPA, SLA, multiple locations and custom integrations — priced to your operation." },
 ];
 function PlanCards({ onAction, currentKey }: any) {
   const [period, setPeriod] = useState<"monthly" | "annual">("annual");
@@ -949,13 +949,13 @@ function PlanCards({ onAction, currentKey }: any) {
     {period === "annual" && <div className="salebar"><span className="tag">SALE</span><span>Yearly billing is on sale — up to {maxSave}% off the regular monthly price, locked in when you subscribe.</span></div>}
     <div className="featGrid" style={{ marginTop: 14 }}>{plans.map((p: any) => <div className="feat" key={p.key} style={currentKey === p.key ? { borderColor: "#166534", borderWidth: 2 } : {}}>
       {period === "annual" && !p.custom && <span className="savebadge">SAVE {p.save_pct}%</span>}
-      <span className="muted" style={{ textTransform: "uppercase", fontWeight: 700, fontSize: 12 }}>{p.name}{p.seats ? ` · ${p.seats} seat${p.seats > 1 ? "s" : ""}` : ""}</span>
+      <span className="muted" style={{ textTransform: "uppercase", fontWeight: 700, fontSize: 12, display: "block", paddingRight: period === "annual" && !p.custom ? 78 : 0 }}>{p.name}{p.users ? ` · ${p.users} office users` : ""}</span>
       {p.custom ? <h4 style={{ fontSize: 24 }}>Custom</h4> : period === "annual"
         ? <h4 style={{ fontSize: 24 }}><s className="muted" style={{ fontSize: 16 }}>{px(p.list_price)}</s> {px(p.annual_price)}/mo</h4>
         : <h4 style={{ fontSize: 24 }}>{px(p.list_price)}/mo</h4>}
       <p>{p.custom ? p.blurb : period === "annual"
-        ? <>Billed annually ({px(p.annual_price * 12)}/yr) · {num(p.leads_per_month)} leads/mo · {p.blurb}</>
-        : <>Billed monthly · {num(p.leads_per_month)} leads/mo · {p.blurb} <span className="muted">Or {px(p.annual_price)}/mo on yearly — save {p.save_pct}%.</span></>}</p>
+        ? <>Billed annually ({px(p.annual_price * 12)}/yr) · up to {num(p.active_requests)} active requests · {p.blurb}</>
+        : <>Billed monthly · up to {num(p.active_requests)} active requests · {p.blurb} <span className="muted">Or {px(p.annual_price)}/mo on yearly — save {p.save_pct}%.</span></>}</p>
       <button className="btn" style={{ marginTop: 12 }} disabled={currentKey === p.key} onClick={() => onAction && onAction(p.key, period)}>{currentKey === p.key ? "Current plan" : p.custom ? "Talk to us" : currentKey ? `Switch to ${p.name}` : "Start free"}</button>
     </div>)}</div>
   </div>);
@@ -969,13 +969,13 @@ function Billing() {
   return (<div><h2 className="pt">Billing</h2><p className="sub">Your Workpile subscription — plan, trial, and live usage against your caps.</p>
     <div className="kpis">
       <div className="kpi"><div className="lab">Plan</div><div className="val">{b.plan.name}</div><div className="hint">{b.plan.custom ? "Custom pricing" : <><s className="muted">{px(b.plan.list_price)}</s> <b>{px(b.plan.annual_price)}/mo</b> billed annually</>}</div></div>
-      <div className="kpi"><div className="lab">Seats</div><div className="val">{b.usage.seats_used}{b.usage.seats_limit ? ` / ${b.usage.seats_limit}` : ""}</div><div className="hint">{b.usage.seats_limit ? "people with logins on this plan" : "unlimited"}</div></div>
+      <div className="kpi"><div className="lab">Office users</div><div className="val">{b.usage.users_used ?? b.usage.seats_used}{(b.usage.users_limit ?? b.usage.seats_limit) ? ` / ${b.usage.users_limit ?? b.usage.seats_limit}` : ""}</div><div className="hint">{(b.usage.users_limit ?? b.usage.seats_limit) ? "logins included in this plan — roster crew never count" : "unlimited"}</div></div>
       <div className="kpi"><div className="lab">Status</div><div className="val" style={{ fontSize: 20 }}>{b.subscription.status}</div><div className="hint">{b.trial_days_left !== null ? `${b.trial_days_left} trial days left` : "—"}</div></div>
-      <div className="kpi"><div className="lab">Leads this month</div><div className="val">{num(b.usage.leads_this_month)}</div><div className="hint">of {num(b.usage.leads_limit)} ({b.usage.leads_pct}%)</div></div>
+      <div className="kpi"><div className="lab">Active requests</div><div className="val">{num(b.usage.active_requests || 0)}</div><div className="hint">of {num(b.usage.active_allowance || 0)} included ({b.usage.active_pct || 0}%) — overage never blocks intake</div></div>
       <div className="kpi"><div className="lab">AI actions</div><div className="val">{num(b.usage.ai_actions_this_month)}</div><div className="hint">of {num(b.usage.ai_limit)}</div></div>
     </div>
     {b.usage.leads_pct >= 80 && <div className="err">You're at {b.usage.leads_pct}% of your monthly lead cap — ingestion pauses at 100%, approvals never do.</div>}
-    <div className="card"><h3>Plans — per seat; yearly is on sale</h3><PlanCards currentKey={b.plan.key} onAction={async (k: string, period: string) => { const r = await api("/api/billing/checkout", { method: "POST", body: { plan: k, period } }); if (r.url) location.href = r.url; else alert(r.message || "Recorded — checkout opens when Stripe is configured."); }} /></div>
+    <div className="card"><h3>Plans — per workspace; yearly is on sale</h3><PlanCards currentKey={b.plan.key} onAction={async (k: string, period: string) => { const r = await api("/api/billing/checkout", { method: "POST", body: { plan: k, period } }); if (r.url) location.href = r.url; else alert(r.message || "Recorded — checkout opens when Stripe is configured."); }} /></div>
   </div>);
 }
 
@@ -1346,8 +1346,8 @@ function Landing({ onAuth }: any) {
 
     <section className="lpSec" id="pricing">
       <p className="lpKick">Pricing</p>
-      <h2>Per seat. 30 days free. No card.</h2>
-      <p className="lpBody" style={{ maxWidth: 720 }}>Trials start on the Crew plan so you see everything. Prices below are per seat, billed annually.</p>
+      <h2>Per workspace. 30 days free. No card.</h2>
+      <p className="lpBody" style={{ maxWidth: 720 }}>Trials start on the Pro plan so you see everything. Prices are per workspace, billed annually — and field crew on the roster are always free.</p>
       <PlanCards onAction={() => setMode("register")} />
     </section>
 
@@ -1360,7 +1360,7 @@ function Landing({ onAuth }: any) {
     <section className="lpSec" id="faq">
       <p className="lpKick">Questions</p>
       <h2>Asked by owners like you</h2>
-      {[["Do I have to replace my current system?", "No — Workpile is the front door, not the house. Won jobs become projects in YOUR platform via API or webhooks; every final outcome is delivered and acknowledged there."], ["How do leads get in?", "Four ways: sync from your lead system's API by date range (daily auto-sync available), CSV upload, website form embed with TCPA consent, and inbox/API ingestion."], ["Is the AI allowed to send things on its own?", "Never. The agent drafts, scores, and organizes; every customer-facing send needs a human approval, and pricing only ever comes from your price book. That's a product invariant, not a setting."], ["Can the agent text customers without consent?", "No. Consent is enforced at the single send boundary — a text to a lead without recorded consent is blocked before it queues, whoever or whatever requested it."], ["What happens to duplicates?", "Ingestion dedupes by phone/email automatically. The agent's cleanup finds the rest — same name + service — and merges are recorded and reversible."], ["What does per-seat mean?", "You pay for login users — the people running the business. Field crew on the roster (timesheets, schedules) never consume seats."]].map(([q, a]) => <div className="faq" key={q}><b>{q}</b><p>{a}</p></div>)}
+      {[["Do I have to replace my current system?", "No — Workpile is the front door, not the house. Won jobs become projects in YOUR platform via API or webhooks; every final outcome is delivered and acknowledged there."], ["How do leads get in?", "Four ways: sync from your lead system's API by date range (daily auto-sync available), CSV upload, website form embed with TCPA consent, and inbox/API ingestion."], ["Is the AI allowed to send things on its own?", "Never. The agent drafts, scores, and organizes; every customer-facing send needs a human approval, and pricing only ever comes from your price book. That's a product invariant, not a setting."], ["Can the agent text customers without consent?", "No. Consent is enforced at the single send boundary — a text to a lead without recorded consent is blocked before it queues, whoever or whatever requested it."], ["What happens to duplicates?", "Ingestion dedupes by phone/email automatically. The agent's cleanup finds the rest — same name + service — and merges are recorded and reversible."], ["What does pricing meter?", "Your workspace and its active requests — leads that aren't closed yet. Office users are included per tier; field crew on the roster (timesheets, schedules) never cost anything. And hitting your request allowance never blocks a new lead from coming in — it just starts an upgrade conversation."]].map(([q, a]) => <div className="faq" key={q}><b>{q}</b><p>{a}</p></div>)}
     </section>
 
     <footer className="lpFoot"><div className="lpFootIn"><Logo light /><p>Turn every opportunity into accountable work.</p><span>© 2026 Workpile · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/dpa">DPA</a> · <a href="/audit">Free backlog audit</a></span><span>Built for the businesses that answer the phone.</span></div></footer>

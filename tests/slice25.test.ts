@@ -23,31 +23,32 @@ before(async () => {
   cookie = (await J("/api/auth/login", { method: "POST", body: { email: "o@t25.co", password: "password1" } })).cookie;
 });
 
-test("catalog: per-seat sale pricing exactly as decided", async () => {
+test("catalog: PRICING V2 workspace + usage pricing exactly as decided (2026-11-11)", async () => {
   const billing = await import("../server/billing.ts");
-  assert.equal(billing.PLANS.solo.seats, 1); assert.equal(billing.PLANS.solo.list_price, 29.99); assert.equal(billing.PLANS.solo.annual_price, 19.99);
-  assert.equal(billing.PLANS.team.seats, 2); assert.equal(billing.PLANS.team.list_price, 69.99); assert.equal(billing.PLANS.team.annual_price, 49.99);
-  assert.equal(billing.PLANS.crew.seats, 3); assert.equal(billing.PLANS.crew.list_price, 109.99); assert.equal(billing.PLANS.crew.annual_price, 79.99);
+  assert.equal(billing.PLANS.starter.users, 2); assert.equal(billing.PLANS.starter.list_price, 49); assert.equal(billing.PLANS.starter.annual_price, 39);
+  assert.equal(billing.PLANS.pro.users, 5); assert.equal(billing.PLANS.pro.list_price, 149); assert.equal(billing.PLANS.pro.annual_price, 119);
+  assert.equal(billing.PLANS.business.users, 15); assert.equal(billing.PLANS.business.list_price, 349); assert.equal(billing.PLANS.business.annual_price, 299);
   assert.equal(billing.PLANS.enterprise.custom, true);
-  assert.equal(billing.planOf("starter").key, "solo");
-  assert.equal(billing.planOf("growth").key, "team");
-  assert.equal(billing.planOf("pro").key, "crew");
+  // legacy keys resolve (grandfathered): solo→starter, team/crew/growth→pro
+  assert.equal(billing.planOf("solo").key, "starter");
+  assert.equal(billing.planOf("growth").key, "pro");
+  assert.equal(billing.planOf("crew").key, "pro");
   const b = await J("/api/billing", {}, { Cookie: cookie });
-  assert.equal(b.j.plan.key, "crew"); // new trials start on Crew (3 seats)
-  assert.equal(b.j.usage.seats_used, 1); assert.equal(b.j.usage.seats_limit, 3);
+  assert.equal(b.j.plan.key, "pro"); // new trials start on Pro
+  assert.equal(b.j.usage.seats_used, 1); assert.equal(b.j.usage.seats_limit, 5);
 });
 
 test("seat limit is enforced when adding people, and lifts on a bigger plan", async () => {
-  dbm.db.prepare("UPDATE subscriptions SET plan='solo' WHERE workspace_id=?").run(wsId);
-  const blocked = await J("/api/users", { method: "POST", body: { name: "Second", email: "second@t25.co", password: "password1", role: "PM" } }, { Cookie: cookie });
+  dbm.db.prepare("UPDATE subscriptions SET plan='starter' WHERE workspace_id=?").run(wsId);
+  const second = await J("/api/users", { method: "POST", body: { name: "Second", email: "second@t25.co", password: "password1", role: "PM" } }, { Cookie: cookie });
+  assert.equal(second.status, 201); // starter includes 2 office users
+  const blocked = await J("/api/users", { method: "POST", body: { name: "Third", email: "third@t25.co", password: "password1", role: "PM" } }, { Cookie: cookie });
   assert.equal(blocked.status, 422); assert.equal(blocked.j.error.code, "seat_limit");
-  dbm.db.prepare("UPDATE subscriptions SET plan='team' WHERE workspace_id=?").run(wsId);
-  const ok = await J("/api/users", { method: "POST", body: { name: "Second", email: "second@t25.co", password: "password1", role: "PM" } }, { Cookie: cookie });
+  dbm.db.prepare("UPDATE subscriptions SET plan='pro' WHERE workspace_id=?").run(wsId);
+  const ok = await J("/api/users", { method: "POST", body: { name: "Third", email: "third@t25.co", password: "password1", role: "PM" } }, { Cookie: cookie });
   assert.equal(ok.status, 201);
-  const blocked2 = await J("/api/users", { method: "POST", body: { name: "Third", email: "third@t25.co", password: "password1", role: "PM" } }, { Cookie: cookie });
-  assert.equal(blocked2.status, 422);
   const b = await J("/api/billing", {}, { Cookie: cookie });
-  assert.equal(b.j.usage.seats_used, 2); assert.equal(b.j.usage.seats_limit, 2);
+  assert.equal(b.j.usage.seats_used, 3); assert.equal(b.j.usage.seats_limit, 5);
 });
 
 test("enterprise checkout is a conversation, not a charge", async () => {
