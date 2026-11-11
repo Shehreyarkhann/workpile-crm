@@ -295,22 +295,69 @@ function requireApiKey(scopes: string[]) {
 }
 
 // ---------- slice 14: per-member permissions (role defaults + custom overrides) ----------
-export interface Perms { leads_scope: "all" | "own"; can_approve: boolean; can_billing: boolean; can_settings: boolean; can_export: boolean; can_manage_team: boolean; }
-const PERM_KEYS = ["leads_scope", "can_approve", "can_billing", "can_settings", "can_export", "can_manage_team"] as const;
+export const MODULES = ["home", "queue", "myday", "inbox", "tasks", "leads", "customers", "proposals", "approvals", "jobs", "schedule", "ops", "campaigns", "demand", "pulse", "handoffs", "library", "import", "reports", "automations", "settings"] as const;
+export type ModuleAccess = "none" | "view" | "edit";
+export interface Perms { leads_scope: "all" | "own"; jobs_scope: "all" | "assigned" | "own"; schedule_scope: "all" | "mine"; can_approve: boolean; can_billing: boolean; can_settings: boolean; can_export: boolean; can_manage_team: boolean; can_money: boolean; can_complete_others: boolean; modules: Record<string, ModuleAccess>; }
+const PERM_KEYS = ["leads_scope", "jobs_scope", "schedule_scope", "can_approve", "can_billing", "can_settings", "can_export", "can_manage_team", "can_money", "can_complete_others"] as const;
+const mods = (def: ModuleAccess, over: Record<string, ModuleAccess> = {}): Record<string, ModuleAccess> => { const o: Record<string, ModuleAccess> = {}; for (const m of MODULES) o[m] = over[m] ?? def; return o; };
 const ROLE_PERMS: Record<string, Perms> = {
-  OWNER: { leads_scope: "all", can_approve: true, can_billing: true, can_settings: true, can_export: true, can_manage_team: true },
-  ADMIN: { leads_scope: "all", can_approve: true, can_billing: false, can_settings: true, can_export: true, can_manage_team: true },
-  OPS_ADMIN: { leads_scope: "all", can_approve: true, can_billing: true, can_settings: true, can_export: true, can_manage_team: true },
-  APPROVER: { leads_scope: "all", can_approve: true, can_billing: false, can_settings: false, can_export: true, can_manage_team: false },
-  LEAD_OWNER: { leads_scope: "own", can_approve: false, can_billing: false, can_settings: false, can_export: false, can_manage_team: false },
-  PM: { leads_scope: "own", can_approve: false, can_billing: false, can_settings: false, can_export: false, can_manage_team: false },
+  OWNER: { leads_scope: "all", jobs_scope: "all", schedule_scope: "all", can_approve: true, can_billing: true, can_settings: true, can_export: true, can_manage_team: true, can_money: true, can_complete_others: true, modules: mods("edit") },
+  ADMIN: { leads_scope: "all", jobs_scope: "all", schedule_scope: "all", can_approve: true, can_billing: false, can_settings: true, can_export: true, can_manage_team: true, can_money: true, can_complete_others: true, modules: mods("edit", { settings: "view" }) },
+  OPS_ADMIN: { leads_scope: "all", jobs_scope: "all", schedule_scope: "all", can_approve: true, can_billing: true, can_settings: true, can_export: true, can_manage_team: true, can_money: true, can_complete_others: true, modules: mods("edit") },
+  APPROVER: { leads_scope: "all", jobs_scope: "own", schedule_scope: "mine", can_approve: true, can_billing: false, can_settings: false, can_export: true, can_manage_team: false, can_money: false, can_complete_others: false, modules: mods("none", { home: "view", queue: "view", approvals: "edit", leads: "view", proposals: "view", customers: "view" }) },
+  LEAD_OWNER: { leads_scope: "own", jobs_scope: "own", schedule_scope: "mine", can_approve: false, can_billing: false, can_settings: false, can_export: false, can_manage_team: false, can_money: false, can_complete_others: false, modules: mods("none", { home: "view", queue: "view", myday: "edit", inbox: "view", tasks: "edit", leads: "edit", customers: "view", proposals: "edit", jobs: "view", schedule: "view", library: "view" }) },
+  PM: { leads_scope: "own", jobs_scope: "assigned", schedule_scope: "mine", can_approve: false, can_billing: false, can_settings: false, can_export: false, can_manage_team: false, can_money: false, can_complete_others: false, modules: mods("none", { home: "view", queue: "view", myday: "edit", inbox: "view", tasks: "edit", leads: "edit", customers: "view", proposals: "edit", jobs: "edit", schedule: "edit", handoffs: "view", library: "view" }) },
 };
+export function defaultPermsFor(role: string): Perms { return JSON.parse(JSON.stringify(ROLE_PERMS[role] || ROLE_PERMS.LEAD_OWNER)); }
+// Workspace role templates (owner-editable) live in role_perms; cached briefly.
+const roleTplCache = new Map<string, { at: number, perms: Perms | null }>();
+export function roleTemplate(wsId: string, role: string): Perms | null {
+  const key = wsId + ":" + role; const hit = roleTplCache.get(key);
+  if (hit && Date.now() - hit.at < 30000) return hit.perms;
+  let perms: Perms | null = null;
+  try { const row = db.prepare("SELECT perms FROM role_perms WHERE workspace_id=? AND role=?").get(wsId, role) as any; if (row?.perms) { const p = JSON.parse(row.perms); perms = { ...defaultPermsFor(role), ...p, modules: { ...mods("none"), ...(defaultPermsFor(role).modules || {}), ...(p.modules || {}) } }; } } catch { perms = null; }
+  roleTplCache.set(key, { at: Date.now(), perms }); return perms;
+}
+export function clearRoleTplCache(wsId?: string) { if (!wsId) { roleTplCache.clear(); return; } for (const k of [...roleTplCache.keys()]) if (k.startsWith(wsId + ":")) roleTplCache.delete(k); }
 export function permsOf(user: any): Perms {
-  const base = ROLE_PERMS[user.role] || ROLE_PERMS.LEAD_OWNER;
-  if (user.role === "OWNER") return { ...base }; // owner is never restricted
+  if (user.role === "OWNER") return defaultPermsFor("OWNER"); // owner is never restricted
+  const base = roleTemplate(user.workspace_id, user.role) || defaultPermsFor(user.role);
   let over: any = {}; try { over = JSON.parse(user.permissions || "{}"); } catch { over = {}; }
-  const out: any = { ...base }; for (const k of PERM_KEYS) if (over[k] !== undefined) out[k] = over[k];
+  const out: any = { ...base, modules: { ...(base.modules || {}) } };
+  for (const k of PERM_KEYS) if (over[k] !== undefined) out[k] = over[k];
+  if (over.modules && typeof over.modules === "object") for (const m of MODULES) if (over.modules[m] !== undefined) out.modules[m] = over.modules[m];
   return out as Perms;
+}
+export function sanitizePerms(input: any, base: Perms): Perms {
+  const out: any = JSON.parse(JSON.stringify(base));
+  if (!input || typeof input !== "object") return out;
+  if (input.leads_scope === "all" || input.leads_scope === "own") out.leads_scope = input.leads_scope;
+  if (["all", "assigned", "own"].includes(input.jobs_scope)) out.jobs_scope = input.jobs_scope;
+  if (input.schedule_scope === "all" || input.schedule_scope === "mine") out.schedule_scope = input.schedule_scope;
+  for (const k of ["can_approve", "can_billing", "can_settings", "can_export", "can_manage_team", "can_money", "can_complete_others"] as const) if (typeof input[k] === "boolean") out[k] = input[k];
+  if (input.modules && typeof input.modules === "object") { out.modules = { ...out.modules }; for (const m of MODULES) if (["none", "view", "edit"].includes(input.modules[m])) out.modules[m] = input.modules[m]; }
+  return out as Perms;
+}
+export function modGate(module: string, need: "view" | "edit" = "view") { return (req: any, res: any, next: any) => { const p = permsOf(req.user); const lvl = p.modules?.[module] || "none"; if (lvl === "none" || (need === "edit" && lvl !== "edit")) return res.status(403).json({ error: { code: "module_denied", module, message: `Your access doesn't include ${need === "edit" ? "editing" : "viewing"} ${module}. Ask the owner to adjust it in Settings → Access & Roles.` } }); next(); }; }
+// Data-scope helpers (v41): whose world does this user see?
+export function leadVisible(user: any, lead: any): boolean { if (!lead) return false; const p = permsOf(user); if (p.leads_scope === "all") return true; return lead.owner_id === user.id || lead.pm_id === user.id; }
+export function jobVisible(user: any, job: any): boolean {
+  if (!job) return false; const p = permsOf(user); if (p.jobs_scope === "all") return true;
+  const lead = db.prepare("SELECT owner_id, pm_id FROM leads WHERE id=?").get(job.lead_id) as any;
+  if (lead && (lead.owner_id === user.id || lead.pm_id === user.id)) return true;
+  if (p.jobs_scope === "own") return false;
+  const crew = db.prepare("SELECT 1 x FROM job_crew WHERE lead_id=? AND user_id=?").get(job.lead_id, user.id);
+  if (crew) return true;
+  const sched = db.prepare("SELECT 1 x FROM job_schedule WHERE lead_id=? AND (user_id=? OR worker_id IN (SELECT id FROM workers WHERE linked_user_id=?))").get(job.lead_id, user.id, user.id);
+  return !!sched;
+}
+export function agendaMine(user: any, kind: string, row: any, lead: any): boolean {
+  const p = permsOf(user); if (p.schedule_scope === "all" || p.can_complete_others) return true;
+  if (!row) return false;
+  if (kind === "task") return row.assignee_id === user.id;
+  if (kind === "visit") return row.assigned_to === user.id || (!!lead && leadVisible(user, lead));
+  if (kind === "schedule") { if (row.user_id === user.id) return true; if (row.worker_id) { const w = db.prepare("SELECT linked_user_id FROM workers WHERE id=?").get(row.worker_id) as any; if (w?.linked_user_id === user.id) return true; } return !!lead && leadVisible(user, lead); }
+  return !!lead && leadVisible(user, lead);
 }
 const scopeOwn = (user: any) => permsOf(user).leads_scope === "own";
 const mine = (user: any, l: any) => l.owner_id === user.id || l.pm_id === user.id;
@@ -525,7 +572,7 @@ app.post("/api/approvals/:id/decide", requireAuth, (req: any, res) => {
 
 // tasks / follow-ups
 app.get("/api/tasks", requireAuth, (req: any, res) => res.json(db.prepare("SELECT t.*, l.service_requested FROM tasks t LEFT JOIN leads l ON l.id=t.lead_id WHERE t.workspace_id=? ORDER BY t.due_at").all(req.user.workspace_id)));
-app.post("/api/tasks/:id/complete", requireAuth, (req: any, res) => { db.prepare("UPDATE tasks SET status='done', completed_at=?, completed_by=?, completion_reason=? WHERE id=? AND workspace_id=?").run(now(), req.user.id, req.body?.reason || null, req.params.id, req.user.workspace_id); res.json({ ok: true }); });
+app.post("/api/tasks/:id/complete", requireAuth, (req: any, res) => { const t = db.prepare("SELECT * FROM tasks WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any; if (!t) return res.status(404).json({ error: { code: "not_found" } }); const p = permsOf(req.user); if (t.assignee_id !== req.user.id && p.schedule_scope !== "all" && !p.can_complete_others) return res.status(403).json({ error: { code: "not_assigned", message: "That task is assigned to someone else — your access covers your own tasks." } }); db.prepare("UPDATE tasks SET status='done', completed_at=?, completed_by=?, completion_reason=? WHERE id=? AND workspace_id=?").run(now(), req.user.id, req.body?.reason || null, req.params.id, req.user.workspace_id); res.json({ ok: true }); });
 app.post("/api/tasks/:id/snooze", requireAuth, (req: any, res) => { const until = req.body?.until || new Date(Date.now() + 86400000).toISOString(); db.prepare("UPDATE tasks SET snooze_until=?, snooze_reason=? WHERE id=? AND workspace_id=?").run(until, String(req.body?.reason || "snoozed"), req.params.id, req.user.workspace_id); res.json({ ok: true, snooze_until: until }); });
 app.post("/api/tasks/:id/escalate", requireAuth, (req: any, res) => { db.prepare("UPDATE tasks SET escalation_level=COALESCE(escalation_level,0)+1 WHERE id=? AND workspace_id=?").run(req.params.id, req.user.workspace_id); res.json({ ok: true }); });
 
@@ -567,8 +614,8 @@ app.post("/api/agent/command", requireAuth, async (req: any, res) => { const tex
 app.get("/api/agent/runs", requireAuth, async (req: any, res) => { res.json(db.prepare("SELECT id, output, created_at FROM agent_runs WHERE workspace_id=? AND agent='orchestrator' ORDER BY created_at DESC LIMIT 20").all(req.user.workspace_id).map((r: any) => ({ id: r.id, created_at: r.created_at, ...JSON.parse(r.output || "{}") }))); });
 app.get("/api/metrics", requireAuth, (req: any, res) => res.json(metrics(req.user.workspace_id)));
 app.get("/api/brief", requireAuth, (req: any, res) => res.json(morningBrief(req.user.workspace_id)));
-app.get("/api/demand-gap", requireAuth, (req: any, res) => { const leads = db.prepare("SELECT * FROM leads WHERE workspace_id=?").all(req.user.workspace_id) as any[]; const catalog = (db.prepare("SELECT name FROM services WHERE workspace_id=? AND is_catalog=1").all(req.user.workspace_id) as any[]).map(r => r.name); res.json(demandGap(leads, catalog)); });
-app.get("/api/demand-gap/full", requireAuth, (req: any, res) => {
+app.get("/api/demand-gap", requireAuth, modGate("demand"), (req: any, res) => { const leads = db.prepare("SELECT * FROM leads WHERE workspace_id=?").all(req.user.workspace_id) as any[]; const catalog = (db.prepare("SELECT name FROM services WHERE workspace_id=? AND is_catalog=1").all(req.user.workspace_id) as any[]).map(r => r.name); res.json(demandGap(leads, catalog)); });
+app.get("/api/demand-gap/full", requireAuth, modGate("demand"), (req: any, res) => {
   const ws = req.user.workspace_id;
   const leads = db.prepare("SELECT * FROM leads WHERE workspace_id=?").all(ws) as any[];
   const catalog = (db.prepare("SELECT name FROM services WHERE workspace_id=? AND is_catalog=1").all(ws) as any[]).map(r => r.name);
@@ -589,7 +636,7 @@ app.get("/api/demand-gap/full", requireAuth, (req: any, res) => {
 app.get("/api/demand-gap/leads", requireAuth, (req: any, res) => { const leads = db.prepare("SELECT * FROM leads WHERE workspace_id=?").all(req.user.workspace_id) as any[]; const catalog = (db.prepare("SELECT name FROM services WHERE workspace_id=? AND is_catalog=1").all(req.user.workspace_id) as any[]).map(r => r.name); let pool = demandPool(leads, catalog).filter(l => (l.service_requested || "") === String(req.query.service || "")); if (scopeOwn(req.user)) pool = pool.filter(l => mine(req.user, l)); res.json(pool.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).slice(0, 500).map(leadView)); });
 
 // Gregory P0s (§25): field reports, timesheets, site visits, documents
-app.get("/api/ops", requireAuth, (req: any, res) => {
+app.get("/api/ops", requireAuth, modGate("ops"), (req: any, res) => {
   const ws = req.user.workspace_id;
   res.json({
     field_reports: db.prepare("SELECT f.*, u.name manager FROM field_reports f LEFT JOIN users u ON u.id=f.manager_id WHERE f.workspace_id=? ORDER BY f.report_date DESC").all(ws),
@@ -609,8 +656,9 @@ app.get("/api/timesheets", requireAuth, (req: any, res) => {
   for (const r of rows) { try { r.days = r.days ? JSON.parse(r.days) : null; } catch { r.days = null; } r.overdue = r.status === "missing" && week < weekStartOf(new Date());
     const j = db.prepare("SELECT COALESCE(SUM(hours),0) h, COALESCE(SUM(amount),0) a FROM time_entries WHERE workspace_id=? AND (worker_id=? OR user_id=?) AND entry_date>=? AND entry_date<=?").get(ws, r.worker_id || "__none__", r.manager_id || "__none__", week, wkEnd) as any;
     r.job_hours = j.h; r.job_cost = Math.round(j.a * 100) / 100; }
-  const summary = { submitted: rows.filter(r => r.status === "submitted").length, missing: rows.filter(r => r.status === "missing").length, total_hours: rows.reduce((a, r) => a + (r.hours || 0), 0), job_hours: rows.reduce((a, r) => a + (r.job_hours || 0), 0), job_cost: Math.round(rows.reduce((a, r) => a + (r.job_cost || 0), 0) * 100) / 100 };
-  res.json({ week_of: week, rows, summary });
+  let viewTs = rows as any[]; { const p = permsOf(req.user); if (p.schedule_scope === "mine" && !p.can_manage_team) { const myW = new Set((db.prepare("SELECT id FROM workers WHERE linked_user_id=?").all(req.user.id) as any[]).map(w => w.id)); viewTs = viewTs.filter(r => r.manager_id === req.user.id || (r.worker_row && myW.has(r.worker_row)) || (r.worker_id && myW.has(r.worker_id))); } }
+  const summary = { submitted: viewTs.filter(r => r.status === "submitted").length, missing: viewTs.filter(r => r.status === "missing").length, total_hours: viewTs.reduce((a, r) => a + (r.hours || 0), 0), job_hours: rows.reduce((a, r) => a + (r.job_hours || 0), 0), job_cost: Math.round(rows.reduce((a, r) => a + (r.job_cost || 0), 0) * 100) / 100 };
+  res.json({ week_of: week, rows: viewTs, summary });
 });
 app.post("/api/timesheets", requireAuth, (req: any, res) => {
   const ws = req.user.workspace_id; const b = req.body || {};
@@ -631,7 +679,7 @@ app.post("/api/timesheets", requireAuth, (req: any, res) => {
     .run(now(), hours, days ? JSON.stringify(days) : null, String(b.notes || ""), ws, managerId, week);
   res.json(db.prepare("SELECT * FROM timesheets WHERE workspace_id=? AND manager_id=? AND week_of=?").get(ws, managerId, week));
 });
-app.post("/api/timesheets/:id/chase", requireAuth, async (req: any, res) => {
+app.post("/api/timesheets/:id/chase", requireAuth, async (req: any, res) => { if (!permsOf(req.user).can_manage_team) return res.status(403).json({ error: { code: "permission_denied", message: "Chasing timesheets is a manager action — your access doesn't include it." } });
   const row = db.prepare("SELECT * FROM timesheets WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!row) return res.status(404).json({ error: { code: "not_found" } });
   const r = await chaseRow(row);
@@ -664,7 +712,7 @@ app.post("/api/field-reports/:id/submit", requireAuth, (req: any, res) => {
   db.prepare("UPDATE field_reports SET status='submitted', submitted_at=?, notes=COALESCE(?,notes), lead_id=COALESCE(?,lead_id) WHERE id=?").run(now(), b.notes ?? null, b.lead_id ?? null, r.id);
   res.json(db.prepare("SELECT * FROM field_reports WHERE id=?").get(r.id));
 });
-app.post("/api/field-reports/:id/chase", requireAuth, async (req: any, res) => {
+app.post("/api/field-reports/:id/chase", requireAuth, async (req: any, res) => { if (!permsOf(req.user).can_manage_team) return res.status(403).json({ error: { code: "permission_denied", message: "Chasing field reports is a manager action — your access doesn't include it." } });
   const r = db.prepare("SELECT * FROM field_reports WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!r) return res.status(404).json({ error: { code: "not_found" } });
   const out = await chaseReport(r);
@@ -801,12 +849,14 @@ app.get("/api/schedule", requireAuth, (req: any, res) => {
   const ws = req.user.workspace_id;
   const week = String(req.query.week || weekStartOf(new Date()));
   const wkEnd = new Date(new Date(week + "T12:00:00").getTime() + 6 * 86400000).toISOString().slice(0, 10);
-  const rows = db.prepare("SELECT s.*, COALESCE(w.name, u.name) worker, l.service_requested, c.name contact_name FROM job_schedule s LEFT JOIN users u ON u.id=s.user_id LEFT JOIN workers w ON w.id=s.worker_id LEFT JOIN leads l ON l.id=s.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE s.workspace_id=? AND s.work_date>=? AND s.work_date<=? ORDER BY s.work_date, worker").all(ws, week, wkEnd) as any[];
+  const rows = db.prepare("SELECT s.*, COALESCE(w.name, u.name) worker, l.service_requested, l.owner_id, l.pm_id, c.name contact_name FROM job_schedule s LEFT JOIN users u ON u.id=s.user_id LEFT JOIN workers w ON w.id=s.worker_id LEFT JOIN leads l ON l.id=s.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE s.workspace_id=? AND s.work_date>=? AND s.work_date<=? ORDER BY s.work_date, worker").all(ws, week, wkEnd) as any[];
+  let viewRows = rows as any[];
+  { const p = permsOf(req.user); if (p.schedule_scope === "mine" && !p.can_complete_others) { const myWorkers = new Set((db.prepare("SELECT id FROM workers WHERE linked_user_id=?").all(req.user.id) as any[]).map(w => w.id)); viewRows = viewRows.filter(r => r.user_id === req.user.id || (r.worker_id && myWorkers.has(r.worker_id)) || leadVisible(req.user, { owner_id: r.owner_id, pm_id: r.pm_id })); } }
   const byUserDay: Record<string, Set<string>> = {};
-  for (const r of rows) { const k = (r.worker_id || r.user_id) + "|" + r.work_date; (byUserDay[k] = byUserDay[k] || new Set()).add(r.lead_id); }
-  for (const r of rows) r.conflict = (byUserDay[(r.worker_id || r.user_id) + "|" + r.work_date]?.size || 0) > 1;
+  for (const r of viewRows) { const k = (r.worker_id || r.user_id) + "|" + r.work_date; (byUserDay[k] = byUserDay[k] || new Set()).add(r.lead_id); }
+  for (const r of viewRows) r.conflict = (byUserDay[(r.worker_id || r.user_id) + "|" + r.work_date]?.size || 0) > 1;
   const schedJobs = db.prepare("SELECT j.id, j.lead_id, j.scheduled_start, j.scheduled_end, j.stage, l.service_requested, c.name contact_name FROM jobs j JOIN leads l ON l.id=j.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE j.workspace_id=? AND j.scheduled_start IS NOT NULL AND date(j.scheduled_start)>=? AND date(j.scheduled_start)<=? AND j.stage NOT IN ('CANCELLED','CLOSED') ORDER BY j.scheduled_start").all(ws, week, wkEnd) as any[];
-  res.json({ week_of: week, rows, jobs: schedJobs });
+  res.json({ week_of: week, rows: viewRows, jobs: permsOf(req.user).jobs_scope === "all" ? schedJobs : schedJobs.filter((j: any) => jobVisible(req.user, j)) });
 });
 app.post("/api/schedule", requireAuth, (req: any, res) => {
   const ws = req.user.workspace_id; const b = req.body || {};
@@ -943,7 +993,7 @@ function jobView(j: any) {
 }
 app.get("/api/jobs", requireAuth, (req: any, res) => {
   const ws = req.user.workspace_id; backfillJobs(ws);
-  let rows = (db.prepare("SELECT * FROM jobs WHERE workspace_id=? ORDER BY created_at DESC").all(ws) as any[]).map(jobView);
+  let rows = (db.prepare("SELECT * FROM jobs WHERE workspace_id=? ORDER BY created_at DESC").all(ws) as any[]).filter(j => jobVisible(req.user, j)).map(jobView);
   if (req.query.stage) rows = rows.filter(j => j.stage === req.query.stage);
   if (req.query.q) { const q = String(req.query.q).toLowerCase(); rows = rows.filter(j => JSON.stringify(j).toLowerCase().includes(q)); }
   res.json(rows);
@@ -1004,6 +1054,7 @@ app.post("/api/jobs/:id/messages", requireAuth, (req: any, res) => {
 });
 app.get("/api/jobs/:id", requireAuth, (req: any, res) => {
   const j = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (j && !jobVisible(req.user, j)) return res.status(404).json({ error: { code: "not_found" } });
   if (!j) return res.status(404).json({ error: { code: "not_found" } });
   const labor = jobLabor(req.user.workspace_id, j.lead_id);
   const schedule = db.prepare("SELECT s.*, COALESCE(w.name, u.name) worker FROM job_schedule s LEFT JOIN workers w ON w.id=s.worker_id LEFT JOIN users u ON u.id=s.user_id WHERE s.lead_id=? ORDER BY s.work_date").all(j.lead_id);
@@ -1162,7 +1213,7 @@ const IMPORT_FORMATS: Record<string, Record<string, string[]>> = {
   servicetitan: { name: ["customer name", "name"], first: ["first name"], last: ["last name"], phone: ["phone", "phone number", "mobile"], email: ["email", "email address"], service: ["job type", "service", "business unit"], value: ["invoice total", "total", "job total"], location: ["address", "location", "service address"] },
   salesforce: { name: ["name"], first: ["firstname", "first name"], last: ["lastname", "last name"], phone: ["phone", "mobilephone", "mobile"], email: ["email"], service: ["service", "service_requested", "industry"], value: ["amount", "value", "annualrevenue"], location: ["street", "city", "address"] },
 };
-app.post("/api/imports/csv", requireAuth, (req: any, res) => {
+app.post("/api/imports/csv", requireAuth, modGate("import", "edit"), (req: any, res) => {
   const format = String(req.body.format || "generic"); const F = IMPORT_FORMATS[format] || IMPORT_FORMATS.generic;
   const lines = String(req.body.csv || "").split(/\r?\n/).filter(Boolean);
   if (lines.length < 2) return res.status(422).json({ error: { code: "empty_csv" } });
@@ -1268,7 +1319,7 @@ app.post("/api/inbox/ingest", requireAuth, (req: any, res) => {
   res.json({ ingested: r.results.length, results: r.results });
 });
 // slice 18: bulk email backlog import (mbox / email CSV / JSON) — the 3,000-email front door
-app.post("/api/imports/email", requireAuth, (req: any, res) => {
+app.post("/api/imports/email", requireAuth, modGate("import", "edit"), (req: any, res) => {
   const format = String(req.body.format || "mbox");
   let emails: any[] = [];
   if (format === "json") { try { const j = JSON.parse(String(req.body.content || "[]")); emails = Array.isArray(j) ? j : []; } catch { return res.status(422).json({ error: { code: "bad_json" } }); } }
@@ -1281,7 +1332,7 @@ app.post("/api/imports/email", requireAuth, (req: any, res) => {
   db.prepare("INSERT INTO imports (id,workspace_id,filename,mapping,totals,status,created_at) VALUES (?,?,?,?,?,?,?)").run(id, req.user.workspace_id, req.body.filename || "email-backlog", JSON.stringify({ kind: "email", format }), JSON.stringify({ created: r.leads_created, dupes: r.duplicates, received: emails.length, by_category: r.by_category }), "committed", now());
   res.json({ import_id: id, received: emails.length, leads_created: r.leads_created, duplicates: r.duplicates, by_category: r.by_category });
 });
-app.get("/api/inbox", requireAuth, (req: any, res) => {
+app.get("/api/inbox", requireAuth, modGate("inbox"), (req: any, res) => {
   const rows = db.prepare("SELECT i.*, u.name owner_name FROM inbox_items i LEFT JOIN users u ON u.id=i.owner_id WHERE i.workspace_id=?").all(req.user.workspace_id) as any[];
   for (const r of rows) { r.age_days = Math.max(0, Math.floor((Date.now() - new Date(r.received_at || r.created_at).getTime()) / 86400000)); r.overdue = (r.status || "open") === "open" && r.next_action_due_at && new Date(r.next_action_due_at).getTime() < Date.now(); r.suggestion_action = suggestInboxAction(r, "").action; r.priority = inboxPriority(r); }
   const tierRank = (t: string) => t === "urgent" ? 0 : t === "hot" ? 1 : 2;
@@ -1506,7 +1557,7 @@ app.post("/api/queue/bulk", requireAuth, (req: any, res) => {
   res.json({ ok: true, affected });
 });
 app.get("/api/queue", requireAuth, (req: any, res) => {
-  const ws = req.user.workspace_id; const t = now(); const items: any[] = [];
+  const ws = req.user.workspace_id; const t = now(); let items: any[] = [];
   const ageH = (iso: string) => Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 360000) / 10);
   const mine2 = (l: any) => !scopeOwn(req.user) || mine(req.user, l);
   for (const d of db.prepare("SELECT * FROM outcome_deliveries WHERE workspace_id=? AND last_status IN ('failed','dead') AND superseded_at IS NULL ORDER BY created_at LIMIT 10").all(ws) as any[])
@@ -1548,10 +1599,11 @@ app.get("/api/queue", requireAuth, (req: any, res) => {
   for (const s2 of db.prepare("SELECT t.*, COALESCE(w.name,u.name) who FROM timesheets t LEFT JOIN workers w ON w.id=t.worker_id LEFT JOIN users u ON u.id=t.manager_id WHERE t.workspace_id=? AND t.status='missing' AND t.week_of<? ORDER BY t.week_of LIMIT 20").all(ws, weekStartOf(new Date())) as any[])
     items.push({ id: "q_ts_" + s2.id, type: "timesheet", score: 48, title: `Timesheet missing — ${s2.who || "worker"}`, subtitle: `Week of ${s2.week_of} not submitted`, primary: { kind: "open_ops", label: "Chase" } });
   items.sort((a, b) => b.score - a.score);
+  { const p = permsOf(req.user); if (p.leads_scope !== "all") { items = items.filter(i => { if ((i as any).lead_id) { const l = db.prepare("SELECT owner_id, pm_id FROM leads WHERE id=?").get((i as any).lead_id) as any; if (l && !leadVisible(req.user, l)) return false; } if (i.type === "approval") { const ap = db.prepare("SELECT approver_id FROM approvals WHERE id=?").get(i.id.replace("q_appr_", "")) as any; if (ap && ap.approver_id !== req.user.id && !p.can_approve) return false; } return true; }); } }
   res.json({ items: items.slice(0, 100), total: items.length, by_type: items.reduce((m: any, i: any) => { m[i.type] = (m[i.type] || 0) + 1; return m; }, {}) });
 });
 // ---------- v3 slice 36 (server): board stats — metrics ON the work surface ----------
-app.get("/api/analytics", requireAuth, (req: any, res) => {
+app.get("/api/analytics", requireAuth, modGate("reports"), (req: any, res) => {
   const ws = req.user.workspace_id;
   const period = ["week", "month", "year"].includes(String(req.query.period)) ? String(req.query.period) : "month";
   const days = period === "week" ? 7 : period === "year" ? 365 : 30;
@@ -2377,7 +2429,7 @@ app.get("/api/status-report", requireAuth, (req: any, res) => {
   try { res.json(weeklyReport(req.user.workspace_id, req.query.week ? String(req.query.week) : undefined)); }
   catch (e: any) { res.status(500).json({ error: { code: "report_failed", message: String(e?.message || e) } }); }
 });
-app.get("/api/reports", requireAuth, (req: any, res) => {
+app.get("/api/reports", requireAuth, modGate("reports"), (req: any, res) => {
   const ws = req.user.workspace_id; const kind = String(req.query.dataset || "by_owner");
   const Q: Record<string, string> = {
     by_owner: "SELECT COALESCE(u.name,'Unassigned') label, COUNT(*) leads, SUM(CASE WHEN l.state='WON' THEN 1 ELSE 0 END) won, SUM(CASE WHEN l.state='LOST' THEN 1 ELSE 0 END) lost, SUM(l.est_value) value, SUM(CASE WHEN l.state='WON' THEN l.est_value ELSE 0 END) won_value FROM leads l LEFT JOIN users u ON u.id=l.owner_id WHERE l.workspace_id=? GROUP BY label ORDER BY leads DESC",
@@ -2398,7 +2450,7 @@ app.get("/api/reports/export", requireAuth, needPerm("can_export"), (req: any, r
 
 // ---------- slice 13 (Tier 3): forecast, at-risk, win/loss intel, speed-to-lead ----------
 const STAGE_WEIGHTS: Record<string, number> = { NEW: 0.05, WORKING: 0.20, QUALIFIED: 0.35, PROPOSAL: 0.60, SENT: 0.80, FOLLOWUP: 0.85, WON: 1 };
-app.get("/api/forecast", requireAuth, (req: any, res) => {
+app.get("/api/forecast", requireAuth, modGate("reports"), (req: any, res) => {
   const ws = req.user.workspace_id;
   const open = db.prepare("SELECT state, COUNT(*) c, COALESCE(SUM(est_value),0) v FROM leads WHERE workspace_id=? AND state NOT IN ('WON','LOST','NO_RESPONSE','UNSERVICEABLE','JUNK','DUPLICATE') GROUP BY state").all(ws) as any[];
   const by_stage = open.map(r => ({ state: r.state, count: r.c, value: r.v, weight: STAGE_WEIGHTS[r.state] ?? 0.05, weighted: Math.round(r.v * (STAGE_WEIGHTS[r.state] ?? 0.05)) }));
@@ -2514,6 +2566,27 @@ app.post("/api/public/book", async (req: any, res) => {
   notifyOwners(ws.id, "booking.new", "New online booking 📅", `${b.name} booked ${b.service || "a visit"}${b.when ? " for " + b.when : ""}`, r.lead.id);
   res.status(201).json({ ok: true, lead_id: r.lead.id, visit_id: visit, duplicate: r.duplicate });
 });
+app.get("/api/roles", requireAuth, needPerm("can_manage_team"), (req: any, res) => {
+  const ws = req.user.workspace_id;
+  const roles = ["OWNER", "ADMIN", "OPS_ADMIN", "APPROVER", "LEAD_OWNER", "PM"].map(role => ({ role, defaults: defaultPermsFor(role), template: roleTemplate(ws, role), effective: role === "OWNER" ? defaultPermsFor("OWNER") : (roleTemplate(ws, role) || defaultPermsFor(role)) }));
+  res.json({ roles, modules: MODULES });
+});
+app.put("/api/roles/:role", requireAuth, (req: any, res) => {
+  if (req.user.role !== "OWNER") return res.status(403).json({ error: { code: "owner_only", message: "Only the owner can change role templates." } });
+  const role = String(req.params.role);
+  if (!["ADMIN", "OPS_ADMIN", "APPROVER", "LEAD_OWNER", "PM"].includes(role)) return res.status(422).json({ error: { code: "bad_role", message: "The OWNER role is always full access and cannot be edited." } });
+  const clean = sanitizePerms(req.body?.perms || {}, roleTemplate(req.user.workspace_id, role) || defaultPermsFor(role));
+  db.prepare("INSERT INTO role_perms (workspace_id, role, perms, updated_by, updated_at) VALUES (?,?,?,?,?) ON CONFLICT(workspace_id, role) DO UPDATE SET perms=excluded.perms, updated_by=excluded.updated_by, updated_at=excluded.updated_at").run(req.user.workspace_id, role, JSON.stringify(clean), req.user.id, now());
+  clearRoleTplCache(req.user.workspace_id);
+  audit(req.user.workspace_id, req.user.id, "roles.template_change", "role", role, clean);
+  res.json({ role, template: clean });
+});
+app.delete("/api/roles/:role", requireAuth, (req: any, res) => {
+  if (req.user.role !== "OWNER") return res.status(403).json({ error: { code: "owner_only" } });
+  db.prepare("DELETE FROM role_perms WHERE workspace_id=? AND role=?").run(req.user.workspace_id, String(req.params.role));
+  clearRoleTplCache(req.user.workspace_id);
+  res.json({ ok: true, defaults: defaultPermsFor(String(req.params.role)) });
+});
 app.patch("/api/team/:id", requireAuth, needPerm("can_manage_team"), (req: any, res) => {
   const t = db.prepare("SELECT * FROM users WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!t) return res.status(404).json({ error: { code: "not_found" } });
@@ -2526,6 +2599,10 @@ app.patch("/api/team/:id", requireAuth, needPerm("can_manage_team"), (req: any, 
   if (req.body.approval_limit !== undefined) db.prepare("UPDATE users SET approval_limit=? WHERE id=?").run(Number(req.body.approval_limit) || 0, t.id);
   if (req.body.permissions !== undefined) {
     const clean: any = {}; for (const k of PERM_KEYS) if (req.body.permissions[k] !== undefined) clean[k] = req.body.permissions[k];
+    if (req.body.permissions.modules && typeof req.body.permissions.modules === "object") { const mm: any = {}; for (const m of MODULES) if (["none", "view", "edit"].includes(req.body.permissions.modules[m])) mm[m] = req.body.permissions.modules[m]; if (Object.keys(mm).length) clean.modules = mm; }
+    if (clean.leads_scope !== undefined && !["all", "own"].includes(clean.leads_scope)) delete clean.leads_scope;
+    if (clean.jobs_scope !== undefined && !["all", "assigned", "own"].includes(clean.jobs_scope)) delete clean.jobs_scope;
+    if (clean.schedule_scope !== undefined && !["all", "mine"].includes(clean.schedule_scope)) delete clean.schedule_scope;
     db.prepare("UPDATE users SET permissions=? WHERE id=?").run(Object.keys(clean).length ? JSON.stringify(clean) : null, t.id);
   }
   if (req.body.labor_class_id !== undefined) db.prepare("UPDATE users SET labor_class_id=? WHERE id=?").run(req.body.labor_class_id || null, t.id);

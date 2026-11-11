@@ -991,6 +991,56 @@ function ServicesConsole({ svcs, reload }: any) {
   </div>);
 }
 
+const MOD_LABELS: Record<string, string> = { home: "Home dashboard", queue: "Work Queue", myday: "My Day", inbox: "Inbox", tasks: "Tasks", leads: "Leads / Pipeline", customers: "Customers", proposals: "Proposals", approvals: "Approvals", jobs: "Jobs", schedule: "Schedule & Calendar", ops: "Ops Console", campaigns: "Campaigns", demand: "Demand Gap", pulse: "Pulse", handoffs: "Handoffs", library: "Library & Files", import: "Import", reports: "Reports & Analytics", automations: "Automations & Agent", settings: "Settings" };
+const PERM_TOGGLES: [string, string, string][] = [["can_approve", "Approve proposals", "Decide approvals routed to them"], ["can_money", "See money figures", "Home money cards, invoices, reports totals"], ["can_complete_others", "Complete others' work", "Mark anyone's tasks, visits and schedule items done"], ["can_export", "Export data", "CSV exports and report downloads"], ["can_billing", "Billing & plan", "Subscription, invoices from Workpile, plan changes"], ["can_settings", "Workspace settings", "Business profile, templates, integrations"], ["can_manage_team", "Manage team", "Invite people, change roles and access"]];
+function PermEditor({ draft, setDraft }: any) {
+  const seg = (mod: string) => (<span className="rowflex" style={{ gap: 4 }}>{(["none", "view", "edit"] as const).map(lvl => <button key={lvl} className={"chip" + (draft.modules?.[mod] === lvl ? " on" : "")} style={draft.modules?.[mod] === lvl ? { background: lvl === "none" ? "#991B1B" : "#0E5C3A", color: "#fff", borderColor: "transparent" } : {}} onClick={() => setDraft({ ...draft, modules: { ...draft.modules, [mod]: lvl } })}>{lvl === "none" ? "Hidden" : lvl === "view" ? "View" : "View + Edit"}</button>)}</span>);
+  return (<div>
+    <div className="formgrid" style={{ marginBottom: 12 }}>
+      <div><label className="f">Leads data — whose leads can they see?</label><select value={draft.leads_scope} onChange={e => setDraft({ ...draft, leads_scope: e.target.value })}><option value="all">All leads in the business</option><option value="own">Only leads they own / PM</option></select></div>
+      <div><label className="f">Jobs data — whose jobs can they see?</label><select value={draft.jobs_scope} onChange={e => setDraft({ ...draft, jobs_scope: e.target.value })}><option value="all">All jobs</option><option value="assigned">Jobs they're assigned to (crew, schedule, or their leads)</option><option value="own">Only jobs on their own leads</option></select></div>
+      <div><label className="f">Schedule & calendar — whose items show up?</label><select value={draft.schedule_scope} onChange={e => setDraft({ ...draft, schedule_scope: e.target.value })}><option value="all">Everyone's schedule</option><option value="mine">Only their own items</option></select></div>
+    </div>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(230px,1fr))", gap: 8, marginBottom: 14 }}>
+      {PERM_TOGGLES.map(([k, label, hint]) => (<label key={k} className="card" style={{ padding: "9px 11px", display: "flex", gap: 9, alignItems: "flex-start", cursor: "pointer", margin: 0 }}><input type="checkbox" checked={!!draft[k]} onChange={e => setDraft({ ...draft, [k]: e.target.checked })} style={{ marginTop: 3 }} /><span><b style={{ fontSize: 13 }}>{label}</b><br /><span className="mut" style={{ fontSize: 11.5 }}>{hint}</span></span></label>))}
+    </div>
+    <div className="lab" style={{ marginBottom: 6 }}>Modules — what appears in their sidebar, and what they can do in it</div>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(300px,1fr))", gap: 6 }}>
+      {Object.keys(MOD_LABELS).map(mod => (<div key={mod} className="rowflex" style={{ justifyContent: "space-between", border: "1px solid var(--line)", borderRadius: 10, padding: "6px 9px" }}><span style={{ fontSize: 13, fontWeight: 600 }}>{MOD_LABELS[mod]}</span>{seg(mod)}</div>))}
+    </div>
+  </div>);
+}
+function AccessRoles({ me }: any) {
+  const [roles, setRoles] = useState<any[]>([]); const [users, setUsers] = useState<any[]>([]);
+  const [mode, setMode] = useState<string>("role"); const [selRole, setSelRole] = useState("PM"); const [selUser, setSelUser] = useState("");
+  const [draft, setDraft] = useState<any>(null); const [msg, setMsg] = useState("");
+  const load = async () => { const r = await api("/api/roles").catch(() => null); if (r?.roles) setRoles(r.roles); const u = await api("/api/users").catch(() => null); if (Array.isArray(u)) setUsers(u); };
+  useEffect(() => { load(); }, []);
+  const roleEntry = roles.find(r => r.role === selRole);
+  const userEntry = users.find((u: any) => u.id === selUser);
+  useEffect(() => { if (mode === "role" && roleEntry) setDraft(JSON.parse(JSON.stringify(roleEntry.effective))); }, [mode, selRole, roles.length]);
+  useEffect(() => { if (mode === "user" && userEntry) setDraft(JSON.parse(JSON.stringify(userEntry.permissions))); }, [mode, selUser, users.length]);
+  const saveRole = async () => { const r = await api("/api/roles/" + selRole, { method: "PUT", body: { perms: draft } }).catch(() => null); if (r && !r.error) { setMsg("✓ Role template saved — everyone with the " + selRole + " role now gets this access (their personal overrides still apply on top)."); load(); } else setMsg("⚠ " + (r?.error?.message || "Only the owner can change role templates.")); };
+  const resetRole = async () => { await api("/api/roles/" + selRole, { method: "DELETE" }); setMsg("Role reset to the product defaults."); load(); };
+  const saveUser = async () => { if (!userEntry) return; const base = (roles.find(r => r.role === userEntry.role)?.effective) || {}; const diff: any = {}; for (const k of ["leads_scope", "jobs_scope", "schedule_scope", "can_approve", "can_billing", "can_settings", "can_export", "can_manage_team", "can_money", "can_complete_others"]) if (draft[k] !== base[k]) diff[k] = draft[k]; const mm: any = {}; for (const mod of Object.keys(MOD_LABELS)) if (draft.modules?.[mod] !== base.modules?.[mod]) mm[mod] = draft.modules?.[mod]; if (Object.keys(mm).length) diff.modules = mm; const had = userEntry.has_overrides; const r = await api("/api/team/" + selUser, { method: "PATCH", body: { permissions: Object.keys(diff).length ? diff : (had ? {} : diff) } }).catch(() => null); if (r && !r.error) { setMsg(Object.keys(diff).length ? "✓ Personal access saved for " + userEntry.name + " — it takes effect on their next page load." : "✓ " + userEntry.name + " is back on pure role defaults."); load(); } else setMsg("⚠ " + (r?.error?.message || "Could not save.")); };
+  const resetUser = async () => { await api("/api/team/" + selUser, { method: "PATCH", body: { permissions: {} } }); setMsg("Personal overrides cleared — role defaults apply."); load(); };
+  const isOwner = me?.role === "OWNER";
+  return (<div className="card"><h3 style={{ marginTop: 0 }}>🔐 Access & Roles — who can see and do what</h3>
+    <p className="mut" style={{ marginTop: 0 }}>Two layers, both enforced on the server (not just hidden buttons): <b>role templates</b> set the default access for everyone with that role, and <b>personal overrides</b> adjust one person on top of their role. The OWNER always has full access and can't be restricted. Changes apply on the person's next page load.</p>
+    {msg && <div className="ok" style={{ marginBottom: 10 }}>{msg}</div>}
+    <div className="tabs"><button className={mode === "role" ? "on" : ""} onClick={() => setMode("role")}>Role templates</button><button className={mode === "user" ? "on" : ""} onClick={() => setMode("user")}>Per-person overrides</button></div>
+    {mode === "role" && <div>
+      <div className="rowflex" style={{ margin: "10px 0" }}><label className="f" style={{ margin: 0 }}>Role</label><select value={selRole} onChange={e => setSelRole(e.target.value)}>{roles.filter(r => r.role !== "OWNER").map(r => <option key={r.role} value={r.role}>{r.role.replaceAll("_", " ")}{r.template ? " · customized" : ""}</option>)}</select>{roleEntry?.template && <span className="chip">Customized template</span>}<span className="mut">OWNER is always full access.</span></div>
+      {draft && <PermEditor draft={draft} setDraft={setDraft} />}
+      <div className="rowflex" style={{ marginTop: 12 }}>{isOwner ? <><button className="btn" onClick={saveRole}>Save role template</button>{roleEntry?.template && <button className="btn ghost" onClick={resetRole}>Reset to product defaults</button>}</> : <span className="mut">Only the business owner can change role templates — you can view them here.</span>}</div>
+    </div>}
+    {mode === "user" && <div>
+      <div className="rowflex" style={{ margin: "10px 0" }}><label className="f" style={{ margin: 0 }}>Person</label><select value={selUser} onChange={e => setSelUser(e.target.value)}><option value="">Choose a team member…</option>{users.filter((u: any) => u.role !== "OWNER").map((u: any) => <option key={u.id} value={u.id}>{u.name} — {u.role.replaceAll("_", " ")}{u.has_overrides ? " · custom access" : ""}</option>)}</select>{userEntry?.has_overrides && <span className="chip">Has personal overrides</span>}</div>
+      {userEntry && draft && <><PermEditor draft={draft} setDraft={setDraft} /><div className="rowflex" style={{ marginTop: 12 }}><button className="btn" onClick={saveUser}>Save personal access</button>{userEntry.has_overrides && <button className="btn ghost" onClick={resetUser}>Reset to role defaults</button>}<span className="mut">Only the differences from the {userEntry.role.replaceAll("_", " ")} template are stored as overrides.</span></div></>}
+      {!userEntry && <p className="mut">Pick a person to see their effective access and adjust it. New hires get their role's template automatically — create them in the Team tab, then fine-tune them here.</p>}
+    </div>}
+  </div>);
+}
 function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any) {
   const myPerms = me?.permissions; const canSettings = !myPerms || myPerms.can_settings; const canTeam = !myPerms || myPerms.can_manage_team;
   const [accessFor, setAccessFor] = useState<any>(null);
@@ -1008,7 +1058,7 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any)
   const T = ({ id, children }: any) => <button className={tab === id ? "on" : ""} onClick={() => setTab(id)}>{children}</button>;
   return (<div><h2 className="pt">Settings</h2><p className="sub">Everything configurable, in the product — no engineer required.</p>
     {msg && <div className="ok">{msg}</div>}
-    <div className="tabs">{canSettings && <><T id="workspace">Workspace</T><T id="pricebook">Price Book</T><T id="templates">Templates</T><T id="services">Services</T></>}{canTeam && <T id="team">Team</T>}{canSettings && <T id="workers">Workers</T>}{canSettings && <T id="rates">Labor & Rates</T>}{canSettings && <T id="rules">Inbox Rules</T>}{canSettings && <T id="cfields">Custom Fields</T>}{canSettings && <T id="assign">Assignment</T>}{canSettings && <T id="integrations">Integrations</T>}{me?.permissions?.can_billing && <T id="billing">Billing</T>}</div>
+    <div className="tabs">{canSettings && <><T id="workspace">Workspace</T><T id="pricebook">Price Book</T><T id="templates">Templates</T><T id="services">Services</T></>}{canTeam && <T id="team">Team</T>}{canTeam && <T id="access">🔐 Access & Roles</T>}{canSettings && <T id="workers">Workers</T>}{canSettings && <T id="rates">Labor & Rates</T>}{canSettings && <T id="rules">Inbox Rules</T>}{canSettings && <T id="cfields">Custom Fields</T>}{canSettings && <T id="assign">Assignment</T>}{canSettings && <T id="integrations">Integrations</T>}{me?.permissions?.can_billing && <T id="billing">Billing</T>}</div>
     {tab === "billing" && <Billing />}
     {!canSettings && !canTeam && <div className="card">Your access doesn't include settings or team management. Ask an owner or admin if you need something changed.</div>}
     {tab === "workspace" && canSettings && s && <div className="card"><div className="formgrid">
@@ -1038,6 +1088,7 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any)
       <div className="formgrid" style={{ marginTop: 12 }}><div><label className="f">New template name</label><input value={nt.name} onChange={e => setNt({ ...nt, name: e.target.value })} /></div><div className="full"><label className="f">Body (merge fields: {"{{contact_name}} {{service}} {{total}}"})</label><textarea rows={4} value={nt.body} onChange={e => setNt({ ...nt, body: e.target.value })} /></div></div>
       <button className="btn" style={{ marginTop: 10 }} onClick={async () => { await api("/api/templates", { method: "POST", body: nt }); setNt({ name: "", body: "" }); loadAll(); }}>Add template</button></div>}
     {tab === "services" && canSettings && <ServicesConsole svcs={svcs} reload={loadAll} />}
+    {tab === "access" && canTeam && <AccessRoles me={me} />}
     {tab === "team" && canTeam && <div className="card"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Approval limit</th><th></th></tr></thead><tbody>
       {users.map((u: any) => <tr key={u.id}><td>{u.name}{u.has_overrides ? <span className="tinyBadge" style={{ marginLeft: 6, background: "#fef9c3", color: "#854d0e" }}>custom access</span> : null}</td><td>{u.email}</td><td><select value={u.role} onChange={async e => { await api(`/api/team/${u.id}`, { method: "PATCH", body: { role: e.target.value } }); loadAll(); }}><option>OWNER</option><option>APPROVER</option><option>OPS_ADMIN</option><option>LEAD_OWNER</option><option>PM</option><option>ADMIN</option></select></td><td>{u.role === "OWNER" ? <b style={{ color: "#14532d" }}>Unlimited</b> : money(u.approval_limit)}</td><td>{u.role === "OWNER" ? <span className="muted">Full access</span> : <button className="btn ghost small" onClick={() => setAccessFor(u)}>Access…</button>}</td></tr>)}
     </tbody></table>
@@ -2915,7 +2966,10 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
   if (!user) return <Landing onAuth={(u: any) => { setUser(u); }} />;
   const go = (n: Nav) => setNav(n);
   const APPS: Record<string, string[]> = { sales: ["queue", "myday", "dashboard", "pulse", "leads", "proposals", "jobs", "customers", "campaigns", "planner", "library", "reports", "approvals", "ai", "inbox"], ops: ["queue", "jobs", "ops", "planner", "leads", "proposals", "inbox", "library", "handoffs", "imports", "demand"], marketing: ["dashboard", "campaigns", "leads", "customers", "proposals", "imports", "demand", "reports", "library"] };
-  const inApp = (v: string) => appMode === "all" || (APPS[appMode] || []).includes(v) || ["settings", "billing", "admin"].includes(v);
+  const VIEW_MODULE: Record<string, string> = { dashboard: "home", home: "home", queue: "queue", myday: "myday", inbox: "inbox", tasks: "tasks", calendar: "schedule", leads: "leads", customers: "customers", people: "customers", proposals: "proposals", approvals: "approvals", jobs: "jobs", schedule: "schedule", ops: "ops", campaigns: "campaigns", demand: "demand", pulse: "pulse", handoffs: "handoffs", library: "library", notes: "library", files: "library", imports: "import", import: "import", reports: "reports", ai: "automations", automations: "automations", settings: "settings" };
+  const modLvl = (v: string) => { const mods = user?.permissions?.modules || {}; if (v === "planner") { const t = mods.tasks ?? "edit", s = mods.schedule ?? "edit"; return (t === "none" && s === "none") ? "none" : (t === "edit" || s === "edit") ? "edit" : "view"; } const mod = VIEW_MODULE[v]; if (!mod) return "edit"; return (mods[mod] ?? "edit") as string; };
+  const viewOK = modLvl(nav.view) !== "none" || ["settings", "billing", "admin"].includes(nav.view);
+  const inApp = (v: string) => (appMode === "all" || (APPS[appMode] || []).includes(v) || ["settings", "billing", "admin"].includes(v)) && modLvl(v) !== "none";
   const NavB = ({ v, children, cnt, short, onGo }: any) => !inApp(v) ? null : <button className={nav.view === v ? "on" : ""} title={children} onClick={() => { if (onGo) onGo(); else go({ view: v }); setMOpen(false); }}><span className="nshort">{short}</span><span className="nlab">{children}</span>{cnt ? <span className="cnt">{cnt}</span> : null}</button>;
   const toggleSb = () => { const next = sb === "rail" ? "open" : "rail"; setSb(next); localStorage.setItem("wp_sb", next); };
   const NavGroup = ({ id, label, children }: any) => sb === "rail"
@@ -2968,32 +3022,33 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
         <OnlinePill /><button className="btn ghost" onClick={() => setAgentOpen(true)}>✦ Agent</button><button className="btn ghost" title="Log time (T)" onClick={() => setLtOpen(true)}>⏱ Log time</button><button className="btn" onClick={() => setCreating(true)}>+ New Lead</button><button className="avatarBtn" onClick={() => setProfOpen(true)} title={"Your profile — " + user.name}><Avatar u={user} size={32} /></button></div>
       {user && user.email_verified === 0 && <div className="verifyBar">✉️ Verify your email to secure your account and enable password recovery. <button className="btn ghost small" onClick={async () => { const r = await api("/api/auth/resend-verify", { method: "POST", body: {} }).catch((e: any) => ({ error: e.message })); setVerifyMsg(r.verify_url ? "Test mode \u2014 verify here: " + r.verify_url : r.error ? r.error : "Verification email sent \u2014 check your inbox."); }}>Resend verification</button>{verifyMsg && <span style={{ marginLeft: 8 }}>{verifyMsg}</span>}</div>}
       <EB key={nav.view}>
-      {nav.view === "queue" && <WorkQueue openLead={openLead} openJob={(id: string) => setJobOpen(id)} go={go} me={user} />}
-      {nav.view === "jobs" && <JobsBoard openJob={(id: string) => setJobOpen(id)} signal={tick} onChange={() => setTick(t => t + 1)} />}
-      {nav.view === "customers" && <Customers openCustomer={(id: string) => setCustOpen(id)} tabSignal={tabSignal} />}
-      {(nav.view === "people") && <Customers openCustomer={(id: string) => setCustOpen(id)} tabSignal={{ view: "customers", tab: "people", n: 1 }} />}
-      {nav.view === "campaigns" && <Campaigns openLead={openLead} />}
-      {nav.view === "planner" && <Planner openLead={openLead} tabSignal={tabSignal} />}
-      {(nav.view === "tasks" || nav.view === "calendar") && <Planner openLead={openLead} tabSignal={{ view: "planner", tab: nav.view === "tasks" ? "tasks" : "calendar", n: 1 }} />}
-      {nav.view === "library" && <Library openLead={openLead} openJob={(id: string) => setJobOpen(id)} openCustomer={(id: string) => setCustOpen(id)} tabSignal={tabSignal} />}
-      {(nav.view === "notes" || nav.view === "files") && <Library openLead={openLead} openJob={(id: string) => setJobOpen(id)} openCustomer={(id: string) => setCustOpen(id)} tabSignal={{ view: "library", tab: nav.view, n: 1 }} />}
-      {nav.view === "duplicates" && <DuplicatesView />}
-      {nav.view === "myday" && <MyDay user={user} openLead={openLead} go={go} />}
-      {nav.view === "dashboard" && <Dashboard go={go} openLead={openLead} />}
-      {nav.view === "pulse" && <Pulse openLead={openLead} />}
-      {nav.view === "leads" && <Leads key={JSON.stringify(nav.leads || {}) + tick} initial={nav.leads} openLead={openLead} users={users} me={user} />}
-      {nav.view === "reports" && <Reports />}
-      {nav.view === "approvals" && <Approvals openLead={openLead} />}
-      {nav.view === "proposals" && <ProposalsView openLead={openLead} />}
-      {nav.view === "inbox" && <InboxPage />}
-      {nav.view === "ai" && <AIAssistant go={go} openLead={(id: string) => setLeadId(id)} openJob={(id: string) => setJobOpen(id)} />}
-      {nav.view === "imports" && <Imports />}
-      {nav.view === "demand" && <Demand openLead={openLead} />}
-      {nav.view === "handoffs" && <Handoffs />}
-      {nav.view === "ops" && <Ops />}
-      {nav.view === "settings" && <Settings users={users} setUsers={setUsers} priceBook={priceBook} setPriceBook={setPriceBook} onJump={(v: string) => go({ view: v as any })} me={user} />}
-      {nav.view === "billing" && <Billing />}
-      {nav.view === "admin" && <Admin />}
+      {!viewOK && <div className="card" style={{ maxWidth: 560, margin: "40px auto", textAlign: "center", padding: 28 }}><div style={{ fontSize: 30 }}>🔒</div><h3 style={{ margin: "8px 0" }}>This area isn't part of your access</h3><p className="mut">Your role doesn't include this module. If you need it, the owner can grant it in Settings → Access &amp; Roles.</p></div>}
+      {nav.view === "queue" && viewOK && <WorkQueue openLead={openLead} openJob={(id: string) => setJobOpen(id)} go={go} me={user} />}
+      {nav.view === "jobs" && viewOK && <JobsBoard openJob={(id: string) => setJobOpen(id)} signal={tick} onChange={() => setTick(t => t + 1)} />}
+      {nav.view === "customers" && viewOK && <Customers openCustomer={(id: string) => setCustOpen(id)} tabSignal={tabSignal} />}
+      {(nav.view === "people") && viewOK && <Customers openCustomer={(id: string) => setCustOpen(id)} tabSignal={{ view: "customers", tab: "people", n: 1 }} />}
+      {nav.view === "campaigns" && viewOK && <Campaigns openLead={openLead} />}
+      {nav.view === "planner" && viewOK && <Planner openLead={openLead} tabSignal={tabSignal} />}
+      {(nav.view === "tasks" || nav.view === "calendar") && viewOK && <Planner openLead={openLead} tabSignal={{ view: "planner", tab: nav.view === "tasks" ? "tasks" : "calendar", n: 1 }} />}
+      {nav.view === "library" && viewOK && <Library openLead={openLead} openJob={(id: string) => setJobOpen(id)} openCustomer={(id: string) => setCustOpen(id)} tabSignal={tabSignal} />}
+      {(nav.view === "notes" || nav.view === "files") && viewOK && <Library openLead={openLead} openJob={(id: string) => setJobOpen(id)} openCustomer={(id: string) => setCustOpen(id)} tabSignal={{ view: "library", tab: nav.view, n: 1 }} />}
+      {nav.view === "duplicates" && viewOK && <DuplicatesView />}
+      {nav.view === "myday" && viewOK && <MyDay user={user} openLead={openLead} go={go} />}
+      {nav.view === "dashboard" && viewOK && <Dashboard go={go} openLead={openLead} />}
+      {nav.view === "pulse" && viewOK && <Pulse openLead={openLead} />}
+      {nav.view === "leads" && viewOK && <Leads key={JSON.stringify(nav.leads || {}) + tick} initial={nav.leads} openLead={openLead} users={users} me={user} />}
+      {nav.view === "reports" && viewOK && <Reports />}
+      {nav.view === "approvals" && viewOK && <Approvals openLead={openLead} />}
+      {nav.view === "proposals" && viewOK && <ProposalsView openLead={openLead} />}
+      {nav.view === "inbox" && viewOK && <InboxPage />}
+      {nav.view === "ai" && viewOK && <AIAssistant go={go} openLead={(id: string) => setLeadId(id)} openJob={(id: string) => setJobOpen(id)} />}
+      {nav.view === "imports" && viewOK && <Imports />}
+      {nav.view === "demand" && viewOK && <Demand openLead={openLead} />}
+      {nav.view === "handoffs" && viewOK && <Handoffs />}
+      {nav.view === "ops" && viewOK && <Ops />}
+      {nav.view === "settings" && viewOK && <Settings users={users} setUsers={setUsers} priceBook={priceBook} setPriceBook={setPriceBook} onJump={(v: string) => go({ view: v as any })} me={user} />}
+      {nav.view === "billing" && viewOK && <Billing />}
+      {nav.view === "admin" && viewOK && <Admin />}
       </EB>
       {jobOpen && <EB key={"job" + jobOpen}><JobDetail id={jobOpen} users={users} me={user} priceBook={priceBook} close={() => setJobOpen(null)} refresh={() => setTick(t => t + 1)} openLead={(lid: string) => { setJobOpen(null); setLeadId(lid); }} /></EB>}
       {custOpen && <EB key={"cust" + custOpen}><CustomerDetail id={custOpen} close={() => setCustOpen(null)} openLead={openLead} openJob={(id: string) => setJobOpen(id)} /></EB>}

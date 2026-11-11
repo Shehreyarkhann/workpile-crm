@@ -98,6 +98,7 @@ export function initSchema() {
     "CREATE TABLE IF NOT EXISTS platform_audit (id TEXT PRIMARY KEY, admin_id TEXT, admin_email TEXT, action TEXT, target_type TEXT, target_id TEXT, workspace_id TEXT, detail TEXT, created_at TEXT)",
     "ALTER TABLE attachments ADD COLUMN doc_type TEXT",
     "CREATE TABLE IF NOT EXISTS app_migrations (name TEXT PRIMARY KEY, applied_at TEXT)",
+    "CREATE TABLE IF NOT EXISTS role_perms (workspace_id TEXT, role TEXT, perms TEXT, updated_by TEXT, updated_at TEXT, PRIMARY KEY (workspace_id, role))",
     "ALTER TABLE leads ADD COLUMN first_touch_at TEXT",
     "ALTER TABLE leads ADD COLUMN first_touch_kind TEXT",
     "ALTER TABLE job_schedule ADD COLUMN done_at TEXT",

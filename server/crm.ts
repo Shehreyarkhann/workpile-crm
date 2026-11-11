@@ -8,6 +8,35 @@ import { VERTICAL_PACKS } from "./templates.ts";
 import { storagePut, storageGet, storageDelete } from "./storage.ts";
 import { financialSummary, financeDrill } from "./metrics.ts";
 import { UNTOUCHED_WHERE } from "./touch.ts";
+import { permsOf, agendaMine, jobVisible, modGate } from "./app.ts";
+// V41 access: resolve an agenda item (kind + ref) to its row + lead and
+// decide whether this user may see / complete it.
+function agendaRow(kind: string, ref: string): { row: any, lead: any } {
+  const rawRef = String(ref || ""); const stripped = rawRef.replace(/^(cb|sch|fu|sv|job|tsk)/, "");
+  const id = (db.prepare("SELECT id FROM tasks WHERE id=?").get(rawRef) || db.prepare("SELECT id FROM job_schedule WHERE id=?").get(rawRef) || db.prepare("SELECT id FROM site_visits WHERE id=?").get(rawRef)) ? rawRef : stripped;
+  const leadOf = (lid: any) => lid ? db.prepare("SELECT * FROM leads WHERE id=?").get(lid) : null;
+  if (kind === "task") { const r = db.prepare("SELECT * FROM tasks WHERE id=?").get(id); return { row: r, lead: leadOf(r?.lead_id) }; }
+  if (kind === "callback") { const r = db.prepare("SELECT * FROM callbacks WHERE id=?").get(id); return { row: r, lead: leadOf(r?.lead_id) }; }
+  if (kind === "visit") { const r = db.prepare("SELECT * FROM site_visits WHERE id=?").get(id); return { row: r, lead: leadOf(r?.lead_id) }; }
+  if (kind === "schedule") { const r = db.prepare("SELECT * FROM job_schedule WHERE id=?").get(id); return { row: r, lead: leadOf(r?.lead_id) }; }
+  if (kind === "followup") { const r = db.prepare("SELECT * FROM followup_enrollments WHERE id=?").get(id); return { row: r, lead: leadOf(r?.lead_id) }; }
+  if (kind === "invoice") { const r = db.prepare("SELECT * FROM invoices WHERE id=?").get(id); const j = r?.job_id ? db.prepare("SELECT * FROM jobs WHERE id=?").get(r.job_id) : null; return { row: r, lead: leadOf(r?.lead_id || j?.lead_id) }; }
+  if (kind === "doc") { const r = db.prepare("SELECT * FROM documents WHERE id=?").get(id); const j = r?.job_id ? db.prepare("SELECT * FROM jobs WHERE id=?").get(r.job_id) : null; return { row: r, lead: leadOf(r?.lead_id || j?.lead_id) }; }
+  if (kind === "expiry") { const r = db.prepare("SELECT * FROM proposals WHERE id=?").get(id); return { row: r, lead: leadOf(r?.lead_id) }; }
+  if (kind === "job") { const r = db.prepare("SELECT * FROM jobs WHERE id=?").get(id); return { row: r, lead: leadOf(r?.lead_id) }; }
+  return { row: null, lead: null };
+}
+function agendaAllowed(user: any, kind: string, ref: string): boolean {
+  const p = permsOf(user); if (p.schedule_scope === "all" || p.can_complete_others) return true;
+  const { row, lead } = agendaRow(kind, ref); if (!row) return false;
+  if (kind === "job") return jobVisible(user, row);
+  if (kind === "invoice") return p.can_money || (!!row.job_id && jobVisible(user, db.prepare("SELECT * FROM jobs WHERE id=?").get(row.job_id)));
+  return agendaMine(user, kind, row, lead);
+}
+function filterAgenda(user: any, items: any[]): any[] {
+  const p = permsOf(user); if (p.schedule_scope === "all" || p.can_complete_others) return items;
+  return items.filter((u: any) => agendaAllowed(user, u.kind, u.ref_id || u.task_id || ""));
+}
 import { stepsFor, addBusinessDays } from "./followups.ts";
 import { notify } from "./comms.ts";
 
@@ -112,7 +141,7 @@ export function registerCrm(app: any, requireAuth: any, needPerm: any = null) {
   const err = (res: any, code: number, msg: string) => res.status(code).json({ error: { code: "crm", message: msg } });
 
   // ----- Accounts / Customers -----
-  app.get("/api/accounts", requireAuth, (req: any, res: any) => {
+  app.get("/api/accounts", requireAuth, modGate("customers"), (req: any, res: any) => {
     backfillConversions(ws(req));
     const rows = db.prepare(`SELECT a.*, (SELECT COUNT(*) FROM leads l WHERE l.account_id=a.id) leads_count,
       (SELECT COUNT(*) FROM jobs j JOIN leads l2 ON l2.id=j.lead_id WHERE l2.account_id=a.id) jobs_count,
@@ -289,7 +318,7 @@ export function registerCrm(app: any, requireAuth: any, needPerm: any = null) {
   app.delete("/api/assignment-rules/:id", requireAuth, settingsGuard, (req: any, res: any) => { db.prepare("DELETE FROM assignment_rules WHERE id=? AND workspace_id=?").run(req.params.id, ws(req)); res.json({ ok: true }); });
 
   // ----- Duplicates + merge -----
-  app.get("/api/proposals", requireAuth, (req: any, res: any) => { const rows = db.prepare(`SELECT p.*, l.service_requested, l.state lead_state, c.name contact_name, (SELECT COALESCE(SUM(amount),0) FROM payments WHERE proposal_id=p.id AND status='paid') paid_total, (SELECT COALESCE(SUM(amount),0) FROM payments WHERE proposal_id=p.id AND kind='refund' AND status='refunded') refunded_total FROM proposals p LEFT JOIN leads l ON l.id=p.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE p.workspace_id=? ORDER BY p.created_at DESC LIMIT 300`).all(ws(req)); res.json(rows); });
+  app.get("/api/proposals", requireAuth, modGate("proposals"), (req: any, res: any) => { const rows = db.prepare(`SELECT p.*, l.service_requested, l.state lead_state, c.name contact_name, (SELECT COALESCE(SUM(amount),0) FROM payments WHERE proposal_id=p.id AND status='paid') paid_total, (SELECT COALESCE(SUM(amount),0) FROM payments WHERE proposal_id=p.id AND kind='refund' AND status='refunded') refunded_total FROM proposals p LEFT JOIN leads l ON l.id=p.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE p.workspace_id=? ORDER BY p.created_at DESC LIMIT 300`).all(ws(req)); res.json(rows); });
   app.post("/api/proposals/:id/withdraw", requireAuth, approveGuard, (req: any, res: any) => {
     const p = db.prepare("SELECT * FROM proposals WHERE id=? AND workspace_id=?").get(req.params.id, ws(req)) as any;
     if (!p) return res.status(404).json({ error: { code: "not_found" } });
@@ -364,7 +393,7 @@ export function registerCrm(app: any, requireAuth: any, needPerm: any = null) {
     for (const f2 of db.prepare(`SELECT f.*, l.service_requested, c.name contact_name FROM followup_enrollments f LEFT JOIN leads l ON l.id=f.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE f.workspace_id=? AND f.status='active' AND date(f.next_due_at) BETWEEN date(?) AND date(?)`).all(ws(req), from, to) as any[]) ev.push({ id: "fu" + f2.id, date: String(f2.next_due_at).slice(0, 10), kind: "followup", title: `🔁 Follow-up step ${(f2.step_idx || 0) + 1}`, sub: `${f2.contact_name || ""} — ${f2.service_requested || ""}`, lead_id: f2.lead_id, ref_id: f2.id });
     for (const v of db.prepare(`SELECT v.*, l.service_requested, c.name contact_name FROM site_visits v LEFT JOIN leads l ON l.id=v.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE v.workspace_id=? AND date(v.scheduled_at) BETWEEN date(?) AND date(?)`).all(ws(req), from, to) as any[]) ev.push({ id: "sv" + v.id, date: String(v.scheduled_at).slice(0, 10), kind: "visit", title: "📍 Site visit", sub: `${v.contact_name || ""} — ${v.service_requested || ""}`, lead_id: v.lead_id, ref_id: v.id });
     for (const jb of db.prepare(`SELECT j.*, l.service_requested, ct.name contact_name FROM jobs j JOIN leads l ON l.id=j.lead_id LEFT JOIN contacts ct ON ct.id=l.contact_id WHERE j.workspace_id=? AND j.scheduled_start IS NOT NULL AND date(j.scheduled_start) BETWEEN date(?) AND date(?) AND j.stage NOT IN ('CANCELLED','CLOSED')`).all(ws(req), from, to) as any[]) ev.push({ id: "job" + jb.id, date: String(jb.scheduled_start).slice(0, 10), kind: "job", title: `🛠 Job — ${jb.service_requested || "Scheduled job"}`, sub: jb.contact_name || "", lead_id: jb.lead_id, job_id: jb.id, ref_id: jb.id, stage: jb.stage });
-    ev.sort((a, b) => a.date.localeCompare(b.date)); res.json(ev); });
+    const evF = filterAgenda(req.user, ev); evF.sort((a, b) => a.date.localeCompare(b.date)); res.json(evF); });
 
   // ----- Global search + favorites -----
   app.get("/api/search", requireAuth, (req: any, res: any) => { const q = String(req.query.q || "").trim(); if (q.length < 2) return res.json({ leads: [], jobs: [], accounts: [], people: [], tasks: [], campaigns: [], invoices: [], proposals: [] }); const like = "%" + q + "%"; const W = ws(req);
@@ -443,8 +472,8 @@ export function registerDocTemplates(app: any, requireAuth: any, needPerm: any =
 
 // ---------- v6: home command-center aggregate (article pattern: signals + agent state, assembled) ----------
 export function registerHome(app: any, requireAuth: any) {
-  app.get("/api/finances", requireAuth, (req: any, res: any) => { res.json(financialSummary(req.user.workspace_id)); });
-  app.get("/api/finances/drill/:key", requireAuth, (req: any, res: any) => { const d = financeDrill(req.user.workspace_id, String(req.params.key)); if (!d) return res.status(404).json({ error: { code: "bad_key" } }); for (const r of d.rows) { if (r.kind === "invoice" && r.invoice_id) { const inv = db.prepare("SELECT token FROM invoices WHERE id=?").get(r.invoice_id) as any; let tok = inv?.token; if (!tok) { tok = uid("invtok") + Math.random().toString(16).slice(2, 14); try { db.prepare("UPDATE invoices SET token=? WHERE id=? AND (token IS NULL OR token='')").run(tok, r.invoice_id); } catch {} } r.link = "/invoice/" + tok; } } const total = Math.round(d.rows.reduce((a: number, r: any) => a + (r.amount || 0), 0) * 100) / 100; res.json({ key: req.params.key, title: d.title, definition: d.definition, total, count: d.rows.length, rows: d.rows }); });
+  app.get("/api/finances", requireAuth, (req: any, res: any) => { if (!permsOf(req.user).can_money) return res.status(403).json({ error: { code: "money_denied", message: "Money figures are restricted by your access. The owner can change that in Settings → Access & Roles." } }); res.json(financialSummary(req.user.workspace_id)); });
+  app.get("/api/finances/drill/:key", requireAuth, (req: any, res: any) => { if (!permsOf(req.user).can_money) return res.status(403).json({ error: { code: "money_denied" } }); const d = financeDrill(req.user.workspace_id, String(req.params.key)); if (!d) return res.status(404).json({ error: { code: "bad_key" } }); for (const r of d.rows) { if (r.kind === "invoice" && r.invoice_id) { const inv = db.prepare("SELECT token FROM invoices WHERE id=?").get(r.invoice_id) as any; let tok = inv?.token; if (!tok) { tok = uid("invtok") + Math.random().toString(16).slice(2, 14); try { db.prepare("UPDATE invoices SET token=? WHERE id=? AND (token IS NULL OR token='')").run(tok, r.invoice_id); } catch {} } r.link = "/invoice/" + tok; } } const total = Math.round(d.rows.reduce((a: number, r: any) => a + (r.amount || 0), 0) * 100) / 100; res.json({ key: req.params.key, title: d.title, definition: d.definition, total, count: d.rows.length, rows: d.rows }); });
   // V39: EVERY agenda item can be completed where it sits, and completion
   // writes back to the master record and advances its workflow — a visit
   // completes the visit (and clears the job's gate), a crew day completes
@@ -453,6 +482,7 @@ export function registerHome(app: any, requireAuth: any) {
   // the month calendar and My Day can never drift apart.
   app.post("/api/calendar/complete", requireAuth, (req: any, res: any) => {
     const wsId = req.user.workspace_id; const kind = String(req.body?.kind || ""); let ref = String(req.body?.ref_id || "");
+    if (!agendaAllowed(req.user, kind, ref)) return res.status(403).json({ error: { code: "not_assigned", message: "This item isn't yours to complete — your access covers your own work. The owner can widen it in Settings → Access & Roles." } });
     const raw = (table: string) => { for (const cand of [ref, ref.replace(/^(cb|sch|fu|sv|job|tsk)/, "")]) { const r = db.prepare(`SELECT * FROM ${table} WHERE id=? AND workspace_id=?`).get(cand, wsId) as any; if (r) return r; } return null; };
     try {
       if (kind === "task") { const t = raw("tasks"); if (!t) return res.status(404).json({ error: { code: "not_found" } }); db.prepare("UPDATE tasks SET status='done', completed_at=?, completed_by=? WHERE id=?").run(now(), req.user.id, t.id); return res.json({ ok: true, message: "Task completed ✓" }); }
@@ -512,6 +542,6 @@ export function registerHome(app: any, requireAuth: any) {
     const propWeek = (db.prepare("SELECT COUNT(*) c FROM proposals WHERE workspace_id=? AND created_at>=date('now','-7 days') AND status IN ('sent','signed','viewed')").get(w) as any).c;
     const propTestWeek = (db.prepare("SELECT COUNT(*) c FROM proposals WHERE workspace_id=? AND created_at>=date('now','-7 days') AND status IN ('sent','signed','viewed') AND delivery_mode='test'").get(w) as any).c;
     const propWeekAll = (db.prepare("SELECT COUNT(*) c FROM proposals WHERE workspace_id=? AND created_at>=date('now','-7 days')").get(w) as any).c;
-    res.json({ activity_series: series, upcoming: up.slice(0, 200), untouched_count: untouchedCount, recently_assigned: recent, agent: { automations: wrow, runs, active_count: [wrow?.auto_score, wrow?.auto_assign, wrow?.auto_dedupe, wrow?.auto_reactivate].filter(Boolean).length }, proposals_sent_week: propWeek, proposals_test_week: propTestWeek, proposals_built_week: propWeekAll, finances: financialSummary(w) });
+    res.json({ activity_series: series, upcoming: filterAgenda(req.user, up).slice(0, 200), untouched_count: untouchedCount, recently_assigned: recent, agent: { automations: wrow, runs, active_count: [wrow?.auto_score, wrow?.auto_assign, wrow?.auto_dedupe, wrow?.auto_reactivate].filter(Boolean).length }, proposals_sent_week: propWeek, proposals_test_week: propTestWeek, proposals_built_week: propWeekAll, finances: permsOf(req.user).can_money ? financialSummary(w) : null });
   });
 }
