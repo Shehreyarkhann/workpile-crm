@@ -15,7 +15,37 @@ export function suppressionFor(workspaceId: string, channel: string, to: string)
   return db.prepare("SELECT * FROM suppressions WHERE workspace_id=? AND kind=? AND value=?").get(workspaceId, kind, value) || null;
 }
 
-export function queueMessage(workspaceId: string, m: { lead_id?: string; channel: "email" | "sms"; to: string; subject?: string; body: string }) {
+export type AttachRef = { kind: "attachment" | "proposal" | "invoice"; id: string; name?: string };
+export function validateAttachRefs(workspaceId: string, refs: any): AttachRef[] {
+  if (!Array.isArray(refs)) return [];
+  const out: AttachRef[] = [];
+  for (const r of refs.slice(0, 6)) {
+    if (!r || typeof r.id !== "string") continue;
+    if (r.kind === "attachment") { const a = db.prepare("SELECT id, name FROM attachments WHERE id=? AND workspace_id=?").get(r.id, workspaceId) as any; if (a) out.push({ kind: "attachment", id: a.id, name: a.name }); }
+    else if (r.kind === "proposal") { const p = db.prepare("SELECT id FROM proposals WHERE id=? AND workspace_id=?").get(r.id, workspaceId) as any; if (p) out.push({ kind: "proposal", id: p.id }); }
+    else if (r.kind === "invoice") { const i = db.prepare("SELECT id FROM invoices WHERE id=? AND workspace_id=?").get(r.id, workspaceId) as any; if (i) out.push({ kind: "invoice", id: i.id }); }
+  }
+  return out;
+}
+export async function resolveAttachments(workspaceId: string, refs: AttachRef[]): Promise<{ filename: string; content: string }[]> {
+  const { storageGet } = await import("./storage.ts");
+  const out: { filename: string; content: string }[] = [];
+  let total = 0;
+  for (const r of refs) {
+    try {
+      let buf: Buffer | null = null; let name = r.name || "file";
+      if (r.kind === "attachment") { const a = db.prepare("SELECT * FROM attachments WHERE id=? AND workspace_id=?").get(r.id, workspaceId) as any; if (!a) continue; buf = storageGet(a.storage_key); name = a.name; }
+      else if (r.kind === "proposal") { const { proposalDocx } = await import("./docx.ts"); const d = await proposalDocx(r.id); if (!d) continue; buf = d.buffer; name = d.filename; }
+      else if (r.kind === "invoice") { const { invoiceDocx } = await import("./docx.ts"); const inv = db.prepare("SELECT token FROM invoices WHERE id=?").get(r.id) as any; const d = await invoiceDocx(r.id, `${process.env.BASE_URL || ""}/invoice/${inv?.token || ""}`); if (!d) continue; buf = d.buffer; name = d.filename; }
+      if (!buf) continue;
+      total += buf.length; if (total > 6_000_000) break;
+      out.push({ filename: name, content: buf.toString("base64") });
+    } catch { /* a missing file never blocks the message */ }
+  }
+  return out;
+}
+
+export function queueMessage(workspaceId: string, m: { lead_id?: string; channel: "email" | "sms"; to: string; subject?: string; body: string; attachments?: AttachRef[] }) {
   const id = uid("msg");
   // Central send boundary (v17): SMS consent is enforced HERE so every caller — UI, nudge,
   // cadences, agent tools — inherits it. No path can text a lead that has not consented.
@@ -33,8 +63,8 @@ export function queueMessage(workspaceId: string, m: { lead_id?: string; channel
       .run(id, workspaceId, m.lead_id || null, m.channel, m.to, m.subject || null, m.body, `suppressed: ${sup.reason || sup.source || "on suppression list"}`, now());
     return id;
   }
-  db.prepare("INSERT INTO messages_outbox (id,workspace_id,lead_id,channel,to_addr,subject,body,created_at) VALUES (?,?,?,?,?,?,?,?)")
-    .run(id, workspaceId, m.lead_id || null, m.channel, m.to, m.subject || null, m.body, now());
+  db.prepare("INSERT INTO messages_outbox (id,workspace_id,lead_id,channel,to_addr,subject,body,attachments,created_at) VALUES (?,?,?,?,?,?,?,?,?)")
+    .run(id, workspaceId, m.lead_id || null, m.channel, m.to, m.subject || null, m.body, m.attachments && m.attachments.length ? JSON.stringify(m.attachments) : null, now());
   return id;
 }
 
@@ -48,7 +78,9 @@ export async function deliverMessage(id: string, fetchFn: FetchFn = fetch as any
   try {
     if (m.channel === "email") {
       if (!emailConfigured()) { db.prepare("UPDATE messages_outbox SET status='test_mode', provider='resend' WHERE id=?").run(id); return { ...m, status: "test_mode" }; }
-      const r = await fetchFn("https://api.resend.com/emails", { method: "POST", headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ from: ws.from_email ? `${ws.from_name || ws.name} <${ws.from_email}>` : `Workpile <noreply@workpile.io>`, ...(ws.reply_email ? { reply_to: ws.reply_email } : {}), to: [m.to_addr], subject: m.subject || "Message from " + ws.name, text: m.body + `\n\n—\n${ws.name} · You're receiving this because you requested a proposal or service from ${ws.name}. Reply STOP to stop follow-up messages.` }) });
+      let atts: { filename: string; content: string }[] = [];
+      try { if ((m as any).attachments) atts = await resolveAttachments(m.workspace_id, JSON.parse((m as any).attachments)); } catch { atts = []; }
+      const r = await fetchFn("https://api.resend.com/emails", { method: "POST", headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ from: ws.from_email ? `${ws.from_name || ws.name} <${ws.from_email}>` : `Workpile <noreply@workpile.io>`, ...(ws.reply_email ? { reply_to: ws.reply_email } : {}), to: [m.to_addr], subject: m.subject || "Message from " + ws.name, text: m.body + `\n\n—\n${ws.name} · You're receiving this because you requested a proposal or service from ${ws.name}. Reply STOP to stop follow-up messages.`, ...(atts.length ? { attachments: atts } : {}) }) });
       const j = await r.json().catch(() => ({}));
       if (r.status >= 200 && r.status < 300) { db.prepare("UPDATE messages_outbox SET status='sent', provider='resend', provider_id=?, sent_at=? WHERE id=?").run(j.id || "", now(), id); return { ...m, status: "sent" }; }
       throw new Error("Resend HTTP " + r.status + " " + JSON.stringify(j).slice(0, 120));
@@ -67,7 +99,7 @@ export async function deliverMessage(id: string, fetchFn: FetchFn = fetch as any
   }
 }
 
-export async function queueAndDeliver(workspaceId: string, m: { lead_id?: string; channel: "email" | "sms"; to: string; subject?: string; body: string }) {
+export async function queueAndDeliver(workspaceId: string, m: { lead_id?: string; channel: "email" | "sms"; to: string; subject?: string; body: string; attachments?: AttachRef[] }) {
   const id = queueMessage(workspaceId, m);
   return deliverMessage(id);
 }

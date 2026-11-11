@@ -334,14 +334,16 @@ function MessagesPanel({ lead }: any) {
   useEffect(loadF, []);
   const load = () => { api(`/api/leads/${lead.id}/messages`).then(setMsgs).catch(() => {}); };
   useEffect(load, []);
-  const send = async () => { const r = await api(`/api/leads/${lead.id}/message`, { method: "POST", body: { channel: ch, subject, body } }).catch((e: any) => ({ error: e.message })); if (r.error) { setNote("Not sent: " + r.error); return; } setNote(`Queued via ${ch} → status: ${r.status}${r.status === "test_mode" ? " (test mode — recorded in the outbox, not actually sent until provider keys are set)" : ""}`); setBody(""); setSubject(""); load(); };
+  const [att, setAtt] = useState<any[]>([]);
+  const send = async () => { const r = await api(`/api/leads/${lead.id}/message`, { method: "POST", body: { channel: ch, subject, body, attachments: ch === "email" ? att.map((x: any) => ({ kind: x.kind, id: x.id })) : [] } }).catch((e: any) => ({ error: e.message })); if (r.error) { setNote("Not sent: " + r.error); return; } setNote(`Queued via ${ch} → status: ${r.status}${r.status === "test_mode" ? " (test mode — recorded in the outbox, not actually sent until provider keys are set)" : ""}`); setBody(""); setSubject(""); setAtt([]); load(); };
   const activeFup = fups.find((f: any) => f.status === "active");
   return <div className="card"><h3 style={{ marginTop: 0 }}>Messages to {lead.contact_name || "customer"}</h3>
     {activeFup && <div className="ok" style={{ marginBottom: 10 }}>🔁 Automatic follow-ups running — step {(activeFup.step_idx || 0) + 1}, next nudge {dt(activeFup.next_due_at)}. Stops on signature or final outcome. <button className="btn ghost small" onClick={async () => { await api(`/api/leads/${lead.id}/followups/stop`, { method: "POST", body: {} }); loadF(); }}>Stop sequence</button></div>}
     <div className="chipRow"><button className={`chip ${ch === "email" ? "on" : ""}`} onClick={() => setCh("email")}>✉ Email {lead.contact_email || "(none on file)"}</button><button className={`chip ${ch === "sms" ? "on" : ""}`} onClick={() => setCh("sms")}>💬 SMS {lead.contact_phone || "(none)"}{lead.consent_contact_ok ? "" : " · no consent"}</button></div>
     {ch === "email" && <input placeholder="Subject" value={subject} onChange={e => setSubject(e.target.value)} style={{ marginBottom: 8 }} />}
     <textarea placeholder={ch === "sms" ? "Text message…" : "Message…"} value={body} onChange={e => setBody(e.target.value)} rows={4} style={{ width: "100%" }} />
-    <div className="rowflex" style={{ marginTop: 8 }}><button className="btn" disabled={!body.trim()} onClick={send}>Send {ch === "sms" ? "text" : "email"}</button><EnhanceBtn text={body} onText={setBody} purpose="customer message" />{note && <span className="muted">{note}</span>}</div>
+    {ch === "email" && <AttachPicker leadId={lead.id} value={att} onChange={setAtt} />}
+    <div className="rowflex" style={{ marginTop: 8 }}><button className="btn" disabled={!body.trim()} onClick={send}>Send {ch === "sms" ? "text" : "email"}{att.length && ch === "email" ? ` (${att.length} 📎)` : ""}</button><EnhanceBtn text={body} onText={setBody} purpose="customer message" />{note && <span className="muted">{note}</span>}</div>
     <h4 style={{ marginBottom: 6 }}>History</h4>
     {msgs.length === 0 && <p className="muted">Nothing sent yet.</p>}
     {msgs.map((m: any) => <p key={m.id} style={{ margin: "6px 0", borderBottom: "1px solid #eef2f7", paddingBottom: 6, ...(m.direction === "in" ? { background: "#f0f9ff", borderRadius: 8, padding: 8 } : {}) }}><b>{m.direction === "in" ? "↩ Customer reply" : m.channel === "sms" ? "💬" : "✉"} {m.direction === "in" ? "" : m.to_addr}</b> · <span className="tinyBadge">{m.status}</span> <span className="muted">{dt(m.created_at)}</span>{m.subject ? <><br /><b>{m.subject}</b></> : ""}<br /><span className="muted">{m.body.slice(0, 220)}</span></p>)}
@@ -647,15 +649,36 @@ function EnhanceBtn({ text, onText, purpose }: any) {
   return <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}><button className="btn ghost small" disabled={!String(text || "").trim() || busy} onClick={go}>{busy ? "✨ Enhancing…" : "✨ Enhance with AI"}</button>{note && <span className="muted" style={{ fontSize: 12 }}>{note}</span>}</span>;
 }
 
+function AttachPicker({ leadId, value, onChange }: any) {
+  const [open, setOpen] = useState(false); const [groups, setGroups] = useState<any>(null);
+  useEffect(() => { if (open && !groups) { api("/api/attachables" + (leadId ? "?lead_id=" + leadId : "")).then(setGroups).catch(() => {}); } }, [open ]);
+  const add = (x: any) => { if (!value.some((v: any) => v.kind === x.kind && v.id === x.id)) onChange([...value, { kind: x.kind, id: x.id, label: x.label, why: x.why }]); };
+  const upload = async (f: File) => { const buf = await f.arrayBuffer(); const bytes = new Uint8Array(buf); let bin = ""; for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192)); const b64 = btoa(bin);
+    let et = "workspace", eid = ""; if (leadId) { et = "lead"; eid = leadId; } else { const w = await api("/api/workspaces"); eid = w.current; }
+    const r = await api("/api/attachments", { method: "POST", body: { entity_type: et, entity_id: eid, name: f.name, mime: f.type || "application/octet-stream", data_base64: b64 } });
+    add({ kind: "attachment", id: r.id, label: f.name }); setGroups(null); toast("File attached ✓"); };
+  const grp = (title: string, rows: any[]) => rows && rows.length ? <div style={{ marginTop: 8 }}><div className="muted" style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: ".05em" }}>{title}</div>{rows.map((x: any) => <div key={x.kind + x.id} className="rowflex" style={{ padding: "3px 0" }}><button className="btn ghost small" onClick={() => add(x)}>+ {x.label}</button><span className="muted">{x.detail || ""}</span></div>)}</div> : null;
+  return (<div style={{ marginTop: 8 }}>
+    <div className="rowflex">{value.map((v: any) => <span key={v.kind + v.id} className="chip on" title={v.why || ""} style={{ cursor: "default" }}>📎 {v.label}{v.why ? " · AI" : ""} <b style={{ cursor: "pointer" }} onClick={() => onChange(value.filter((x: any) => !(x.kind === v.kind && x.id === v.id)))}>×</b></span>)}
+      <button className="btn ghost small" onClick={() => setOpen(o => !o)}>📎 Attach</button></div>
+    {open && <div className="card" style={{ marginTop: 8, padding: "10px 14px" }}>
+      <label className="btn ghost small" style={{ cursor: "pointer" }}>⬆ Upload a file<input type="file" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) upload(f); e.target.value = ""; }} /></label>
+      {!groups && <p className="muted">Loading documents…</p>}
+      {groups && <>{grp("COMPANY DOCUMENTS", groups.company)}{grp("FILES ON THIS RECORD", groups.files)}{grp("PROPOSALS", groups.proposals)}{grp("INVOICES", groups.invoices)}</>}
+      <p className="muted" style={{ marginTop: 8 }}>Pick from this record or the company vault — the file is attached to the email when you send. AI-suggested attachments are marked "AI" with the reason on hover.</p>
+    </div>}
+  </div>);
+}
+
 function InboxQueue({ inbox, reload }: any) {
-  const [cat, setCat] = useState("all"); const [openId, setOpenId] = useState(""); const [sug, setSug] = useState<any>(null); const [draft, setDraft] = useState(""); const [msg, setMsg] = useState("");
+  const [cat, setCat] = useState("all"); const [openId, setOpenId] = useState(""); const [sug, setSug] = useState<any>(null); const [draft, setDraft] = useState(""); const [msg, setMsg] = useState(""); const [att, setAtt] = useState<any[]>([]);
   const cats = ["all", "client_active_job", "proposal", "field", "vendor", "finance", "admin"];
   const counts: Record<string, number> = {}; for (const i of inbox) if ((i.status || "open") === "open") counts[i.category] = (counts[i.category] || 0) + 1;
   const openCount = inbox.filter((i: any) => (i.status || "open") === "open").length;
   const shown = inbox.filter((i: any) => cat === "all" || i.category === cat);
   const [comments, setComments] = useState<any[]>([]); const [canned, setCanned] = useState<any[]>([]); const [cText, setCText] = useState("");
   useEffect(() => { api("/api/canned-replies").then(setCanned).catch(() => {}); }, []);
-  const expand = async (i: any) => { if (openId === i.id) { setOpenId(""); return; } setOpenId(i.id); setSug(null); const r = await api("/api/inbox/" + i.id + "/suggestion").catch(() => null); setSug(r); if (r) setDraft(r.draft_body); api("/api/inbox/" + i.id + "/claim", { method: "POST", body: {} }).catch(() => {}); api("/api/inbox/" + i.id + "/comments").then(setComments).catch(() => {}); };
+  const expand = async (i: any) => { if (openId === i.id) { setOpenId(""); return; } setOpenId(i.id); setSug(null); setAtt([]); const r = await api("/api/inbox/" + i.id + "/suggestion").catch(() => null); setSug(r); if (r) { setDraft(r.draft_body); setAtt((r.attachments || []).map((x: any) => ({ kind: x.kind, id: x.id, label: x.label, why: x.why }))); } api("/api/inbox/" + i.id + "/claim", { method: "POST", body: {} }).catch(() => {}); api("/api/inbox/" + i.id + "/comments").then(setComments).catch(() => {}); };
   const act = async (fn: () => Promise<any>, okMsg: string) => { const r = await fn().catch((e: any) => ({ error: e.message })); setMsg(r?.error ? "Failed: " + r.error : okMsg); reload(); };
   return (<div className="card"><h3>Inbox queue — everything that isn't a lead, worked like a queue</h3>
     <p className="muted">Triaged on arrival, each with an owner, a due date, and an AI-suggested next action with a ready-to-send reply. {openCount} open.</p>
@@ -670,8 +693,10 @@ function InboxQueue({ inbox, reload }: any) {
           <label className="f">Reply — edit freely, sends from your workspace</label>
           <textarea rows={7} value={draft} onChange={e => setDraft(e.target.value)} />
           <div className="rowflex"><select style={{ width: 230 }} defaultValue="" onChange={e => { const c = canned.find((x: any) => x.id === e.target.value); if (c) setDraft(c.body); e.target.value = ""; }}><option value="">Insert a canned reply…</option>{canned.map((c: any) => <option key={c.id} value={c.id}>{c.title}</option>)}</select><EnhanceBtn text={draft} onText={setDraft} purpose="email reply" />{i.claimed_by && <span className="tinyBadge">👀 being handled</span>}</div>
+          <AttachPicker leadId={i.lead_id || null} value={att} onChange={setAtt} />
+          {att.some((x: any) => x.why) && <p className="muted" style={{ margin: "4px 0 0" }}>🤖 AI pre-attached {att.filter((x: any) => x.why).map((x: any) => `${x.label} (${x.why.toLowerCase()})`).join("; ")} — review before sending; remove anything you don't want sent.</p>}
           <div className="rowflex" style={{ marginTop: 8 }}>
-            <button className="btn small" onClick={() => act(async () => { const r = await api("/api/inbox/" + i.id + "/reply", { method: "POST", body: { body: draft } }); return r; }, "Reply queued/sent ✓ — item closed")}>✉ Send reply & close</button>
+            <button className="btn small" onClick={() => act(async () => { const r = await api("/api/inbox/" + i.id + "/reply", { method: "POST", body: { body: draft, attachments: att.map((x: any) => ({ kind: x.kind, id: x.id })) } }); return r; }, "Reply queued/sent ✓ — item closed")}>✉ Send reply & close{att.length ? ` (${att.length} 📎)` : ""}</button>
             {!doneIt ? <button className="btn ghost small" onClick={() => act(() => api("/api/inbox/" + i.id, { method: "PATCH", body: { status: "done" } }), "Marked done ✓")}>✓ Mark done</button> : <button className="btn ghost small" onClick={() => act(() => api("/api/inbox/" + i.id, { method: "PATCH", body: { status: "open" } }), "Reopened ✓")}>Reopen</button>}
             <button className="btn ghost small" onClick={() => act(() => api("/api/inbox/" + i.id, { method: "PATCH", body: { snooze_days: 1 } }), "Snoozed to tomorrow ✓")}>💤 Snooze 1d</button>
             <button className="btn ghost small" onClick={() => act(() => api("/api/inbox/" + i.id + "/convert-task", { method: "POST", body: {} }), "Task created for the owner ✓")}>Make task</button>
@@ -2290,10 +2315,24 @@ function Planner({ openLead, tabSignal }: any) {
   </div>);
 }
 
+function CompanyDocsCard() {
+  const [docs, setDocs] = useState<any[]>([]); const [wsId, setWsId] = useState("");
+  const load = () => { api("/api/workspaces").then((w: any) => { setWsId(w.current); return api(`/api/attachments?entity_type=workspace&entity_id=${w.current}`); }).then(setDocs).catch(() => {}); };
+  useEffect(() => { load(); }, []);
+  const upload = async (f: File) => { const buf = await f.arrayBuffer(); const bytes = new Uint8Array(buf); let bin = ""; for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192)); await api("/api/attachments", { method: "POST", body: { entity_type: "workspace", entity_id: wsId, name: f.name, mime: f.type || "application/octet-stream", data_base64: btoa(bin) } }); toast("Company document saved ✓"); load(); };
+  return (<div className="card" style={{ marginBottom: 14 }}><h3 style={{ marginTop: 0 }}>🏢 Company documents — the vault</h3>
+    <p className="muted">Your W-9, insurance certificate, licenses and any document customers ask for. Kept once, here — the AI attaches the right one to email replies automatically, and every client file lists what's on file.</p>
+    {docs.map(d => <div key={d.id} className="rowflex" style={{ padding: "4px 0", borderTop: "1px solid #eef2f7" }}><span style={{ flex: 1 }}>📄 <b>{d.name}</b> <span className="muted">· {Math.max(1, Math.round((d.size || 0) / 1024))} KB · {new Date(d.created_at).toLocaleDateString()}</span></span><a className="btn ghost small" href={`/api/attachments/${d.id}/download`}>⬇ Download</a><button className="btn ghost small" onClick={async () => { if (confirm("Remove " + d.name + " from the vault?")) { await api("/api/attachments/" + d.id, { method: "DELETE" }); load(); } }}>Remove</button></div>)}
+    {docs.length === 0 && <p className="muted">Nothing here yet — upload your W-9 first; it's the document customers ask for most.</p>}
+    <label className="btn" style={{ cursor: "pointer", marginTop: 8, display: "inline-block" }}>⬆ Upload a company document<input type="file" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) upload(f); e.target.value = ""; }} /></label>
+  </div>);
+}
+
 function Library({ openLead, openJob, openCustomer, tabSignal }: any) {
   const [tab, setTab] = useState("notes");
   useEffect(() => { if (tabSignal?.view === "library" && tabSignal.tab) setTab(tabSignal.tab); }, [tabSignal]);
   return (<div><h2 className="pt">Library</h2><p className="sub">Notes and files from every record, in one place.</p>
+    <CompanyDocsCard />
     <div className="tabs"><button className={tab === "notes" ? "on" : ""} onClick={() => setTab("notes")}>Notes</button><button className={tab === "files" ? "on" : ""} onClick={() => setTab("files")}>Files & Documents</button></div>
     {tab === "notes" ? <NotesApp openLead={openLead} openJob={openJob} openCustomer={openCustomer} embedded /> : <FilesApp openLead={openLead} openJob={openJob} embedded />}
   </div>);
@@ -2325,7 +2364,8 @@ function CustomerDetail({ id, close, openLead, openJob }: any) {
   if (!d) return <div className="modalWrap"><div className="modal">Loading customer…</div></div>;
   const a = d.account;
   return (<div className="modalWrap"><div className="modal">
-    <div className="rowflex" style={{ justifyContent: "space-between" }}><h3 style={{ margin: 0 }}>{a.name}</h3><button className="btn ghost small" onClick={close}>✕ Close</button></div>
+    <div className="rowflex" style={{ justifyContent: "space-between" }}><h3 style={{ margin: 0 }}>{a.name}</h3><span className="rowflex"><button className="btn small" onClick={() => window.open("/api/accounts/" + id + "/dossier", "_blank")}>📁 Client file — print / download</button><button className="btn ghost small" onClick={close}>✕ Close</button></span></div>
+    <p className="muted" style={{ margin: "4px 0 0" }}>The client file is the complete, linked record for this customer — every lead, job, site visit, proposal, invoice, payment, document and file — arranged for printing or saving as PDF when you need proof (W-9 requests, old invoices, job disputes).</p>
     <p className="muted" style={{ margin: "6px 0" }}>{a.phone || ""} {a.email ? "· " + a.email : ""} {a.address ? "· " + a.address : ""} · customer since {dOnly(a.created_at)} · <b style={{ color: "#14532d" }}>lifetime value {money(d.lifetime_value)}</b></p>
     <div className="formgrid"><div><label className="f">Phone</label><input defaultValue={a.phone || ""} id="ca_phone" /></div><div><label className="f">Email</label><input defaultValue={a.email || ""} id="ca_email" /></div><div><label className="f">Industry / type</label><input defaultValue={a.industry || ""} id="ca_ind" /></div><div><label className="f">Website</label><input defaultValue={a.website || ""} id="ca_web" /></div></div>
     <button className="btn ghost small" style={{ marginTop: 8 }} onClick={async () => { await api("/api/accounts/" + id, { method: "PATCH", body: { phone: (document.getElementById("ca_phone") as HTMLInputElement).value, email: (document.getElementById("ca_email") as HTMLInputElement).value, industry: (document.getElementById("ca_ind") as HTMLInputElement).value, website: (document.getElementById("ca_web") as HTMLInputElement).value } }); load(); }}>Save customer details</button>

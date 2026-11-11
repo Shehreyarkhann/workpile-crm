@@ -1265,11 +1265,27 @@ app.patch("/api/inbox/:id", requireAuth, (req: any, res) => {
   if (b.snooze_days) db.prepare("UPDATE inbox_items SET next_action_due_at=? WHERE id=?").run(new Date(Date.now() + Number(b.snooze_days) * 86400000).toISOString(), it.id);
   res.json(db.prepare("SELECT * FROM inbox_items WHERE id=?").get(it.id));
 });
+app.get("/api/attachables", requireAuth, (req: any, res) => {
+  const wsId = req.user.workspace_id; const leadId = String(req.query.lead_id || "");
+  const groups: any = { files: [], proposals: [], invoices: [], company: [] };
+  groups.company = (db.prepare("SELECT id, name, size, created_at FROM attachments WHERE workspace_id=? AND entity_type='workspace' ORDER BY created_at DESC").all(wsId) as any[]).map(f => ({ kind: "attachment", id: f.id, label: f.name, detail: "Company document" }));
+  if (leadId) {
+    const lead = db.prepare("SELECT id FROM leads WHERE id=? AND workspace_id=?").get(leadId, wsId) as any;
+    if (lead) {
+      const jobIds = (db.prepare("SELECT id FROM jobs WHERE lead_id=?").all(leadId) as any[]).map(j => j.id);
+      const ents = [leadId, ...jobIds];
+      groups.files = (db.prepare(`SELECT id, name, entity_type, size, created_at FROM attachments WHERE workspace_id=? AND entity_id IN (${ents.map(() => "?").join(",")}) ORDER BY created_at DESC`).all(wsId, ...ents) as any[]).map(f => ({ kind: "attachment", id: f.id, label: f.name, detail: f.entity_type === "job" ? "Job file" : "Lead file" }));
+      groups.proposals = (db.prepare("SELECT id, number, status, total FROM proposals WHERE workspace_id=? AND lead_id=? ORDER BY version DESC").all(wsId, leadId) as any[]).map(p => ({ kind: "proposal", id: p.id, label: `Proposal ${p.number ? "PROP-" + p.number : ""} (DOCX)`, detail: `${p.status} · $${Number(p.total || 0).toFixed(2)}` }));
+      groups.invoices = (db.prepare("SELECT id, number, status, total, paid_amount FROM invoices WHERE workspace_id=? AND lead_id=? AND status<>'void' ORDER BY created_at DESC").all(wsId, leadId) as any[]).map(i => ({ kind: "invoice", id: i.id, label: `Invoice ${i.number} (DOCX)`, detail: `${i.status} · $${Number(i.total || 0).toFixed(2)}` }));
+    }
+  }
+  res.json(groups);
+});
 app.post("/api/inbox/:id/reply", requireAuth, async (req: any, res) => {
   const it = db.prepare("SELECT * FROM inbox_items WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!it) return res.status(404).json({ error: { code: "not_found" } });
   if (!it.from_email) return res.status(422).json({ error: { code: "no_sender_email" } });
-  const r = await sendInboxReply(req.user.workspace_id, it, req.body.body ? String(req.body.body) : undefined, req.body.subject ? String(req.body.subject) : undefined);
+  const r = await sendInboxReply(req.user.workspace_id, it, req.body.body ? String(req.body.body) : undefined, req.body.subject ? String(req.body.subject) : undefined, req.body.attachments);
   res.json({ sent: true, status: r.status });
 });
 app.post("/api/inbox/:id/convert-lead", requireAuth, (req: any, res) => {
@@ -1545,7 +1561,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v35", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
+app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v36", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {
   const target = db.prepare("SELECT * FROM users WHERE id=?").get(String(req.body?.user_id || "")) as any;
@@ -1941,7 +1957,9 @@ app.post("/api/leads/:id/message", requireAuth, async (req: any, res) => {
   const to = channel === "sms" ? v.contact_phone : v.contact_email;
   if (!to) return res.status(422).json({ error: { code: "no_destination", message: `Lead has no ${channel === "sms" ? "phone" : "email"} on file` } });
   if (channel === "sms" && !l.consent_contact_ok) return res.status(422).json({ error: { code: "consent_required", message: "TCPA: this lead has not consented to text messages" } });
-  const r: any = await queueAndDeliver(req.user.workspace_id, { lead_id: l.id, channel, to, subject: req.body.subject, body: String(req.body.body || "") });
+  const { validateAttachRefs } = await import("./comms.ts");
+  const refs = channel === "email" ? validateAttachRefs(req.user.workspace_id, req.body.attachments) : [];
+  const r: any = await queueAndDeliver(req.user.workspace_id, { lead_id: l.id, channel, to, subject: req.body.subject, body: String(req.body.body || ""), attachments: refs });
   logEvent(req.user.workspace_id, l.id, req.user.id, "message_" + channel, null, null, { status: r.status, to });
   res.status(201).json({ id: r.id, status: r.status, channel, to });
 });

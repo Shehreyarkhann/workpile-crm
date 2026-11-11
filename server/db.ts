@@ -96,6 +96,8 @@ export function initSchema() {
     "ALTER TABLE users ADD COLUMN disabled INTEGER DEFAULT 0",
     "ALTER TABLE subscriptions ADD COLUMN source TEXT DEFAULT 'stripe'",
     "CREATE TABLE IF NOT EXISTS platform_audit (id TEXT PRIMARY KEY, admin_id TEXT, admin_email TEXT, action TEXT, target_type TEXT, target_id TEXT, workspace_id TEXT, detail TEXT, created_at TEXT)",
+    "ALTER TABLE messages_outbox ADD COLUMN attachments TEXT",
+    "ALTER TABLE inbox_items ADD COLUMN ai_attach TEXT",
     "ALTER TABLE proposals ADD COLUMN number INTEGER",
     "ALTER TABLE workspaces ADD COLUMN reply_email TEXT",
     "ALTER TABLE inbox_items ADD COLUMN escalated_at TEXT",
