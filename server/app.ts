@@ -604,11 +604,11 @@ app.post("/api/timesheets", requireAuth, (req: any, res) => {
     .run(now(), hours, days ? JSON.stringify(days) : null, String(b.notes || ""), ws, managerId, week);
   res.json(db.prepare("SELECT * FROM timesheets WHERE workspace_id=? AND manager_id=? AND week_of=?").get(ws, managerId, week));
 });
-app.post("/api/timesheets/:id/chase", requireAuth, (req: any, res) => {
+app.post("/api/timesheets/:id/chase", requireAuth, async (req: any, res) => {
   const row = db.prepare("SELECT * FROM timesheets WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!row) return res.status(404).json({ error: { code: "not_found" } });
-  chaseRow(row);
-  res.json({ chased: true });
+  const r = await chaseRow(row);
+  res.json({ chased: true, delivery: r.delivery, message: r.message });
 });
 app.get("/api/timesheets/export", requireAuth, needPerm("can_export"), (req: any, res) => {
   const ws = req.user.workspace_id; const week = String(req.query.week || weekStartOf(new Date()));
@@ -637,11 +637,11 @@ app.post("/api/field-reports/:id/submit", requireAuth, (req: any, res) => {
   db.prepare("UPDATE field_reports SET status='submitted', submitted_at=?, notes=COALESCE(?,notes), lead_id=COALESCE(?,lead_id) WHERE id=?").run(now(), b.notes ?? null, b.lead_id ?? null, r.id);
   res.json(db.prepare("SELECT * FROM field_reports WHERE id=?").get(r.id));
 });
-app.post("/api/field-reports/:id/chase", requireAuth, (req: any, res) => {
+app.post("/api/field-reports/:id/chase", requireAuth, async (req: any, res) => {
   const r = db.prepare("SELECT * FROM field_reports WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!r) return res.status(404).json({ error: { code: "not_found" } });
-  chaseReport(r);
-  res.json({ chased: true });
+  const out = await chaseReport(r);
+  res.json({ chased: true, delivery: out.delivery, message: out.message });
 });
 // ---------- slice 23: crew scheduling ----------
 app.get("/api/schedule/jobs", requireAuth, (req: any, res) => {
@@ -1030,20 +1030,50 @@ app.patch("/api/jobs/:id", requireAuth, (req: any, res) => {
   res.json(jobView(db.prepare("SELECT * FROM jobs WHERE id=?").get(j.id)));
 });
 // ---------- v3 slice 35 (server core): job packet + change orders + invoice handoff ----------
-app.post("/api/jobs/:id/packet", requireAuth, async (req: any, res) => {
-  const j = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
-  if (!j) return res.status(404).json({ error: { code: "not_found" } });
+function buildPacket(req: any, j: any) {
   const v = jobView(j);
   const docs = db.prepare("SELECT name, status FROM documents WHERE job_id=? OR lead_id=?").all(j.id, j.lead_id) as any[];
   const sched = db.prepare("SELECT work_date FROM job_schedule WHERE lead_id=? ORDER BY work_date LIMIT 3").all(j.lead_id) as any[];
-  const channel = req.body.channel === "sms" ? "sms" : "email";
-  const to = String(req.body.to || (channel === "sms" ? v.contact_phone : v.contact_email) || "");
-  if (!to) return res.status(422).json({ error: { code: "no_destination", message: channel === "sms" ? "This customer has no phone number on file — add one to the lead first." : "This customer has no email address on file — add one to the lead first." } });
   const ws = db.prepare("SELECT name FROM workspaces WHERE id=?").get(req.user.workspace_id) as any;
+  const subject = `Your job with ${ws.name} — ${v.service_requested}`;
   const body = `${ws.name} — job packet for ${v.contact_name}\nService: ${v.service_requested}\nSite: ${v.location || "—"}\nJob value: $${v.value}\nScheduled: ${sched.map(s => s.work_date).join(", ") || "to be scheduled"}\nPaperwork: ${docs.length ? docs.map(d => `${d.name} (${d.status})`).join("; ") : "none outstanding"}\nQuestions? Reply here and we'll take care of it.`;
-  const r: any = await queueAndDeliver(req.user.workspace_id, { lead_id: j.lead_id, channel, to, subject: `Your job with ${ws.name} — ${v.service_requested}`, body });
+  const prop = db.prepare("SELECT * FROM proposals WHERE lead_id=? ORDER BY version DESC LIMIT 1").get(j.lead_id) as any;
+  const inv = db.prepare("SELECT * FROM invoices WHERE job_id=? AND status<>'void' ORDER BY created_at DESC LIMIT 1").get(j.id) as any;
+  const includes: any[] = [{ kind: "summary", name: "Job packet summary" }];
+  if (prop) includes.push({ kind: "proposal", name: `Proposal ${prop.number ? "PROP-" + prop.number : ""} (DOCX)` });
+  if (inv) includes.push({ kind: "invoice", name: `Invoice ${inv.number} (DOCX)` });
+  return { v, ws, subject, body, prop, inv, includes };
+}
+app.post("/api/jobs/:id/packet", requireAuth, async (req: any, res) => {
+  const j = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!j) return res.status(404).json({ error: { code: "not_found" } });
+  const pk = buildPacket(req, j);
+  const channel = req.body.channel === "sms" ? "sms" : "email";
+  const to = String(req.body.to || (channel === "sms" ? pk.v.contact_phone : pk.v.contact_email) || "");
+  if (!to) return res.status(422).json({ error: { code: "no_destination", message: channel === "sms" ? "This customer has no phone number on file — add one to the lead first." : "This customer has no email address on file — add one to the lead first." } });
+  const r: any = await queueAndDeliver(req.user.workspace_id, { lead_id: j.lead_id, channel, to, subject: pk.subject, body: pk.body });
   db.prepare("UPDATE jobs SET packet_sent_at=?, updated_at=? WHERE id=?").run(now(), now(), j.id);
   res.status(201).json({ status: r.status, channel, to });
+});
+app.post("/api/jobs/:id/packet/preview", requireAuth, (req: any, res) => {
+  const j = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!j) return res.status(404).json({ error: { code: "not_found" } });
+  const pk = buildPacket(req, j);
+  if (!pk.v.contact_email) return res.status(422).json({ error: { code: "no_destination", message: "This customer has no email address on file — add one to the lead first, or download the packet and send it yourself." } });
+  res.json({ to: pk.v.contact_email, to_name: pk.v.contact_name, subject: pk.subject, body: pk.body, includes: pk.includes, email_test_mode: !process.env.RESEND_API_KEY });
+});
+app.get("/api/jobs/:id/packet/download", requireAuth, async (req: any, res) => {
+  const j = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!j) return res.status(404).json({ error: { code: "not_found" } });
+  const pk = buildPacket(req, j);
+  const { zipBundle } = await import("./zip.ts");
+  const files: { name: string; data: Buffer }[] = [{ name: "job-packet.txt", data: Buffer.from(`${pk.subject}\n\n${pk.body}\n`, "utf8") }];
+  if (pk.prop) { const out = await proposalDocx(pk.prop.id); if (out) files.push({ name: out.filename, data: out.buffer }); }
+  if (pk.inv) { const tok = ensureInvoiceToken(pk.inv); const out = await invoiceDocx(pk.inv.id, `${req.protocol}://${req.get("host")}/invoice/${tok}`); if (out) files.push({ name: out.filename, data: out.buffer }); }
+  db.prepare("UPDATE jobs SET packet_sent_at=?, updated_at=? WHERE id=?").run(now(), now(), j.id);
+  const slug = String(pk.v.service_requested || "job").replace(/\W+/g, "-").toLowerCase();
+  res.setHeader("Content-Type", "application/zip"); res.setHeader("Content-Disposition", `attachment; filename="job-packet-${slug}.zip"`);
+  res.send(zipBundle(files));
 });
 app.post("/api/jobs/:id/change-orders", requireAuth, (req: any, res) => {
   const j = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
@@ -1562,7 +1592,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v37", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
+app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v37.1", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {
   const target = db.prepare("SELECT * FROM users WHERE id=?").get(String(req.body?.user_id || "")) as any;

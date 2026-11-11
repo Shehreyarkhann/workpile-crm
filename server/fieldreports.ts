@@ -22,13 +22,27 @@ export function ensureDay(ws: string, date: string): number {
   }
   return created;
 }
-export function chaseReport(row: any) {
+export async function chaseReport(row: any): Promise<{ delivery: string; message: string }> {
+  let name = "the field manager"; let email: string | null = null;
+  if (row.worker_id) { const w = db.prepare("SELECT * FROM workers WHERE id=?").get(row.worker_id) as any; if (w) { name = w.name; if (w.linked_user_id) { const u = db.prepare("SELECT email FROM users WHERE id=?").get(w.linked_user_id) as any; email = (u && u.email) || null; } } }
+  if (row.manager_id) { const u = db.prepare("SELECT name, email FROM users WHERE id=?").get(row.manager_id) as any; if (u) { if (!row.worker_id) name = u.name; if (!email) email = u.email || null; } }
+  let delivery = "recorded"; let emailed = "";
+  if (email) {
+    try { const { queueAndDeliver } = await import("./comms.ts"); const ws = db.prepare("SELECT name FROM workspaces WHERE id=?").get(row.workspace_id) as any;
+      const r: any = await queueAndDeliver(row.workspace_id, { channel: "email", to: email, subject: `Field report missing — ${row.report_date}`, body: `Hi ${name},\n\nYour daily field report for ${row.report_date} hasn't been submitted yet. Please file it in Workpile (Ops Console → Field reports) or tell the office what to file for you.\n\n— ${ws ? ws.name : "Workpile"}` });
+      delivery = r.status === "test_mode" ? "test_mode" : "emailed"; emailed = email;
+    } catch { delivery = "recorded"; }
+  }
   if (row.manager_id) notify(row.workspace_id, [row.manager_id], "field_report_missing", `📋 Field report missing — ${row.report_date}`, "Your daily field report for that date hasn't been submitted. Open Workpile → Ops Console → Field reports to file it.", undefined, { type: "ops", id: "field-reports" });
-  notifyOwners(row.workspace_id, "field_report_missing", `📋 Field report still missing: ${row.report_date}`, "A field manager's daily report is outstanding — it was just chased automatically.");
+  notifyOwners(row.workspace_id, "field_report_missing", `📋 Field report still missing: ${row.report_date}`, "A field manager's daily report is outstanding — it was just chased.");
   db.prepare("UPDATE field_reports SET chased_at=? WHERE id=?").run(now(), row.id);
+  const message = delivery === "emailed" ? `Chase emailed to ${name} (${emailed}) ✓`
+    : delivery === "test_mode" ? `Chase for ${name} recorded — email is in test mode, so it was NOT delivered. ${row.manager_id ? "They were also notified in the app." : "Chase them directly or link them to a login."}`
+    : `Chase recorded for ${name} — no email on file for them, so nothing was emailed. The owners were notified; chase them directly or link them to a login.`;
+  return { delivery, message };
 }
-export function chaseMissingReports(): { chased: number } {
+export async function chaseMissingReports(): Promise<{ chased: number }> {
   const rows = db.prepare("SELECT * FROM field_reports WHERE status='missing' AND report_date<? AND chased_at IS NULL").all(todayStr()) as any[];
-  for (const r of rows) { try { chaseReport(r); } catch { /* keep sweeping */ } }
+  for (const r of rows) { try { await chaseReport(r); } catch { /* keep sweeping */ } }
   return { chased: rows.length };
 }

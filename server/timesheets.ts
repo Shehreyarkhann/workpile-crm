@@ -33,15 +33,32 @@ export function ensureWeek(ws: string, weekOf: string): number {
   }
   return created;
 }
-export function chaseRow(row: any) {
+export async function chaseRow(row: any): Promise<{ delivery: string; message: string }> {
+  // Resolve WHO is being chased and whether any channel can actually reach
+  // them. A roster worker with no linked login has no email and no in-app
+  // inbox — the honest outcome then is "recorded", never "sent".
+  let name = "the worker"; let email: string | null = null;
+  if (row.worker_id) { const w = db.prepare("SELECT * FROM workers WHERE id=?").get(row.worker_id) as any; if (w) { name = w.name; if (w.linked_user_id) { const u = db.prepare("SELECT email FROM users WHERE id=?").get(w.linked_user_id) as any; email = (u && u.email) || null; } } }
+  if (row.manager_id) { const u = db.prepare("SELECT name, email FROM users WHERE id=?").get(row.manager_id) as any; if (u) { if (!row.worker_id) name = u.name; if (!email) email = u.email || null; } }
+  let delivery = "recorded"; let emailed = "";
+  if (email) {
+    try { const { queueAndDeliver } = await import("./comms.ts"); const ws = db.prepare("SELECT name FROM workspaces WHERE id=?").get(row.workspace_id) as any;
+      const r: any = await queueAndDeliver(row.workspace_id, { channel: "email", to: email, subject: `Timesheet missing — week of ${row.week_of}`, body: `Hi ${name},\n\nYour timesheet for the week of ${row.week_of} hasn't been logged yet. Please log your hours in Workpile (Ops Console → Timesheets) or tell the office your hours so they can file them for you.\n\n— ${ws ? ws.name : "Workpile"}` });
+      delivery = r.status === "test_mode" ? "test_mode" : "emailed"; emailed = email;
+    } catch { delivery = "recorded"; }
+  }
   if (row.manager_id) notify(row.workspace_id, [row.manager_id], "timesheet_missing", `⏱ Timesheet missing — week of ${row.week_of}`, "Your timesheet for that week hasn't been logged. Open Workpile → Ops Console → Timesheets to log your hours.", undefined, { type: "ops", id: "timesheets" });
-  notifyOwners(row.workspace_id, "timesheet_missing", `⏱ Timesheet still missing: week of ${row.week_of}`, "A worker's timesheet is outstanding — it was just chased automatically.", undefined, { type: "ops", id: "timesheets" });
+  notifyOwners(row.workspace_id, "timesheet_missing", `⏱ Timesheet still missing: week of ${row.week_of}`, "A worker's timesheet is outstanding — it was just chased.", undefined, { type: "ops", id: "timesheets" });
   db.prepare("UPDATE timesheets SET chased_at=? WHERE id=?").run(now(), row.id);
+  const message = delivery === "emailed" ? `Chase emailed to ${name} (${emailed}) ✓`
+    : delivery === "test_mode" ? `Chase for ${name} recorded — email is in test mode, so it was NOT delivered. ${row.manager_id ? "They were also notified in the app." : "Ask them to add an email, or chase them directly."}`
+    : `Chase recorded for ${name} — no email on file for them, so nothing was emailed. The owners were notified; chase them directly or link them to a login.`;
+  return { delivery, message };
 }
-export function chaseMissing(): { chased: number } {
+export async function chaseMissing(): Promise<{ chased: number }> {
   const thisWeek = weekStartOf(new Date());
   const rows = db.prepare("SELECT * FROM timesheets WHERE status='missing' AND week_of<? AND chased_at IS NULL").all(thisWeek) as any[];
-  for (const r of rows) { try { chaseRow(r); } catch { /* keep sweeping */ } }
+  for (const r of rows) { try { await chaseRow(r); } catch { /* keep sweeping */ } }
   return { chased: rows.length };
 }
 export function sumDays(days: any): number {
