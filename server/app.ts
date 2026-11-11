@@ -319,6 +319,7 @@ app.post("/api/auth/login", (req, res) => {
   const u = db.prepare("SELECT * FROM users WHERE email=? AND active=1").get((req.body.email || "").toLowerCase()) as any;
   if (!u || !verifyPassword(req.body.password || "", u.password_hash)) return res.status(401).json({ error: { code: "bad_credentials" } });
   if ((u as any).disabled && !(u as any).is_platform_admin) return res.status(403).json({ error: { code: "account_disabled", message: "This account has been disabled by the platform operator." } });
+  syncPlatformAdmin();
   const sid = uid("ses") + randomBytes(16).toString("hex");
   db.prepare("INSERT INTO sessions (id,user_id,created_at,expires_at) VALUES (?,?,?,?)").run(sid, u.id, now(), new Date(Date.now() + 7 * 86400000).toISOString());
   res.setHeader("Set-Cookie", `lf_session=${sid}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax`);
@@ -1460,11 +1461,12 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v34", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
+app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v34.1", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {
   const target = db.prepare("SELECT * FROM users WHERE id=?").get(String(req.body?.user_id || "")) as any;
   if (!target) return res.status(404).json({ error: { code: "not_found" } });
+  if ((target as any).is_platform_admin) return res.status(422).json({ error: { code: "admin_target", message: "Platform admin accounts cannot be impersonated." } });
   const sid = uid("ses"); const exp = new Date(Date.now() + 3600000).toISOString();
   db.prepare("INSERT INTO sessions (id,user_id,created_at,expires_at,impersonated_by,impersonation_expires_at) VALUES (?,?,?,?,?,?)").run(sid, target.id, now(), exp, req.user.id, exp);
   audit(target.workspace_id, req.user.id, "impersonation.start", "user", target.id, { admin_email: req.user.email, target_email: target.email, expires_at: exp });
@@ -1494,14 +1496,26 @@ app.get("/api/admin/workspaces", requireAuth, requirePlatformAdmin, (_req: any, 
 function pAudit(req: any, action: string, targetType: string, targetId: string | null, workspaceId: string | null, detail: any = {}) {
   try { db.prepare("INSERT INTO platform_audit (id,admin_id,admin_email,action,target_type,target_id,workspace_id,detail,created_at) VALUES (?,?,?,?,?,?,?,?,?)").run(uid("paud"), req.user.id, req.user.email, action, targetType, targetId, workspaceId, JSON.stringify(detail), now()); } catch { /* audit must never break the action */ }
 }
-// Operator bootstrap: PLATFORM_ADMIN_EMAILS (comma-separated) always wins;
-// otherwise, when no platform admin exists yet, the deployment's first
-// account becomes the operator so the console is reachable on a fresh host.
-try {
-  for (const e of String(process.env.PLATFORM_ADMIN_EMAILS || "").split(",").map(s => s.trim()).filter(Boolean)) db.prepare("UPDATE users SET is_platform_admin=1 WHERE email=?").run(e);
-  const anyAdmin = (db.prepare("SELECT COUNT(*) c FROM users WHERE is_platform_admin=1").get() as any).c;
-  if (!anyAdmin) { const first = db.prepare("SELECT id FROM users ORDER BY rowid ASC LIMIT 1").get() as any; if (first) db.prepare("UPDATE users SET is_platform_admin=1 WHERE id=?").run(first.id); }
-} catch { /* schema not ready (import order) — the seed/login paths still work */ }
+// Operator exclusivity: when PLATFORM_ADMIN_EMAIL is configured, that
+// account is the ONLY platform admin — syncPlatformAdmin grants it and
+// revokes everyone else, at boot and again on every sign-in, so the console
+// can never quietly accumulate operators. Without it, PLATFORM_ADMIN_EMAILS
+// (comma-separated) is honored, and if no admin exists at all the first
+// account is flagged so a fresh host is reachable.
+export function syncPlatformAdmin() {
+  try {
+    const op = String(process.env.PLATFORM_ADMIN_EMAIL || "").trim().toLowerCase();
+    if (op) {
+      db.prepare("UPDATE users SET is_platform_admin=0 WHERE email<>?").run(op);
+      db.prepare("UPDATE users SET is_platform_admin=1 WHERE email=?").run(op);
+      return;
+    }
+    for (const e of String(process.env.PLATFORM_ADMIN_EMAILS || "").split(",").map(s => s.trim()).filter(Boolean)) db.prepare("UPDATE users SET is_platform_admin=1 WHERE email=?").run(e);
+    const anyAdmin = (db.prepare("SELECT COUNT(*) c FROM users WHERE is_platform_admin=1").get() as any).c;
+    if (!anyAdmin) { const first = db.prepare("SELECT id FROM users ORDER BY rowid ASC LIMIT 1").get() as any; if (first) db.prepare("UPDATE users SET is_platform_admin=1 WHERE id=?").run(first.id); }
+  } catch { /* schema not ready yet */ }
+}
+syncPlatformAdmin();
 
 app.get("/api/admin/overview", requireAuth, requirePlatformAdmin, (_req: any, res) => {
   const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.c || 0;
