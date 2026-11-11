@@ -112,6 +112,8 @@ function leadRepliedSince(lead: any, sinceIso: string): boolean {
 
 // ---------- the processor (worker tick) ----------
 export async function processCampaigns(_baseUrl = ""): Promise<{ sent: number; stopped: number; deferred: number }> {
+  // OOO Smart Pause expiry: paused-by-OOO enrollments whose hold has passed resume
+  db.prepare("UPDATE campaign_enrollments SET status='active', stop_reason=NULL, updated_at=? WHERE status='paused' AND stop_reason='ooo' AND next_due_at<=?").run(now(), now());
   const due = db.prepare("SELECT e.* FROM campaign_enrollments e JOIN campaigns c ON c.id=e.campaign_id WHERE e.status='active' AND e.next_due_at<=? AND c.kind='outreach' AND c.status='active' ORDER BY e.next_due_at LIMIT 25").all(now()) as any[];
   let sent = 0, stopped = 0, deferred = 0;
   const capChecked = new Map<string, number>();

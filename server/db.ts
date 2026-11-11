@@ -58,7 +58,7 @@ export function initSchema() {
   CREATE TABLE IF NOT EXISTS change_orders (id TEXT PRIMARY KEY, workspace_id TEXT, project_id TEXT, lead_id TEXT, delta_scope TEXT, delta_total REAL DEFAULT 0, status TEXT DEFAULT 'draft', created_at TEXT);
   CREATE TABLE IF NOT EXISTS audit_log (id TEXT PRIMARY KEY, workspace_id TEXT, user_id TEXT, action TEXT, entity TEXT, entity_id TEXT, diff TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS webhook_endpoints (id TEXT PRIMARY KEY, workspace_id TEXT, url TEXT, secret TEXT, events TEXT DEFAULT 'lead.finalized', active INTEGER DEFAULT 1, created_at TEXT);
-  CREATE TABLE IF NOT EXISTS inbox_items (id TEXT PRIMARY KEY, workspace_id TEXT, category TEXT, from_name TEXT, from_email TEXT, subject TEXT, body TEXT, lead_id TEXT, owner_id TEXT, next_action_due_at TEXT, received_at TEXT, created_at TEXT);
+  CREATE TABLE IF NOT EXISTS inbox_items (id TEXT PRIMARY KEY, workspace_id TEXT, category TEXT, from_name TEXT, from_email TEXT, subject TEXT, body TEXT, lead_id TEXT, owner_id TEXT, next_action_due_at TEXT, received_at TEXT, created_at TEXT, reply_label TEXT);
   CREATE TABLE IF NOT EXISTS signatures (id TEXT PRIMARY KEY, proposal_id TEXT, workspace_id TEXT, token TEXT UNIQUE, signer_name TEXT, signer_email TEXT, typed_signature TEXT, consent INTEGER DEFAULT 0, ip TEXT, user_agent TEXT, doc_hash TEXT, signed_at TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS payments (id TEXT PRIMARY KEY, workspace_id TEXT, proposal_id TEXT, kind TEXT DEFAULT 'deposit', amount REAL, currency TEXT DEFAULT 'USD', mode TEXT DEFAULT 'test', stripe_session_id TEXT, status TEXT DEFAULT 'pending', link TEXT, created_at TEXT, paid_at TEXT);
   CREATE TABLE IF NOT EXISTS background_jobs (id TEXT PRIMARY KEY, kind TEXT, payload TEXT, status TEXT DEFAULT 'queued', attempts INTEGER DEFAULT 0, run_after TEXT, last_error TEXT, created_at TEXT, updated_at TEXT);
@@ -175,6 +175,8 @@ export function initSchema() {
     "ALTER TABLE workspaces ADD COLUMN review_url TEXT",
     "ALTER TABLE workspaces ADD COLUMN review_on_won INTEGER DEFAULT 0",
     "ALTER TABLE messages_outbox ADD COLUMN direction TEXT DEFAULT 'out'",
+    "ALTER TABLE inbox_items ADD COLUMN reply_label TEXT",
+    "ALTER TABLE messages_outbox ADD COLUMN reply_label TEXT",
     // crm.ts initCrmSchema also ALTERs these, but its ALTERs run at import time — before
     // initSchema creates the tables on a FRESH database — so they silently no-op there and
     // only land on the second boot. Mirrored here so fresh installs are correct on boot #1.

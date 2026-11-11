@@ -40,6 +40,7 @@ function filterAgenda(user: any, items: any[]): any[] {
 import { stepsFor, addBusinessDays } from "./followups.ts";
 import { notify } from "./comms.ts";
 import { enrollLead, campaignOutreachStats, renderOutreach, outreachVars, unresolvedVars, nextWindowSlot } from "./outreach.ts";
+import { ensureLabels, applyLabel } from "./labels.ts";
 
 const J = (s: any, fb: any = null) => { try { return JSON.parse(s ?? ""); } catch { return fb; } };
 const alter = (sql: string) => { try { db.exec(sql); } catch { /* column exists */ } };
@@ -79,6 +80,12 @@ export function initCrmSchema() {
   CREATE TABLE IF NOT EXISTS campaign_steps (id TEXT PRIMARY KEY, workspace_id TEXT, campaign_id TEXT, position INTEGER DEFAULT 0, channel TEXT DEFAULT 'email', delay_days INTEGER DEFAULT 2, subject TEXT, body TEXT, variants TEXT DEFAULT '[]', created_at TEXT, updated_at TEXT);
   CREATE TABLE IF NOT EXISTS campaign_enrollments (id TEXT PRIMARY KEY, workspace_id TEXT, campaign_id TEXT, lead_id TEXT, status TEXT DEFAULT 'active', step_idx INTEGER DEFAULT 0, next_due_at TEXT, variants TEXT DEFAULT '{}', sent_count INTEGER DEFAULT 0, fail_count INTEGER DEFAULT 0, stop_reason TEXT, created_at TEXT, updated_at TEXT, UNIQUE(campaign_id, lead_id));
   CREATE TABLE IF NOT EXISTS campaign_sends (id TEXT PRIMARY KEY, workspace_id TEXT, campaign_id TEXT, enrollment_id TEXT, lead_id TEXT, step_idx INTEGER, variant INTEGER DEFAULT 0, message_id TEXT, created_at TEXT);
+  `);
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS labels (id TEXT PRIMARY KEY, workspace_id TEXT, key TEXT, name TEXT, color TEXT DEFAULT '#5B6B62', kind TEXT DEFAULT 'custom', positive INTEGER DEFAULT 0, builtin INTEGER DEFAULT 0, created_at TEXT, UNIQUE(workspace_id, key));
+  CREATE TABLE IF NOT EXISTS lead_labels (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, label_id TEXT, source TEXT DEFAULT 'human', created_at TEXT, UNIQUE(lead_id, label_id));
+  CREATE TABLE IF NOT EXISTS label_rules (id TEXT PRIMARY KEY, workspace_id TEXT, label_id TEXT, action TEXT, campaign_id TEXT, active INTEGER DEFAULT 1, created_at TEXT);
+  CREATE TABLE IF NOT EXISTS opportunities (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, account_id TEXT, title TEXT, value REAL DEFAULT 0, stage TEXT DEFAULT 'interested', source_label TEXT, campaign_id TEXT, owner_id TEXT, close_date TEXT, created_at TEXT, updated_at TEXT);
   `);
 }
 
@@ -357,6 +364,32 @@ export function registerCrm(app: any, requireAuth: any, needPerm: any = null) {
     if (st === "active") { const e = db.prepare("SELECT * FROM campaign_enrollments WHERE id=? AND workspace_id=?").get(req.params.id, ws(req)) as any; if (!e) return err(res, 404, "not found"); const c = db.prepare("SELECT * FROM campaigns WHERE id=?").get(e.campaign_id) as any; const wsr = db.prepare("SELECT * FROM workspaces WHERE id=?").get(ws(req)) as any; db.prepare("UPDATE campaign_enrollments SET status='active', stop_reason=NULL, next_due_at=?, updated_at=? WHERE id=?").run(nextWindowSlot(c, new Date(), wsr?.tz || "America/New_York").toISOString(), now(), e.id); }
     else db.prepare("UPDATE campaign_enrollments SET status=?, stop_reason=?, updated_at=? WHERE id=? AND workspace_id=?").run(st, st === "stopped" ? "manual" : null, now(), req.params.id, ws(req));
     res.json({ ok: true }); });
+  // ----- v43: labels, label rules (subsequences), opportunities -----
+  app.get("/api/labels", requireAuth, (req: any, res: any) => { const rows = ensureLabels(ws(req)); const counts = db.prepare("SELECT label_id, COUNT(*) n FROM lead_labels WHERE workspace_id=? GROUP BY label_id").all(ws(req)) as any[]; const byId = Object.fromEntries(counts.map(r => [r.label_id, r.n])); res.json(rows.map((l: any) => ({ ...l, leads: byId[l.id] || 0 }))); });
+  app.post("/api/labels", requireAuth, campGate, (req: any, res: any) => { const b = req.body || {}; const name = String(b.name || "").trim(); if (!name) return err(res, 422, "name required"); const key = name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, ""); if (!key) return err(res, 422, "bad name"); const id = uid("lbl");
+    db.prepare("INSERT OR IGNORE INTO labels (id,workspace_id,key,name,color,kind,positive,builtin,created_at) VALUES (?,?,?,?,?,'custom',?,0,?)").run(id, ws(req), key, name, b.color || "#5B6B62", b.positive ? 1 : 0, now());
+    res.status(201).json(db.prepare("SELECT * FROM labels WHERE workspace_id=? AND key=?").get(ws(req), key)); });
+  app.delete("/api/labels/:id", requireAuth, campGate, (req: any, res: any) => { const l = db.prepare("SELECT * FROM labels WHERE id=? AND workspace_id=?").get(req.params.id, ws(req)) as any; if (!l) return err(res, 404, "not found"); if (l.builtin) return res.status(422).json({ error: { code: "builtin", message: "Built-in reply labels can't be deleted." } }); db.prepare("DELETE FROM lead_labels WHERE label_id=?").run(l.id); db.prepare("DELETE FROM label_rules WHERE label_id=?").run(l.id); db.prepare("DELETE FROM labels WHERE id=?").run(l.id); res.json({ ok: true }); });
+  app.get("/api/leads/:id/labels", requireAuth, (req: any, res: any) => { res.json(db.prepare("SELECT ll.*, l.key, l.name, l.color, l.positive FROM lead_labels ll JOIN labels l ON l.id=ll.label_id WHERE ll.lead_id=? ORDER BY ll.created_at").all(req.params.id)); });
+  app.post("/api/leads/:id/labels", requireAuth, (req: any, res: any) => { const r = applyLabel(ws(req), req.params.id, String(req.body?.key || ""), "human"); if (!r.label) return err(res, 404, "label not found"); res.json({ ok: true, applied: r.applied, label: r.label }); });
+  app.delete("/api/lead-labels/:id", requireAuth, (req: any, res: any) => { db.prepare("DELETE FROM lead_labels WHERE id=? AND workspace_id=?").run(req.params.id, ws(req)); res.json({ ok: true }); });
+  const ruleGate = modGate("automations", "edit");
+  app.get("/api/label-rules", requireAuth, (req: any, res: any) => { res.json(db.prepare("SELECT r.*, l.name label_name, l.key label_key, c.name campaign_name FROM label_rules r JOIN labels l ON l.id=r.label_id LEFT JOIN campaigns c ON c.id=r.campaign_id WHERE r.workspace_id=? ORDER BY r.created_at").all(ws(req))); });
+  app.post("/api/label-rules", requireAuth, ruleGate, (req: any, res: any) => { const b = req.body || {}; if (!b.label_id || !["enroll_campaign", "stop_sequences", "create_task", "notify"].includes(b.action)) return err(res, 422, "label_id and a valid action are required"); if (b.action === "enroll_campaign" && !b.campaign_id) return err(res, 422, "campaign_id required for enroll_campaign"); const id = uid("lrule");
+    db.prepare("INSERT INTO label_rules (id,workspace_id,label_id,action,campaign_id,active,created_at) VALUES (?,?,?,?,?,1,?)").run(id, ws(req), b.label_id, b.action, b.campaign_id || null, now()); res.status(201).json(db.prepare("SELECT * FROM label_rules WHERE id=?").get(id)); });
+  app.patch("/api/label-rules/:id", requireAuth, ruleGate, (req: any, res: any) => { db.prepare("UPDATE label_rules SET active=? WHERE id=? AND workspace_id=?").run(req.body?.active ? 1 : 0, req.params.id, ws(req)); res.json({ ok: true }); });
+  app.delete("/api/label-rules/:id", requireAuth, ruleGate, (req: any, res: any) => { db.prepare("DELETE FROM label_rules WHERE id=? AND workspace_id=?").run(req.params.id, ws(req)); res.json({ ok: true }); });
+  const OPP_STAGES = ["interested", "meeting_booked", "proposal", "won", "lost"];
+  app.get("/api/opportunities", requireAuth, modGate("opportunities"), (req: any, res: any) => { const rows = db.prepare(`SELECT o.*, ct.name contact_name, l.service_requested, l.state lead_state, a.name account_name, u.name owner_name FROM opportunities o JOIN leads l ON l.id=o.lead_id LEFT JOIN contacts ct ON ct.id=l.contact_id LEFT JOIN accounts a ON a.id=o.account_id LEFT JOIN users u ON u.id=o.owner_id WHERE o.workspace_id=? ORDER BY o.updated_at DESC LIMIT 300`).all(ws(req));
+    const totals: any = {}; for (const s of OPP_STAGES) { const t = rows.filter((r: any) => r.stage === s); totals[s] = { count: t.length, value: t.reduce((a: number, r: any) => a + (r.value || 0), 0) }; }
+    res.json({ rows, totals }); });
+  app.post("/api/opportunities", requireAuth, modGate("opportunities", "edit"), (req: any, res: any) => { const b = req.body || {}; const lead = db.prepare("SELECT * FROM leads WHERE id=? AND workspace_id=?").get(b.lead_id, ws(req)) as any; if (!lead) return err(res, 422, "lead_id required"); const id = uid("opp");
+    db.prepare("INSERT INTO opportunities (id,workspace_id,lead_id,account_id,title,value,stage,source_label,owner_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(id, ws(req), lead.id, lead.account_id || null, b.title || `${lead.service_requested || "Opportunity"}`, Number(b.value) || Number(lead.est_value) || 0, OPP_STAGES.includes(b.stage) ? b.stage : "interested", "manual", lead.owner_id || null, now(), now());
+    res.status(201).json(db.prepare("SELECT * FROM opportunities WHERE id=?").get(id)); });
+  app.patch("/api/opportunities/:id", requireAuth, modGate("opportunities", "edit"), (req: any, res: any) => { const b = req.body || {}; const F = ["title", "owner_id", "close_date"]; const sets = F.filter(f => b[f] !== undefined); if (b.stage !== undefined) { if (!OPP_STAGES.includes(b.stage)) return err(res, 422, "bad stage"); sets.push("stage"); } if (b.value !== undefined) sets.push("value"); if (!sets.length) return err(res, 422, "nothing to update");
+    const val = (f: string) => f === "value" ? Number(b[f]) || 0 : b[f]; db.prepare(`UPDATE opportunities SET ${sets.map(f => f + "=?").join(",")}, updated_at=? WHERE id=? AND workspace_id=?`).run(...sets.map(val), now(), req.params.id, ws(req)); res.json({ ok: true }); });
+  app.delete("/api/opportunities/:id", requireAuth, modGate("opportunities", "edit"), (req: any, res: any) => { db.prepare("DELETE FROM opportunities WHERE id=? AND workspace_id=?").run(req.params.id, ws(req)); res.json({ ok: true }); });
+
   app.post("/api/campaigns/:id/preview", requireAuth, (req: any, res: any) => { const c = getCamp(req); if (!c) return err(res, 404, "not found");
     const step = db.prepare("SELECT * FROM campaign_steps WHERE campaign_id=? AND position=?").get(c.id, Number(req.body?.step_idx) || 0) as any; if (!step) return err(res, 404, "step not found");
     let lead: any = null; if (req.body?.lead_id) lead = db.prepare("SELECT * FROM leads WHERE id=? AND workspace_id=?").get(req.body.lead_id, ws(req)) as any;

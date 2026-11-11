@@ -515,6 +515,7 @@ function LeadDetail({ id, users, priceBook, close, refresh, openJob, openApprova
   return (<div className="modalWrap"><div className="modal">
     <div className="rowflex" style={{ justifyContent: "space-between" }}><h3 style={{ margin: 0 }}>{l.service_requested} — {l.contact_name}</h3><button className="btn ghost small" onClick={close}>✕ Close</button></div>
     <p className="muted" style={{ margin: "6px 0" }}>{l.contact_phone || ""} {l.contact_email ? "· " + l.contact_email : ""} · {l.location || ""} · created {dt(l.created_at)}</p>
+    <LeadLabels leadId={id} />
     <div className="rowflex"><Badge s={l.state} /><b>{money(l.est_value)}</b><span className="muted">Owner: {l.owner_name || "—"} · PM: {l.pm_id ? "assigned" : "none"} · Next: {l.next_action || "—"} ({dOnly(l.next_action_due_at)})</span>
       <button className="btn ghost small" title="Favorite" onClick={async () => { await api("/api/favorites", { method: "POST", body: { entity_type: "lead", entity_id: id } }); setMsg("Favorite toggled ⭐"); }}>⭐</button>
       {!l.converted_at && <button className="btn ghost small" onClick={async () => { const r = await api(`/api/leads/${id}/convert`, { method: "POST", body: {} }); setMsg(`Converted ✓ — customer: ${r.account?.name || ""}`); load(); }}>⇄ Convert to customer</button>}
@@ -764,12 +765,80 @@ function AttachPicker({ leadId, value, onChange }: any) {
   </div>);
 }
 
+function LabelChip({ l }: any) {
+  if (!l) return null;
+  return <span className="badge" style={{ background: (l.color || "#5B6B62") + "22", color: l.color || "#5B6B62", border: `1px solid ${(l.color || "#5B6B62")}55` }}>🏷 {l.name}</span>;
+}
+
+function LeadLabels({ leadId }: any) {
+  const [mine, setMine] = useState<any[]>([]); const [all, setAll] = useState<any[]>([]);
+  const load = () => { api("/api/leads/" + leadId + "/labels").then(setMine).catch(() => {}); };
+  useEffect(() => { load(); api("/api/labels").then(setAll).catch(() => {}); }, [leadId]);
+  const avail = all.filter(l => !mine.some(m => m.label_id === l.id));
+  return (<div className="rowflex" style={{ margin: "2px 0 8px" }}><span className="muted" style={{ fontSize: 12.5 }}>🏷 Labels</span>
+    {mine.map(m => <span key={m.id} className="badge" style={{ background: (m.color || "#5B6B62") + "22", color: m.color || "#5B6B62", border: `1px solid ${(m.color || "#5B6B62")}55` }}>{m.name}{m.source === "ai_rules" ? " · AI" : ""} <span style={{ cursor: "pointer" }} title="Remove label" onClick={async () => { await api("/api/lead-labels/" + m.id, { method: "DELETE" }); load(); }}>✕</span></span>)}
+    {avail.length > 0 && <select style={{ width: 170 }} defaultValue="" onChange={async e => { if (!e.target.value) return; await api("/api/leads/" + leadId + "/labels", { method: "POST", body: { key: e.target.value } }); e.target.value = ""; load(); }}><option value="">+ Add label…</option>{avail.map(l => <option key={l.id} value={l.key}>{l.name}</option>)}</select>}
+    {mine.length === 0 && <span className="muted" style={{ fontSize: 12 }}>Replies get labeled automatically; positive labels open an Opportunity.</span>}
+  </div>);
+}
+
+function LabelsPanel({ close }: any) {
+  const [labels, setLabels] = useState<any[]>([]); const [rules, setRules] = useState<any[]>([]); const [camps, setCamps] = useState<any[]>([]);
+  const [name, setName] = useState(""); const [pos, setPos] = useState(false); const [msg, setMsg] = useState("");
+  const [rule, setRule] = useState<any>({ label_id: "", action: "enroll_campaign", campaign_id: "" });
+  const load = () => { api("/api/labels").then(setLabels).catch(() => {}); api("/api/label-rules").then(setRules).catch(() => {}); api("/api/campaigns").then((r: any[]) => setCamps((r || []).filter(c => c.kind === "outreach"))).catch(() => {}); };
+  useEffect(load, []);
+  return (<div className="card" style={{ marginBottom: 12, borderLeft: "4px solid var(--pine)" }}>
+    <div className="rowflex" style={{ justifyContent: "space-between" }}><b>🏷 Labels & label rules</b><button className="btn ghost small" onClick={close}>Close</button></div>
+    <p className="muted" style={{ fontSize: 12.5 }}>Replies are classified automatically (Interested, Out of Office, Wrong Person…). Positive labels open an Opportunity; Unsubscribe suppresses the contact and stops every sequence; Out of Office pauses sequences for ~5 days. Rules add your own follow-through — a label can enroll the lead into another campaign (a subsequence), stop sequences, create a task, or notify the owners.</p>
+    {msg && <div className="ok">{msg}</div>}
+    <div className="rowflex">{labels.map(l => <span key={l.id} className="badge" style={{ background: (l.color || "#5B6B62") + "22", color: l.color || "#5B6B62" }}>{l.name} · {l.leads} leads{l.positive ? " · ⭐ positive" : ""}{!l.builtin && <span style={{ cursor: "pointer" }} title="Delete label" onClick={async () => { await api("/api/labels/" + l.id, { method: "DELETE" }); load(); }}> ✕</span>}</span>)}</div>
+    <div className="rowflex" style={{ marginTop: 8 }}><input placeholder="New custom label (e.g. Price shopper)" value={name} onChange={e => setName(e.target.value)} style={{ flex: 1 }} /><label className="muted" style={{ fontSize: 12.5 }}><input type="checkbox" style={{ width: "auto" }} checked={pos} onChange={e => setPos(e.target.checked)} /> Positive (opens an Opportunity)</label><button className="btn small" disabled={!name.trim()} onClick={async () => { await api("/api/labels", { method: "POST", body: { name, positive: pos } }); setName(""); setPos(false); load(); }}>Add label</button></div>
+    <h4 style={{ margin: "14px 0 6px" }}>⚡ Label rules — subsequences & follow-through</h4>
+    {rules.map(r => <div key={r.id} className="rowflex" style={{ padding: "4px 0", borderBottom: "1px solid #eef2f7" }}><span style={{ flex: 1, fontSize: 13 }}>When labeled <b>{r.label_name}</b> → {r.action === "enroll_campaign" ? `enroll in campaign “${r.campaign_name || "?"}”` : r.action.replaceAll("_", " ")}</span><span className="tinyBadge">{r.active ? "active" : "off"}</span><button className="btn ghost small" onClick={async () => { await api("/api/label-rules/" + r.id, { method: "PATCH", body: { active: !r.active } }); load(); }}>{r.active ? "Disable" : "Enable"}</button><button className="btn ghost small" onClick={async () => { await api("/api/label-rules/" + r.id, { method: "DELETE" }); load(); }}>Delete</button></div>)}
+    <div className="rowflex" style={{ marginTop: 8 }}><select style={{ width: 190 }} value={rule.label_id} onChange={e => setRule({ ...rule, label_id: e.target.value })}><option value="">When labeled…</option>{labels.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}</select>
+      <select style={{ width: 190 }} value={rule.action} onChange={e => setRule({ ...rule, action: e.target.value })}><option value="enroll_campaign">Enroll in a campaign (subsequence)</option><option value="stop_sequences">Stop all sequences</option><option value="create_task">Create a follow-up task</option><option value="notify">Notify the owners</option></select>
+      {rule.action === "enroll_campaign" && <select style={{ flex: 1 }} value={rule.campaign_id} onChange={e => setRule({ ...rule, campaign_id: e.target.value })}><option value="">Pick the follow-up campaign…</option>{camps.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>}
+      <button className="btn small" disabled={!rule.label_id || (rule.action === "enroll_campaign" && !rule.campaign_id)} onClick={async () => { const r: any = await api("/api/label-rules", { method: "POST", body: rule }); if (r?.error) setMsg("⚠ " + (r.error.message || "could not save — rules need Automations edit access")); else { setMsg("Rule added ✓"); load(); } }}>Add rule</button></div>
+  </div>);
+}
+
+function OpportunitiesBoard({ openLead }: any) {
+  const [data, setData] = useState<any>(null); const [leads, setLeads] = useState<any[]>([]); const [pick, setPick] = useState("");
+  const load = () => { api("/api/opportunities").then(setData).catch(() => {}); };
+  useEffect(() => { load(); api("/api/leads?paged=1&page=1&page_size=100&sort=recent").then(r => setLeads(r.items || [])).catch(() => {}); }, []);
+  const STAGES: [string, string][] = [["interested", "Interested"], ["meeting_booked", "Meeting Booked"], ["proposal", "Proposal Out"], ["won", "Won"], ["lost", "Lost"]];
+  if (!data) return <div><h2 className="pt">Opportunities</h2><div className="card">Loading…</div></div>;
+  const rows = data.rows || []; const openVal = ["interested", "meeting_booked", "proposal"].reduce((a, s) => a + (data.totals?.[s]?.value || 0), 0);
+  const move = async (o: any, dir: number) => { const idx = STAGES.findIndex(([s]) => s === o.stage); const nx = STAGES[Math.max(0, Math.min(STAGES.length - 1, idx + dir))][0]; if (nx !== o.stage) { await api("/api/opportunities/" + o.id, { method: "PATCH", body: { stage: nx } }); load(); } };
+  return (<div><h2 className="pt">Opportunities</h2><p className="sub">Where interest becomes revenue. A positive reply label (Interested, Meeting Booked) opens an opportunity automatically — one open opportunity per lead, valued from the lead until you set a real number.</p>
+    <div className="finGrid" style={{ marginBottom: 12 }}>
+      <div className="finCard"><div className="finLab">💼 Open pipeline</div><div className="finVal">{money(openVal)}</div><div className="finDef">{["interested", "meeting_booked", "proposal"].reduce((a, s) => a + (data.totals?.[s]?.count || 0), 0)} open opportunities</div></div>
+      <div className="finCard win"><div className="finLab">🏆 Won</div><div className="finVal">{money(data.totals?.won?.value || 0)}</div><div className="finDef">{data.totals?.won?.count || 0} opportunities</div></div>
+      <div className="finCard"><div className="finLab">📅 Meetings booked</div><div className="finVal">{data.totals?.meeting_booked?.count || 0}</div><div className="finDef">{money(data.totals?.meeting_booked?.value || 0)} in value</div></div>
+      <div className="finCard"><div className="finLab">📄 Proposals out</div><div className="finVal">{data.totals?.proposal?.count || 0}</div><div className="finDef">{money(data.totals?.proposal?.value || 0)} in value</div></div>
+    </div>
+    <div className="rowflex" style={{ marginBottom: 12 }}><select style={{ flex: 1 }} value={pick} onChange={e => setPick(e.target.value)}><option value="">Open an opportunity for a lead…</option>{leads.map((l: any) => <option key={l.id} value={l.id}>{l.contact_name} — {l.service_requested} ({l.state})</option>)}</select><button className="btn" disabled={!pick} onClick={async () => { await api("/api/opportunities", { method: "POST", body: { lead_id: pick } }); setPick(""); load(); }}>+ New opportunity</button></div>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, alignItems: "start" }}>
+      {STAGES.map(([s, L]) => <div key={s} style={{ background: "#f7f8f6", borderRadius: 12, padding: 10, minHeight: 120 }}><div className="rowflex" style={{ justifyContent: "space-between", marginBottom: 8 }}><b style={{ fontSize: 13 }}>{L}</b><span className="tinyBadge">{data.totals?.[s]?.count || 0} · {money(data.totals?.[s]?.value || 0)}</span></div>
+        {rows.filter((o: any) => o.stage === s).map((o: any) => <div key={o.id} className="card" style={{ marginBottom: 8, padding: "9px 11px" }}><div className="clickable" onClick={() => openLead(o.lead_id)}><b style={{ fontSize: 13.5 }}>{o.contact_name || o.title}</b><br /><span className="muted" style={{ fontSize: 12 }}>{o.service_requested || o.title}</span></div>
+          <div className="rowflex" style={{ justifyContent: "space-between", marginTop: 6 }}><b style={{ color: "var(--pine)" }}>{money(o.value || 0)}</b>{o.source_label && o.source_label !== "manual" ? <span className="tinyBadge">🏷 {o.source_label.replaceAll("_", " ")}</span> : null}</div>
+          <div className="rowflex" style={{ marginTop: 6 }}><button className="btn ghost small" onClick={() => move(o, -1)}>‹</button><button className="btn ghost small" onClick={() => move(o, 1)}>Move ›</button><button className="btn ghost small" title="Delete" onClick={async () => { await api("/api/opportunities/" + o.id, { method: "DELETE" }); load(); }}>✕</button></div></div>)}
+        {rows.filter((o: any) => o.stage === s).length === 0 && <div className="muted" style={{ fontSize: 12.5 }}>Nothing here</div>}
+      </div>)}
+    </div>
+  </div>);
+}
+
 function InboxQueue({ inbox, reload }: any) {
   const [cat, setCat] = useState("all"); const [openId, setOpenId] = useState(""); const [sug, setSug] = useState<any>(null); const [draft, setDraft] = useState(""); const [msg, setMsg] = useState(""); const [att, setAtt] = useState<any[]>([]);
+  const [labels, setLabels] = useState<any[]>([]); const [labF, setLabF] = useState("all"); const [showLab, setShowLab] = useState(false);
+  useEffect(() => { api("/api/labels").then(setLabels).catch(() => {}); }, []);
+  const labOf = (key: string) => labels.find((l: any) => l.key === key);
   const cats = ["all", "client_active_job", "proposal", "field", "vendor", "finance", "admin"];
   const counts: Record<string, number> = {}; for (const i of inbox) if ((i.status || "open") === "open") counts[i.category] = (counts[i.category] || 0) + 1;
   const openCount = inbox.filter((i: any) => (i.status || "open") === "open").length;
-  const shown = inbox.filter((i: any) => cat === "all" || i.category === cat);
+  const shown = inbox.filter((i: any) => (cat === "all" || i.category === cat) && (labF === "all" || i.reply_label === labF));
   const [comments, setComments] = useState<any[]>([]); const [canned, setCanned] = useState<any[]>([]); const [cText, setCText] = useState("");
   useEffect(() => { api("/api/canned-replies").then(setCanned).catch(() => {}); }, []);
   const expand = async (i: any) => { if (openId === i.id) { setOpenId(""); return; } setOpenId(i.id); setSug(null); setAtt([]); const r = await api("/api/inbox/" + i.id + "/suggestion").catch(() => null); setSug(r); if (r) { setDraft(r.draft_body); setAtt((r.attachments || []).map((x: any) => ({ kind: x.kind, id: x.id, label: x.label, why: x.why }))); } api("/api/inbox/" + i.id + "/claim", { method: "POST", body: {} }).catch(() => {}); api("/api/inbox/" + i.id + "/comments").then(setComments).catch(() => {}); };
@@ -778,11 +847,14 @@ function InboxQueue({ inbox, reload }: any) {
     <p className="muted">Triaged on arrival, each with an owner, a due date, and an AI-suggested next action with a ready-to-send reply. {openCount} open.</p>
     {msg && <div className="ok">{msg}</div>}
     <div className="rowflex" style={{ marginBottom: 10 }}>{cats.map(c => <button key={c} className={"btn small " + (cat === c ? "" : "ghost")} onClick={() => setCat(c)}>{c === "all" ? `All (${openCount} open)` : `${c.replaceAll("_", " ")}${counts[c] ? ` (${counts[c]})` : ""}`}</button>)}</div>
+    <div className="rowflex" style={{ marginBottom: 10 }}><button className={"btn small " + (labF === "all" ? "" : "ghost")} onClick={() => setLabF("all")}>🏷 All labels</button>{labels.filter(l => inbox.some((i: any) => i.reply_label === l.key)).map(l => <button key={l.id} className={"btn small " + (labF === l.key ? "" : "ghost")} onClick={() => setLabF(l.key)}>{l.name} ({inbox.filter((i: any) => i.reply_label === l.key).length})</button>)}<button className="btn ghost small" style={{ marginLeft: "auto" }} onClick={() => setShowLab(!showLab)}>🏷 Labels & rules</button></div>
+    {showLab && <LabelsPanel close={() => setShowLab(false)} />}
     {shown.map((i: any) => { const doneIt = (i.status || "open") === "done"; return <div key={i.id} style={{ borderBottom: "1px solid #eef2f7", padding: "9px 0", opacity: doneIt ? 0.55 : 1 }}>
-      <div className="rowflex" style={{ cursor: "pointer" }} onClick={() => expand(i)}><span className="badge b-TRIAGED">{i.category.replaceAll("_", " ")}</span>{i.priority?.tier === "urgent" && <span className="badge" style={{ background: "#fee2e2", color: "#991b1b" }}>🔥 URGENT</span>}{i.priority?.tier === "hot" && <span className="badge" style={{ background: "#fef3c7", color: "#92400e" }}>⚡ HOT</span>}{i.priority?.escalated && <span className="badge" style={{ background: "#7f1d1d", color: "#fff" }}>ESCALATED</span>}<b>{i.from_name || i.from_email}</b><span style={{ flex: 1 }}>{i.subject}</span>
+      <div className="rowflex" style={{ cursor: "pointer" }} onClick={() => expand(i)}><span className="badge b-TRIAGED">{i.category.replaceAll("_", " ")}</span>{i.reply_label && labOf(i.reply_label) ? <LabelChip l={labOf(i.reply_label)} /> : null}{i.priority?.tier === "urgent" && <span className="badge" style={{ background: "#fee2e2", color: "#991b1b" }}>🔥 URGENT</span>}{i.priority?.tier === "hot" && <span className="badge" style={{ background: "#fef3c7", color: "#92400e" }}>⚡ HOT</span>}{i.priority?.escalated && <span className="badge" style={{ background: "#7f1d1d", color: "#fff" }}>ESCALATED</span>}<b>{i.from_name || i.from_email}</b><span style={{ flex: 1 }}>{i.subject}</span>
         {i.overdue && !doneIt && <span className="st fail">overdue</span>}{doneIt ? <span className="st pass">done</span> : <span className="muted">due {dOnly(i.next_action_due_at)} · {i.owner_name || "unassigned"}</span>}</div>
       {openId === i.id && <div style={{ margin: "10px 0 4px", padding: 12, background: "#f8fafc", borderRadius: 10 }}>
         <div className="origMail"><div className="origHead"><b>📧 Original email</b><span className="muted">From {i.from_name || ""} &lt;{i.from_email || ""}&gt; · {dt(i.received_at || i.created_at)}</span></div><div className="origBody">{String(i.body || "(no body captured)")}</div></div>
+        <div className="rowflex" style={{ margin: "8px 0" }}><span className="muted" style={{ fontSize: 12.5 }}>🏷 Label this reply:</span>{labels.map(l => <button key={l.id} className={"chip" + (i.reply_label === l.key ? " on" : "")} style={i.reply_label === l.key ? { background: (l.color || "#5B6B62") + "22", borderColor: l.color } : {}} onClick={async () => { await api("/api/inbox/" + i.id + "/label", { method: "POST", body: { key: l.key } }); reload(); }}>{l.name}</button>)}{!i.lead_id && <span className="muted" style={{ fontSize: 12 }}>(labels fire their follow-through once this mail is linked to a lead)</span>}</div>
         {sug ? <div><p style={{ margin: "0 0 4px" }}><b>🤖 Suggested: {sug.action}</b> {sug.source === "ai" ? <span className="tinyBadge" style={{ background: "#e7f6ec", color: "#14532d" }}>✨ AI draft — written from this email{sug.model ? " · " + sug.model : ""}</span> : <span className="tinyBadge" style={{ background: "#fef9c3", color: "#854d0e" }}>📄 Template draft — add an AI key in Automations for drafts written from the actual email</span>}<button className="btn ghost small" style={{ marginLeft: 8 }} onClick={async () => { const r = await api("/api/inbox/" + i.id + "/suggestion/regenerate", { method: "POST", body: {} }).catch(() => null); if (r) { setSug(r); setDraft(r.draft_body); if (r.source !== "ai") setMsg("No AI provider connected yet — add a key in Automations → AI provider and this button writes the reply from the email itself."); } }}>{sug.source === "ai" ? "↻ Regenerate" : "✨ Enhance with AI"}</button></p><p className="muted" style={{ margin: "0 0 8px" }}>{sug.why}</p>
           <label className="f">Reply — edit freely, sends from your workspace</label>
           <textarea rows={7} value={draft} onChange={e => setDraft(e.target.value)} />
@@ -991,7 +1063,7 @@ function ServicesConsole({ svcs, reload }: any) {
   </div>);
 }
 
-const MOD_LABELS: Record<string, string> = { home: "Home dashboard", queue: "Work Queue", myday: "My Day", inbox: "Inbox", tasks: "Tasks", leads: "Leads / Pipeline", customers: "Customers", proposals: "Proposals", approvals: "Approvals", jobs: "Jobs", schedule: "Schedule & Calendar", ops: "Ops Console", campaigns: "Campaigns", demand: "Demand Gap", pulse: "Pulse", handoffs: "Handoffs", library: "Library & Files", import: "Import", reports: "Reports & Analytics", automations: "Automations & Agent", settings: "Settings" };
+const MOD_LABELS: Record<string, string> = { home: "Home dashboard", queue: "Work Queue", myday: "My Day", inbox: "Inbox", tasks: "Tasks", leads: "Leads / Pipeline", customers: "Customers", proposals: "Proposals", approvals: "Approvals", jobs: "Jobs", schedule: "Schedule & Calendar", ops: "Ops Console", campaigns: "Campaigns", opportunities: "Opportunities", demand: "Demand Gap", pulse: "Pulse", handoffs: "Handoffs", library: "Library & Files", import: "Import", reports: "Reports & Analytics", automations: "Automations & Agent", settings: "Settings" };
 const PERM_TOGGLES: [string, string, string][] = [["can_approve", "Approve proposals", "Decide approvals routed to them"], ["can_money", "See money figures", "Home money cards, invoices, reports totals"], ["can_complete_others", "Complete others' work", "Mark anyone's tasks, visits and schedule items done"], ["can_export", "Export data", "CSV exports and report downloads"], ["can_billing", "Billing & plan", "Subscription, invoices from Workpile, plan changes"], ["can_settings", "Workspace settings", "Business profile, templates, integrations"], ["can_manage_team", "Manage team", "Invite people, change roles and access"]];
 function PermEditor({ draft, setDraft }: any) {
   const seg = (mod: string) => (<span className="rowflex" style={{ gap: 4 }}>{(["none", "view", "edit"] as const).map(lvl => <button key={lvl} className={"chip" + (draft.modules?.[mod] === lvl ? " on" : "")} style={draft.modules?.[mod] === lvl ? { background: lvl === "none" ? "#991B1B" : "#0E5C3A", color: "#fff", borderColor: "transparent" } : {}} onClick={() => setDraft({ ...draft, modules: { ...draft.modules, [mod]: lvl } })}>{lvl === "none" ? "Hidden" : lvl === "view" ? "View" : "View + Edit"}</button>)}</span>);
@@ -3046,7 +3118,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
   if (!user) return <Landing onAuth={(u: any) => { setUser(u); }} />;
   const go = (n: Nav) => setNav(n);
   const APPS: Record<string, string[]> = { sales: ["queue", "myday", "dashboard", "pulse", "leads", "proposals", "jobs", "customers", "campaigns", "planner", "library", "reports", "approvals", "ai", "inbox"], ops: ["queue", "jobs", "ops", "planner", "leads", "proposals", "inbox", "library", "handoffs", "imports", "demand"], marketing: ["dashboard", "campaigns", "leads", "customers", "proposals", "imports", "demand", "reports", "library"] };
-  const VIEW_MODULE: Record<string, string> = { dashboard: "home", home: "home", queue: "queue", myday: "myday", inbox: "inbox", tasks: "tasks", calendar: "schedule", leads: "leads", customers: "customers", people: "customers", proposals: "proposals", approvals: "approvals", jobs: "jobs", schedule: "schedule", ops: "ops", campaigns: "campaigns", demand: "demand", pulse: "pulse", handoffs: "handoffs", library: "library", notes: "library", files: "library", imports: "import", import: "import", reports: "reports", ai: "automations", automations: "automations", settings: "settings" };
+  const VIEW_MODULE: Record<string, string> = { dashboard: "home", home: "home", queue: "queue", myday: "myday", inbox: "inbox", tasks: "tasks", calendar: "schedule", leads: "leads", customers: "customers", people: "customers", proposals: "proposals", approvals: "approvals", jobs: "jobs", schedule: "schedule", ops: "ops", campaigns: "campaigns", opportunities: "opportunities", demand: "demand", pulse: "pulse", handoffs: "handoffs", library: "library", notes: "library", files: "library", imports: "import", import: "import", reports: "reports", ai: "automations", automations: "automations", settings: "settings" };
   const modLvl = (v: string) => { const mods = user?.permissions?.modules || {}; if (v === "planner") { const t = mods.tasks ?? "edit", s = mods.schedule ?? "edit"; return (t === "none" && s === "none") ? "none" : (t === "edit" || s === "edit") ? "edit" : "view"; } const mod = VIEW_MODULE[v]; if (!mod) return "edit"; return (mods[mod] ?? "edit") as string; };
   const viewOK = modLvl(nav.view) !== "none" || ["settings", "billing", "admin"].includes(nav.view);
   const inApp = (v: string) => (appMode === "all" || (APPS[appMode] || []).includes(v) || ["settings", "billing", "admin"].includes(v)) && modLvl(v) !== "none";
@@ -3074,7 +3146,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
         <NavB v="dashboard" short="🏠">Home</NavB><NavB v="queue" short="🗂">Work Queue</NavB><NavB v="myday" short="☀️">My Day</NavB><NavB v="inbox" short="💬">Inbox</NavB><NavB v="planner" short="✅" onGo={() => { go({ view: "planner" }); (window as any).wpGoTab?.("planner", "tasks"); }}>Tasks</NavB>
       </NavGroup>
       <NavGroup id="pipe" label="PIPELINE">
-        <NavB v="leads" short="🎯">Leads</NavB><NavB v="customers" short="👥">Customers</NavB><NavB v="proposals" short="📄">Proposals</NavB><NavB v="approvals" short="🖊" cnt={pending || undefined}>Approvals</NavB>
+        <NavB v="leads" short="🎯">Leads</NavB><NavB v="customers" short="👥">Customers</NavB><NavB v="proposals" short="📄">Proposals</NavB><NavB v="approvals" short="🖊" cnt={pending || undefined}>Approvals</NavB><NavB v="opportunities" short="💼">Opportunities</NavB>
       </NavGroup>
       <NavGroup id="ops" label="OPERATIONS">
         <NavB v="jobs" short="🛠">Jobs</NavB><NavB v="planner" short="🗓" onGo={() => { go({ view: "planner" }); (window as any).wpGoTab?.("planner", "calendar"); }}>Schedule</NavB><NavB v="ops" short="🖥">Ops Console</NavB>
@@ -3108,6 +3180,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       {nav.view === "customers" && viewOK && <Customers openCustomer={(id: string) => setCustOpen(id)} tabSignal={tabSignal} />}
       {(nav.view === "people") && viewOK && <Customers openCustomer={(id: string) => setCustOpen(id)} tabSignal={{ view: "customers", tab: "people", n: 1 }} />}
       {nav.view === "campaigns" && viewOK && <Campaigns openLead={openLead} />}
+      {nav.view === "opportunities" && viewOK && <OpportunitiesBoard openLead={openLead} />}
       {nav.view === "planner" && viewOK && <Planner openLead={openLead} tabSignal={tabSignal} />}
       {(nav.view === "tasks" || nav.view === "calendar") && viewOK && <Planner openLead={openLead} tabSignal={{ view: "planner", tab: nav.view === "tasks" ? "tasks" : "calendar", n: 1 }} />}
       {nav.view === "library" && viewOK && <Library openLead={openLead} openJob={(id: string) => setJobOpen(id)} openCustomer={(id: string) => setCustOpen(id)} tabSignal={tabSignal} />}
