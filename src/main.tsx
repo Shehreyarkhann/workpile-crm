@@ -929,10 +929,10 @@ function IntegrationConfig({ id, s, setS, keys, hooks, oauth, loadAll, onJump, m
 }
 
 const PLANS_FALLBACK: any[] = [
-  { key: "starter", name: "Starter", users: 2, active_requests: 150, list_price: 49, annual_price: 39, save_pct: 20, blurb: "For the small office getting its pile under control — price book, proposals, e-sign, email follow-ups." },
-  { key: "pro", name: "Pro", users: 5, active_requests: 750, list_price: 149, annual_price: 119, save_pct: 20, blurb: "The full execution system: SMS follow-ups, API + webhooks, your own sending domain." },
-  { key: "business", name: "Business", users: 15, active_requests: 3000, list_price: 349, annual_price: 299, save_pct: 14, blurb: "For multi-crew operations: audit-log export, advanced permissions, priority support and onboarding." },
-  { key: "enterprise", name: "Enterprise", users: 0, active_requests: 1000000, list_price: 0, annual_price: 0, save_pct: 0, custom: true, blurb: "SSO/SAML, DPA, SLA, multiple locations and custom integrations — priced to your operation." },
+  { key: "starter", name: "Starter", users: 2, active_requests: 150, list_price: 49, annual_price: 39, save_pct: 20, blurb: "For the small office getting its pile under control.", highlights: ["Price book, proposals, e-sign + deposits", "Email follow-ups + cadences", "Work Queue + AI agent (rules mode)", "Field crew always free"] },
+  { key: "pro", name: "Pro", users: 5, active_requests: 750, list_price: 149, annual_price: 119, save_pct: 20, blurb: "The full execution system for a working office.", highlights: ["Everything in Starter", "SMS follow-ups", "API, webhooks + QuickBooks", "Your own sending domain", "Approval policies in full"] },
+  { key: "business", name: "Business", users: 15, active_requests: 3000, list_price: 349, annual_price: 299, save_pct: 14, blurb: "For multi-crew operations that run on the numbers.", highlights: ["Everything in Pro", "Audit-log export", "Advanced permissions", "Priority support + onboarding call"] },
+  { key: "enterprise", name: "Enterprise", users: 0, active_requests: 1000000, list_price: 0, annual_price: 0, save_pct: 0, custom: true, blurb: "Priced to your operation.", highlights: ["SSO/SAML + SCIM", "DPA + SLA", "Multiple locations", "Custom integrations"] },
 ];
 function PlanCards({ onAction, currentKey }: any) {
   const [period, setPeriod] = useState<"monthly" | "annual">("annual");
@@ -947,16 +947,17 @@ function PlanCards({ onAction, currentKey }: any) {
       </div>
     </div>
     {period === "annual" && <div className="salebar"><span className="tag">SALE</span><span>Yearly billing is on sale — up to {maxSave}% off the regular monthly price, locked in when you subscribe.</span></div>}
-    <div className="featGrid" style={{ marginTop: 14 }}>{plans.map((p: any) => <div className="feat" key={p.key} style={currentKey === p.key ? { borderColor: "#166534", borderWidth: 2 } : {}}>
-      {period === "annual" && !p.custom && <span className="savebadge">SAVE {p.save_pct}%</span>}
-      <span className="muted" style={{ textTransform: "uppercase", fontWeight: 700, fontSize: 12, display: "block", paddingRight: period === "annual" && !p.custom ? 78 : 0 }}>{p.name}{p.users ? ` · ${p.users} office users` : ""}</span>
-      {p.custom ? <h4 style={{ fontSize: 24 }}>Custom</h4> : period === "annual"
-        ? <h4 style={{ fontSize: 24 }}><s className="muted" style={{ fontSize: 16 }}>{px(p.list_price)}</s> {px(p.annual_price)}/mo</h4>
-        : <h4 style={{ fontSize: 24 }}>{px(p.list_price)}/mo</h4>}
-      <p>{p.custom ? p.blurb : period === "annual"
-        ? <>Billed annually ({px(p.annual_price * 12)}/yr) · up to {num(p.active_requests)} active requests · {p.blurb}</>
-        : <>Billed monthly · up to {num(p.active_requests)} active requests · {p.blurb} <span className="muted">Or {px(p.annual_price)}/mo on yearly — save {p.save_pct}%.</span></>}</p>
-      <button className="btn" style={{ marginTop: 12 }} disabled={currentKey === p.key} onClick={() => onAction && onAction(p.key, period)}>{currentKey === p.key ? "Current plan" : p.custom ? "Talk to us" : currentKey ? `Switch to ${p.name}` : "Start free"}</button>
+    <div className="planGrid">{plans.map((p: any) => <div className={"planCard" + (p.key === "pro" ? " pop" : "")} key={p.key} style={currentKey === p.key ? { outline: "2px solid #22c55e", outlineOffset: 2 } : {}}>
+      {p.key === "pro" && <span className="popTag">★ MOST POPULAR</span>}
+      <div className="pcHead"><span className="pcName">{p.name}</span>{p.users ? <span className="pcUsers">{p.users} office users included</span> : <span className="pcUsers">Custom terms</span>}</div>
+      {p.custom ? <div className="pcPriceRow"><span className="pcPrice">Custom</span></div> : period === "annual"
+        ? <div className="pcPriceRow"><span className="pcPrice">{px(p.annual_price)}</span><span className="pcPer">/mo</span></div>
+        : <div className="pcPriceRow"><span className="pcPrice">{px(p.list_price)}</span><span className="pcPer">/mo</span></div>}
+      <div className="pcBill">{p.custom ? "Scoped to your operation" : period === "annual" ? <><s className="pcWas">{px(p.list_price)}</s> Billed annually · {px(p.annual_price * 12)}/yr <span className="savePill">SAVE {p.save_pct}%</span></> : `Billed monthly · or ${px(p.annual_price)}/mo yearly`}</div>
+      <p className="pcBlurb">{p.blurb}</p>
+      <ul className="pcFeat">{(p.highlights || []).map((h: string) => <li key={h}><span className="pcTick">✓</span>{h}</li>)}</ul>
+      {!p.custom && <div className="pcMeter">Up to <b>{num(p.active_requests)}</b> active requests · overage never blocks intake</div>}
+      <button className={"btn pcBtn" + (p.key === "pro" ? " popBtn" : "")} disabled={currentKey === p.key} onClick={() => onAction && onAction(p.key, period)}>{currentKey === p.key ? "Current plan" : p.custom ? "Talk to us" : currentKey ? `Switch to ${p.name}` : "Start free"}</button>
     </div>)}</div>
   </div>);
 }

@@ -349,3 +349,37 @@ aside.rail .sideHead { flex-direction: column; gap: 6px; }
 @media (max-width:640px){ .qRow { grid-template-columns:22px minmax(0,1fr) 96px; } .qBadge, .qQuick { display:none; } .qBtn { width:96px; } }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
+
+/* Pricing v2 plan cards */
+.planGrid { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-top:22px; align-items:stretch; }
+@media (max-width:1100px){ .planGrid { grid-template-columns:repeat(2,1fr); } }
+@media (max-width:620px){ .planGrid { grid-template-columns:1fr; } }
+.planCard { position:relative; background:#fff; border:1px solid #e3e9e4; border-radius:18px; padding:26px 24px 24px; box-shadow:0 6px 22px rgba(10,40,22,.06); display:flex; flex-direction:column; }
+.planCard.pop { background:#083B25; border-color:#083B25; color:#eef6f0; box-shadow:0 18px 38px rgba(6,40,22,.28); }
+.popTag { position:absolute; top:-13px; left:50%; transform:translateX(-50%); background:#22C55E; color:#06281a; font-size:11px; font-weight:800; letter-spacing:.8px; padding:5px 14px; border-radius:99px; white-space:nowrap; box-shadow:0 4px 12px rgba(34,197,94,.4); }
+.pcHead { display:flex; flex-direction:column; gap:2px; }
+.pcName { font-size:13px; font-weight:800; letter-spacing:1.2px; text-transform:uppercase; color:#0E5C3A; }
+.planCard.pop .pcName { color:#4ADE80; }
+.pcUsers { font-size:12.5px; color:#64746b; }
+.planCard.pop .pcUsers { color:#a7c4b2; }
+.pcPriceRow { display:flex; align-items:baseline; gap:8px; margin-top:14px; flex-wrap:wrap; }
+.pcWas { color:#94a39a; font-size:12.5px; }
+.pcPrice { font-size:38px; font-weight:800; letter-spacing:-.02em; line-height:1; }
+.pcPer { font-size:15px; color:#64746b; font-weight:600; }
+.planCard.pop .pcPer { color:#a7c4b2; }
+.savePill { background:#FEF3C7; color:#92400E; border:1px solid #F59E0B; font-size:11px; font-weight:800; padding:2px 8px; border-radius:99px; }
+.pcBill { font-size:12.5px; color:#64746b; margin-top:8px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.planCard.pop .pcBill { color:#a7c4b2; }
+.pcBlurb { font-size:13.5px; line-height:1.55; color:#3c4a41; margin:12px 0 0; }
+.planCard.pop .pcBlurb { color:#d7e8dc; }
+.pcFeat { list-style:none; margin:16px 0 0; padding:14px 0 0; border-top:1px solid #e8eee9; display:flex; flex-direction:column; gap:9px; }
+.planCard.pop .pcFeat { border-top-color:#14532d; }
+.pcFeat li { display:flex; gap:9px; font-size:13.5px; line-height:1.45; align-items:flex-start; }
+.pcTick { color:#16A34A; font-weight:800; flex:none; }
+.planCard.pop .pcTick { color:#4ADE80; }
+.pcMeter { margin-top:14px; font-size:12.5px; color:#64746b; background:#f4f7f4; border-radius:9px; padding:8px 11px; }
+.planCard.pop .pcMeter { background:#0b4a2d; color:#c9e5d2; }
+.pcBtn { margin-top:auto; width:100%; padding:12px; font-size:14.5px; border-radius:11px; }
+.planCard.pop .pcBtn, .pcBtn.popBtn { background:#22C55E; color:#06281a; font-weight:800; }
+.pcFeat { margin-bottom:18px; }
+.pcMeter { margin-bottom:18px; }
