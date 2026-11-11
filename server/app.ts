@@ -161,7 +161,7 @@ export function outcomePayload(lead: any) {
 export function approvalRequiredFor(workspaceId: string, total: number, actorRole?: string): boolean {
   if (actorRole === "OWNER") return false; // v25: the owner is never approval-gated — unlimited by role
   const ws = db.prepare("SELECT approval_policy, approval_threshold FROM workspaces WHERE id=?").get(workspaceId) as any;
-  const policy = ws?.approval_policy || "amount";
+  const policy = ws?.approval_policy || "always";
   if (policy === "off") return false;
   if (policy === "always") return true;
   return (total || 0) > (ws?.approval_threshold ?? 25000);
@@ -190,7 +190,7 @@ export function maybeRequestApproval(workspaceId: string, actor: string, lead: a
   if (pend) return pend;
   const appr = approvedApprovalFor(workspaceId, proposal.id);
   if (appr) return appr;
-  const approver = lead.approver_id || (db.prepare("SELECT id FROM users WHERE workspace_id=? AND role IN ('OWNER','APPROVER') ORDER BY role LIMIT 1").get(workspaceId) as any)?.id;
+  const approver = lead.approver_id || (db.prepare("SELECT id FROM users WHERE workspace_id=? AND role IN ('OWNER','OPS_ADMIN','APPROVER') ORDER BY CASE role WHEN 'OWNER' THEN 0 WHEN 'OPS_ADMIN' THEN 1 ELSE 2 END LIMIT 1").get(workspaceId) as any)?.id;
   const id = uid("apr");
   db.prepare("INSERT INTO approvals (id,workspace_id,lead_id,proposal_id,submitted_by,approver_id,tier,submitted_at) VALUES (?,?,?,?,?,?,?,?)")
     .run(id, workspaceId, lead.id, proposal.id, actor, approver, (proposal.total || 0) > 25000 ? "ceo" : "manager", now());
@@ -300,7 +300,7 @@ const PERM_KEYS = ["leads_scope", "can_approve", "can_billing", "can_settings", 
 const ROLE_PERMS: Record<string, Perms> = {
   OWNER: { leads_scope: "all", can_approve: true, can_billing: true, can_settings: true, can_export: true, can_manage_team: true },
   ADMIN: { leads_scope: "all", can_approve: true, can_billing: false, can_settings: true, can_export: true, can_manage_team: true },
-  OPS_ADMIN: { leads_scope: "all", can_approve: false, can_billing: true, can_settings: true, can_export: true, can_manage_team: true },
+  OPS_ADMIN: { leads_scope: "all", can_approve: true, can_billing: true, can_settings: true, can_export: true, can_manage_team: true },
   APPROVER: { leads_scope: "all", can_approve: true, can_billing: false, can_settings: false, can_export: true, can_manage_team: false },
   LEAD_OWNER: { leads_scope: "own", can_approve: false, can_billing: false, can_settings: false, can_export: false, can_manage_team: false },
   PM: { leads_scope: "own", can_approve: false, can_billing: false, can_settings: false, can_export: false, can_manage_team: false },
@@ -354,7 +354,8 @@ app.get("/api/leads/:id", requireAuth, (req: any, res) => {
   if (scopeOwn(req.user) && !mine(req.user, l)) return res.status(404).json({ error: { code: "not_found" } });
   const events = db.prepare("SELECT * FROM lead_events WHERE lead_id=? ORDER BY created_at").all(l.id);
   const tasks = db.prepare("SELECT * FROM tasks WHERE lead_id=? ORDER BY due_at").all(l.id);
-  const proposals = db.prepare("SELECT * FROM proposals WHERE lead_id=? ORDER BY version DESC").all(l.id);
+  const proposals = db.prepare("SELECT * FROM proposals WHERE lead_id=? ORDER BY version DESC").all(l.id) as any[];
+  for (const p of proposals) { const ap = db.prepare("SELECT a.*, u.name approver_name FROM approvals a LEFT JOIN users u ON u.id=a.approver_id WHERE a.proposal_id=? ORDER BY a.submitted_at DESC").get(p.id) as any; p.approval_state = !ap ? "none" : !ap.decision ? "pending" : ap.decision; p.approver_name = ap?.approver_name || null; p.approval_id = ap?.id || null; }
   const docs = db.prepare("SELECT * FROM documents WHERE lead_id=?").all(l.id);
   const visits = db.prepare("SELECT * FROM site_visits WHERE lead_id=?").all(l.id);
   const activities = db.prepare("SELECT a.*, u.name user_name FROM activities a LEFT JOIN users u ON u.id=a.user_id WHERE a.lead_id=? ORDER BY a.created_at DESC").all(l.id);
@@ -567,6 +568,24 @@ app.get("/api/agent/runs", requireAuth, async (req: any, res) => { res.json(db.p
 app.get("/api/metrics", requireAuth, (req: any, res) => res.json(metrics(req.user.workspace_id)));
 app.get("/api/brief", requireAuth, (req: any, res) => res.json(morningBrief(req.user.workspace_id)));
 app.get("/api/demand-gap", requireAuth, (req: any, res) => { const leads = db.prepare("SELECT * FROM leads WHERE workspace_id=?").all(req.user.workspace_id) as any[]; const catalog = (db.prepare("SELECT name FROM services WHERE workspace_id=? AND is_catalog=1").all(req.user.workspace_id) as any[]).map(r => r.name); res.json(demandGap(leads, catalog)); });
+app.get("/api/demand-gap/full", requireAuth, (req: any, res) => {
+  const ws = req.user.workspace_id;
+  const leads = db.prepare("SELECT * FROM leads WHERE workspace_id=?").all(ws) as any[];
+  const catalog = (db.prepare("SELECT name FROM services WHERE workspace_id=? AND is_catalog=1").all(ws) as any[]).map(r => r.name);
+  const catSet = new Set(catalog.map(x => x.trim().toLowerCase()));
+  const unmet = demandGap(leads, catalog);
+  const away = leads.filter(l => ["LOST", "UNSERVICEABLE"].includes(l.state));
+  const byReason = new Map<string, any>();
+  for (const l of away) { const r = String(l.lost_reason || "NO_REASON_RECORDED").toUpperCase(); const g = byReason.get(r) || { reason: r, label: r.replaceAll("_", " ").toLowerCase().replace(/^\w/, ch => ch.toUpperCase()), count: 0, value: 0 }; g.count++; g.value += l.est_value || 0; byReason.set(r, g); }
+  const notOffered = new Map<string, any>();
+  for (const l of leads) { const s = String(l.service_requested || "").trim(); if (!s || catSet.has(s.toLowerCase())) continue; const g = notOffered.get(s) || { service: s, count: 0, open: 0, won: 0, value: 0 }; g.count++; if (!["WON", "LOST", "UNSERVICEABLE", "JUNK", "DUPLICATE", "NO_RESPONSE"].includes(l.state)) g.open++; if (l.state === "WON") g.won++; g.value += l.est_value || 0; notOffered.set(s, g); }
+  const areas = new Map<string, number>();
+  for (const l of away) { if (l.state !== "UNSERVICEABLE" && !/AREA|COVERAGE/.test(String(l.lost_reason || "").toUpperCase())) continue; const area = String(l.location || "Unknown area").split(",")[0].trim() || "Unknown area"; areas.set(area, (areas.get(area) || 0) + 1); }
+  res.json({ unmet, catalog_size: catalog.length,
+    turned_away: { total: away.length, value: away.reduce((s, l) => s + (l.est_value || 0), 0), by_reason: [...byReason.values()].sort((x, y) => y.count - x.count) },
+    not_offered: [...notOffered.values()].sort((x, y) => y.count - x.count).slice(0, 12),
+    coverage: [...areas.entries()].map(([area, count]) => ({ area, count })).sort((x, y) => y.count - x.count).slice(0, 10) });
+});
 app.get("/api/demand-gap/leads", requireAuth, (req: any, res) => { const leads = db.prepare("SELECT * FROM leads WHERE workspace_id=?").all(req.user.workspace_id) as any[]; const catalog = (db.prepare("SELECT name FROM services WHERE workspace_id=? AND is_catalog=1").all(req.user.workspace_id) as any[]).map(r => r.name); let pool = demandPool(leads, catalog).filter(l => (l.service_requested || "") === String(req.query.service || "")); if (scopeOwn(req.user)) pool = pool.filter(l => mine(req.user, l)); res.json(pool.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).slice(0, 500).map(leadView)); });
 
 // Gregory P0s (§25): field reports, timesheets, site visits, documents
@@ -995,7 +1014,8 @@ app.get("/api/jobs/:id", requireAuth, (req: any, res) => {
   const originRow = (origin && origin.proposal_id) ? origin : db.prepare("SELECT l.id lead_id, l.service_requested, l.state lead_state, p.id proposal_id, p.total proposal_total, p.status proposal_status FROM leads l LEFT JOIN proposals p ON p.lead_id=l.id AND p.status='signed' WHERE l.id=? ORDER BY p.version DESC, p.created_at DESC LIMIT 1").get(j.lead_id) as any;
   const invoices = (db.prepare("SELECT * FROM invoices WHERE job_id=? ORDER BY created_at DESC").all(j.id) as any[]).map((i: any) => { const tok = ensureInvoiceToken(i); return { ...i, token: tok, link: "/invoice/" + tok, lines: JSON.parse(i.lines || "[]"), balance: Math.round(((i.total || 0) - (i.paid_amount || 0)) * 100) / 100 }; });
   const siteVisits = db.prepare("SELECT v.*, u.name assignee_name FROM site_visits v LEFT JOIN users u ON u.id=v.assigned_to WHERE v.lead_id=? ORDER BY v.scheduled_at").all(j.lead_id);
-  res.json({ job: jobView(j), labor, schedule, documents, field_reports: reports, change_orders: changeOrders, invoices, site_visits: siteVisits, origin: originRow || { lead_id: j.lead_id } });
+  const pendAppr = db.prepare("SELECT a.id, a.submitted_at, u.name approver_name, pr.total proposal_total FROM approvals a LEFT JOIN users u ON u.id=a.approver_id LEFT JOIN proposals pr ON pr.id=a.proposal_id WHERE a.workspace_id=? AND a.lead_id=? AND a.decision IS NULL ORDER BY a.submitted_at DESC").get(req.user.workspace_id, j.lead_id) as any;
+  res.json({ job: jobView(j), labor, schedule, documents, field_reports: reports, change_orders: changeOrders, invoices, site_visits: siteVisits, pending_approval: pendAppr || null, origin: originRow || { lead_id: j.lead_id } });
 });
 app.post("/api/jobs/:id/stage", requireAuth, (req: any, res) => {
   const j = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
@@ -1531,6 +1551,80 @@ app.get("/api/queue", requireAuth, (req: any, res) => {
   res.json({ items: items.slice(0, 100), total: items.length, by_type: items.reduce((m: any, i: any) => { m[i.type] = (m[i.type] || 0) + 1; return m; }, {}) });
 });
 // ---------- v3 slice 36 (server): board stats — metrics ON the work surface ----------
+app.get("/api/analytics", requireAuth, (req: any, res) => {
+  const ws = req.user.workspace_id;
+  const period = ["week", "month", "year"].includes(String(req.query.period)) ? String(req.query.period) : "month";
+  const days = period === "week" ? 7 : period === "year" ? 365 : 30;
+  const nowMs = Date.now();
+  const inWin = (ts: any, from: number, to: number) => { if (!ts) return false; const t = new Date(ts).getTime(); return t >= from && t < to; };
+  const cur: [number, number] = [nowMs - days * 86400000, nowMs];
+  const prev: [number, number] = [nowMs - 2 * days * 86400000, nowMs - days * 86400000];
+  const leads = db.prepare("SELECT * FROM leads WHERE workspace_id=?").all(ws) as any[];
+  const props = db.prepare("SELECT * FROM proposals WHERE workspace_id=?").all(ws) as any[];
+  const invs = db.prepare("SELECT * FROM invoices WHERE workspace_id=?").all(ws) as any[];
+  const pays = db.prepare("SELECT * FROM payments WHERE workspace_id=?").all(ws) as any[];
+  const apprs = db.prepare("SELECT * FROM approvals WHERE workspace_id=?").all(ws) as any[];
+  const propByLead = new Map<string, any[]>(); for (const p of props) { const arr = propByLead.get(p.lead_id) || []; arr.push(p); propByLead.set(p.lead_id, arr); }
+  const kpi = (curV: number, prevV: number) => ({ now: Math.round(curV * 10) / 10, prev: Math.round(prevV * 10) / 10, delta_pct: prevV > 0 ? Math.round(1000 * (curV - prevV) / prevV) / 10 : null });
+  const cnt = (arr: any[], f: (x: any) => any, w: [number, number]) => arr.filter(x => inWin(f(x), w[0], w[1])).length;
+  const sum = (arr: any[], f: (x: any) => any, g: (x: any) => number, w: [number, number]) => arr.filter(x => inWin(f(x), w[0], w[1])).reduce((s, x) => s + (g(x) || 0), 0);
+  const touchHours = (w: [number, number]) => { const rows = leads.filter(l => inWin(l.created_at, w[0], w[1]) && l.first_touch_at); if (!rows.length) return 0; return rows.reduce((s, l) => s + (new Date(l.first_touch_at).getTime() - new Date(l.created_at).getTime()) / 3600000, 0) / rows.length; };
+  const fpar = (w: [number, number]) => { const d = apprs.filter(x => x.decided_at && inWin(x.decided_at, w[0], w[1])); if (!d.length) return 0; return Math.round(1000 * d.filter(x => x.decision === "approved").length / d.length) / 10; };
+  const kpis = {
+    new_leads: kpi(cnt(leads, l => l.created_at, cur), cnt(leads, l => l.created_at, prev)),
+    touched: kpi(cnt(leads, l => l.first_touch_at, cur), cnt(leads, l => l.first_touch_at, prev)),
+    proposals_sent: kpi(cnt(props, p => p.sent_at, cur), cnt(props, p => p.sent_at, prev)),
+    proposals_signed: kpi(cnt(props, p => p.signed_at, cur), cnt(props, p => p.signed_at, prev)),
+    signed_value: kpi(sum(props, p => p.signed_at, p => p.total, cur), sum(props, p => p.signed_at, p => p.total, prev)),
+    invoiced: kpi(sum(invs, i => i.created_at, i => i.total, cur), sum(invs, i => i.created_at, i => i.total, prev)),
+    collected: kpi(sum(pays, p => p.created_at, p => p.amount, cur), sum(pays, p => p.created_at, p => p.amount, prev)),
+    avg_touch_hours: kpi(touchHours(cur), touchHours(prev)),
+    fpar: kpi(fpar(cur), fpar(prev))
+  };
+  const fLeads = leads.filter(l => inWin(l.created_at, ...cur));
+  const funnel = [
+    { stage: "Leads in", n: fLeads.length },
+    { stage: "Touched", n: fLeads.filter(l => l.first_touch_at).length },
+    { stage: "Proposal built", n: fLeads.filter(l => (propByLead.get(l.id) || []).length > 0).length },
+    { stage: "Proposal sent", n: fLeads.filter(l => (propByLead.get(l.id) || []).some(p => p.sent_at)).length },
+    { stage: "Signed", n: fLeads.filter(l => (propByLead.get(l.id) || []).some(p => p.signed_at)).length }
+  ];
+  const buckets = period === "year" ? 12 : period === "month" ? 10 : 7;
+  const bSize = (days * 86400000) / buckets;
+  const trend = Array.from({ length: buckets }, (_, i) => { const from = cur[0] + i * bSize, to = from + bSize; const d = new Date(from); return { label: period === "year" ? d.toLocaleDateString(undefined, { month: "short" }) : d.toLocaleDateString(undefined, { month: "numeric", day: "numeric" }), leads: cnt(leads, l => l.created_at, [from, to]), signed_value: Math.round(sum(props, p => p.signed_at, p => p.total, [from, to])) }; });
+  const groupBy = (keyOf: (l: any) => string) => { const map = new Map<string, any>(); for (const l of fLeads) { const k = keyOf(l) || "—"; const g = map.get(k) || { name: k, leads: 0, won: 0, lost: 0, value: 0, signed_value: 0 }; g.leads++; const ps = propByLead.get(l.id) || []; if (ps.some(p => p.signed_at)) { g.won++; g.signed_value += Math.max(...ps.filter(p => p.signed_at).map(p => p.total || 0)); } if (["LOST", "NO_RESPONSE", "UNSERVICEABLE"].includes(l.state)) g.lost++; g.value += l.est_value || 0; map.set(k, g); } return [...map.values()].map(g => ({ ...g, win_rate: (g.won + g.lost) > 0 ? Math.round(1000 * g.won / (g.won + g.lost)) / 10 : null })).sort((x, y) => y.leads - x.leads); };
+  const usersById = new Map((db.prepare("SELECT id, name FROM users WHERE workspace_id=?").all(ws) as any[]).map(u => [u.id, u.name]));
+  const by_service = groupBy(l => l.service_requested || "Unspecified").slice(0, 10);
+  const by_source = groupBy(l => l.source || "Unknown").slice(0, 8);
+  const by_owner = groupBy(l => l.owner_id ? (usersById.get(l.owner_id) || "Owner") : "Unassigned").slice(0, 8);
+  // deep insights (all-time where cohorts need size)
+  const insights: string[] = [];
+  const coh = (maxH: number | null, minH: number) => { const rows = leads.filter(l => l.first_touch_at && (((new Date(l.first_touch_at).getTime() - new Date(l.created_at).getTime()) / 3600000) >= minH) && (maxH === null || ((new Date(l.first_touch_at).getTime() - new Date(l.created_at).getTime()) / 3600000) < maxH)); const won = rows.filter(l => (propByLead.get(l.id) || []).some(p => p.signed_at)).length; const decided = rows.filter(l => (propByLead.get(l.id) || []).some(p => p.signed_at) || ["LOST", "NO_RESPONSE", "UNSERVICEABLE"].includes(l.state)).length; return { n: rows.length, rate: decided >= 3 ? Math.round(1000 * won / decided) / 10 : null }; };
+  const fast = coh(1, 0), slow = coh(null, 24);
+  if (fast.rate !== null && slow.rate !== null) insights.push(`⚡ Speed wins deals: leads touched within an hour sign at ${fast.rate}% vs ${slow.rate}% for leads left over a day (all-time, ${fast.n + slow.n} leads measured).`);
+  const svcDecided = by_service.filter(s => s.win_rate !== null && (s.won + s.lost) >= 3).sort((x, y) => (y.win_rate || 0) - (x.win_rate || 0));
+  if (svcDecided.length) insights.push(`🏆 Strongest service: ${svcDecided[0].name} closes at ${svcDecided[0].win_rate}% (${svcDecided[0].won} won of ${svcDecided[0].won + svcDecided[0].lost} decided this period).`);
+  const staleCut = nowMs - 14 * 86400000;
+  const stale = leads.filter(l => !["WON", "LOST", "NO_RESPONSE", "UNSERVICEABLE", "JUNK", "DUPLICATE"].includes(l.state) && new Date(l.updated_at || l.created_at).getTime() < staleCut);
+  if (stale.length) insights.push(`🧊 ${stale.length} open leads have gone quiet for 14+ days — ${"$" + Math.round(stale.reduce((s, l) => s + (l.est_value || 0), 0)).toLocaleString()} of pipeline cooling off. The Work Queue surfaces them; a reactivation pass is the cheapest recovery.`);
+  const lossReasons = new Map<string, number>(); for (const l of leads.filter(l => inWin(l.updated_at, ...cur) && ["LOST", "UNSERVICEABLE"].includes(l.state))) lossReasons.set(String(l.lost_reason || "no reason recorded"), (lossReasons.get(String(l.lost_reason || "no reason recorded")) || 0) + 1);
+  const topLoss = [...lossReasons.entries()].sort((x, y) => y[1] - x[1])[0];
+  if (topLoss) insights.push(`🔍 Top loss driver this period: "${topLoss[0].replaceAll("_", " ").toLowerCase()}" (${topLoss[1]} leads). Demand Gap has the full breakdown.`);
+  const noOwner = fLeads.filter(l => !l.owner_id).length;
+  if (noOwner > 0) insights.push(`👤 ${noOwner} of ${fLeads.length} new leads this period have no owner — unowned leads don't get worked.`);
+  // future: weighted pipeline + expected signings + receivables due
+  const W: Record<string, number> = { NEW: 0.05, WORKING: 0.15, QUALIFIED: 0.35, PROPOSAL: 0.55, SENT: 0.75, FOLLOWUP: 0.45 };
+  const openLeads = leads.filter(l => !["WON", "LOST", "NO_RESPONSE", "UNSERVICEABLE", "JUNK", "DUPLICATE"].includes(l.state));
+  const weighted = openLeads.reduce((s, l) => s + (l.est_value || 0) * (W[l.state] || 0.05), 0);
+  const outProps = props.filter(p => p.sent_at && !p.signed_at && p.status !== "withdrawn");
+  const sentDecided = props.filter(p => p.signed_at || p.outcome === "lost");
+  const sentRate = sentDecided.length >= 3 ? props.filter(p => p.signed_at).length / Math.max(1, props.filter(p => p.sent_at).length) : null;
+  const dueSoon = invs.filter(i => (i.total || 0) > (i.paid_amount || 0) && i.due_at && new Date(i.due_at).getTime() <= nowMs + 30 * 86400000 && i.status !== "void");
+  const collectedAll = pays.reduce((s, p) => s + (p.amount || 0), 0); const invoicedAll = invs.filter(i => i.status !== "void").reduce((s, i) => s + (i.total || 0), 0);
+  const collectRate = invoicedAll > 0 ? Math.min(1, collectedAll / invoicedAll) : null;
+  const forecast = { weighted_pipeline: Math.round(weighted), proposals_out: outProps.length, proposals_out_value: Math.round(outProps.reduce((s, p) => s + (p.total || 0), 0)), expected_signings_value: sentRate !== null ? Math.round(outProps.reduce((s, p) => s + (p.total || 0), 0) * sentRate) : null, sent_close_rate: sentRate !== null ? Math.round(1000 * sentRate) / 10 : null, receivables_due_30d: Math.round(dueSoon.reduce((s, i) => s + ((i.total || 0) - (i.paid_amount || 0)), 0)), projected_collected_30d: collectRate !== null ? Math.round(dueSoon.reduce((s, i) => s + ((i.total || 0) - (i.paid_amount || 0)), 0) * collectRate) : null, collection_rate: collectRate !== null ? Math.round(1000 * collectRate) / 10 : null };
+  res.json({ period, days, kpis, funnel, trend, by_service, by_source, by_owner, insights, forecast });
+});
 app.get("/api/board-stats", requireAuth, (req: any, res) => {
   const ws = req.user.workspace_id;
   const leads = db.prepare("SELECT * FROM leads WHERE workspace_id=?").all(ws) as any[];
@@ -1643,6 +1737,12 @@ function pAudit(req: any, action: string, targetType: string, targetId: string |
 // can never quietly accumulate operators. Without it, PLATFORM_ADMIN_EMAILS
 // (comma-separated) is honored, and if no admin exists at all the first
 // account is flagged so a fresh host is reachable.
+// V40 one-time default flip (his directive: every proposal is approved by
+// the owner or ops director before it sends). Workspaces still carrying the
+// untouched v3 default ('amount' at the stock $25k threshold) move to
+// 'always'; a workspace that deliberately chose a policy/threshold keeps it.
+// Guarded by app_migrations so it can only ever run once.
+try { db.exec("CREATE TABLE IF NOT EXISTS app_migrations (name TEXT PRIMARY KEY, applied_at TEXT)"); const done = db.prepare("SELECT name FROM app_migrations WHERE name='v40_approval_default'").get(); if (!done) { db.prepare("UPDATE workspaces SET approval_policy='always' WHERE approval_policy='amount' AND COALESCE(approval_threshold, 25000) = 25000").run(); db.prepare("INSERT INTO app_migrations (name, applied_at) VALUES ('v40_approval_default', ?)").run(now()); } } catch { /* marker table unavailable: skip rather than break boot */ }
 export function syncPlatformAdmin() {
   try {
     const op = String(process.env.PLATFORM_ADMIN_EMAIL || "").trim().toLowerCase();
@@ -2006,6 +2106,15 @@ app.post("/api/leads/:id/message", requireAuth, async (req: any, res) => {
   res.status(201).json({ id: r.id, status: r.status, channel, to });
 });
 app.get("/api/leads/:id/messages", requireAuth, (req: any, res) => { res.json(db.prepare("SELECT * FROM messages_outbox WHERE lead_id=? AND workspace_id=? ORDER BY created_at DESC").all(req.params.id, req.user.workspace_id)); });
+app.post("/api/proposals/:id/submit", requireAuth, (req: any, res) => {
+  const p = db.prepare("SELECT * FROM proposals WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!p) return res.status(404).json({ error: { code: "not_found" } });
+  const l = db.prepare("SELECT * FROM leads WHERE id=?").get(p.lead_id) as any;
+  if (!approvalRequiredFor(req.user.workspace_id, p.total || 0, req.user.role)) return res.json({ required: false, note: req.user.role === "OWNER" ? "You are the owner — no approval needed, you can send." : "Workspace policy does not require approval for this proposal." });
+  const ap: any = maybeRequestApproval(req.user.workspace_id, req.user.id, l, p);
+  const approver = ap?.approver_id ? (db.prepare("SELECT name FROM users WHERE id=?").get(ap.approver_id) as any)?.name : null;
+  res.status(201).json({ required: true, approval_id: ap?.id || null, approver_name: approver, state: ap?.decision ? ap.decision : "pending" });
+});
 app.post("/api/proposals/:id/send", requireAuth, async (req: any, res) => {
   const p = db.prepare("SELECT * FROM proposals WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!p) return res.status(404).json({ error: { code: "not_found" } });
@@ -2211,6 +2320,20 @@ app.post("/api/templates", requireAuth, needPerm("can_settings"), (req: any, res
 app.patch("/api/templates/:id", requireAuth, needPerm("can_settings"), (req: any, res) => { const b = req.body; db.prepare("UPDATE templates SET name=COALESCE(?,name), body=COALESCE(?,body), active=COALESCE(?,active), version=version+1 WHERE id=? AND workspace_id=?").run(b.name ?? null, b.body ?? null, b.active === undefined ? null : (b.active ? 1 : 0), req.params.id, req.user.workspace_id); res.json(db.prepare("SELECT * FROM templates WHERE id=?").get(req.params.id)); });
 app.delete("/api/templates/:id", requireAuth, needPerm("can_settings"), (req: any, res) => { db.prepare("DELETE FROM templates WHERE id=? AND workspace_id=?").run(req.params.id, req.user.workspace_id); res.json({ ok: true }); });
 app.get("/api/services", requireAuth, (req: any, res) => res.json(db.prepare("SELECT * FROM services WHERE workspace_id=?").all(req.user.workspace_id)));
+app.get("/api/services/stats", requireAuth, (req: any, res) => {
+  const ws = req.user.workspace_id;
+  const svcs = db.prepare("SELECT * FROM services WHERE workspace_id=? ORDER BY name").all(ws) as any[];
+  const FIN = ["WON", "LOST", "NO_RESPONSE", "UNSERVICEABLE", "JUNK", "DUPLICATE"];
+  const leadAgg = new Map<string, any>();
+  for (const r of db.prepare("SELECT service_requested, COUNT(*) n, SUM(CASE WHEN state='WON' THEN 1 ELSE 0 END) won, SUM(CASE WHEN state NOT IN ('WON','LOST','NO_RESPONSE','UNSERVICEABLE','JUNK','DUPLICATE') THEN est_value ELSE 0 END) pipe, SUM(CASE WHEN state='WON' THEN est_value ELSE 0 END) won_value FROM leads WHERE workspace_id=? GROUP BY service_requested").all(ws) as any[]) leadAgg.set(String(r.service_requested || "").trim().toLowerCase(), r);
+  const jobAgg = new Map<string, number>();
+  for (const r of db.prepare("SELECT l.service_requested s, COUNT(*) n FROM jobs j JOIN leads l ON l.id=j.lead_id WHERE j.workspace_id=? AND j.stage<>'CANCELLED' GROUP BY l.service_requested").all(ws) as any[]) jobAgg.set(String(r.s || "").trim().toLowerCase(), r.n);
+  const pbAgg = new Map<string, any>();
+  for (const r of db.prepare("SELECT service_id, COUNT(*) n, SUM(CASE WHEN standard_price>0 THEN 1 ELSE 0 END) priced FROM price_book_items WHERE workspace_id=? GROUP BY service_id").all(ws) as any[]) pbAgg.set(r.service_id, r);
+  res.json(svcs.map(s => { const k = String(s.name || "").trim().toLowerCase(); const la = leadAgg.get(k) || { n: 0, won: 0, pipe: 0, won_value: 0 }; const decided = (leadAgg.get(k)?.won || 0); const pb = pbAgg.get(s.id) || { n: 0, priced: 0 };
+    const lostN = (db.prepare("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND service_requested=? AND state IN ('LOST','NO_RESPONSE','UNSERVICEABLE')").get(ws, s.name) as any)?.c || 0;
+    return { ...s, leads: la.n || 0, won: la.won || 0, lost: lostN, win_rate: (la.won + lostN) > 0 ? Math.round(1000 * la.won / (la.won + lostN)) / 10 : null, pipeline: la.pipe || 0, won_value: la.won_value || 0, avg_won: la.won ? Math.round((la.won_value || 0) / la.won) : 0, jobs: jobAgg.get(k) || 0, price_items: pb.n || 0, price_priced: pb.priced || 0 }; }));
+});
 app.post("/api/services", requireAuth, needPerm("can_settings"), (req: any, res) => { const id = uid("svc"); db.prepare("INSERT INTO services (id,workspace_id,name,active,is_catalog) VALUES (?,?,?,1,?)").run(id, req.user.workspace_id, req.body.name, req.body.is_catalog === false ? 0 : 1); res.status(201).json(db.prepare("SELECT * FROM services WHERE id=?").get(id)); });
 app.patch("/api/services/:id", requireAuth, needPerm("can_settings"), (req: any, res) => { db.prepare("UPDATE services SET name=COALESCE(?,name), active=COALESCE(?,active) WHERE id=? AND workspace_id=?").run(req.body.name ?? null, req.body.active === undefined ? null : (req.body.active ? 1 : 0), req.params.id, req.user.workspace_id); res.json({ ok: true }); });
 

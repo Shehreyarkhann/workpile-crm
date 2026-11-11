@@ -495,3 +495,28 @@ aside.rail button.on .nshort { background:#ffffff22; }
 .finGo { margin-top:10px; padding-top:9px; border-top:1px solid var(--line); font-size:12.5px; font-weight:700; color:#0E5C3A; display:flex; justify-content:space-between; }
 .finCard:hover .finGo span { transform:translateX(3px); } .finGo span { transition:transform .15s; }
 .upDone { white-space:nowrap; }
+
+/* V40 — pipeline board redesign */
+.pipeFlow { display:flex; gap:4px; }
+.pipeSeg { border:0; border-radius:8px; padding:7px 6px; font-size:11.5px; font-weight:700; color:#fff; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:64px; }
+.pipeSeg:hover { filter:brightness(1.12); }
+.seg-NEW { background:#64748B; } .seg-WORKING { background:#0284C7; } .seg-QUALIFIED { background:#0D9488; } .seg-PROPOSAL { background:#D97706; } .seg-SENT { background:#7C3AED; } .seg-FOLLOWUP { background:#EA580C; } .seg-WON { background:#0E5C3A; }
+.kanban { display:grid; grid-template-columns:repeat(8, minmax(215px, 1fr)); gap:12px; overflow-x:auto; padding-bottom:10px; }
+.pcol { background:#F2F5F2; border:1px solid var(--line); border-radius:14px; padding:10px; min-height:220px; transition:box-shadow .12s, background .12s; }
+.pcol.over { background:#E7F6EC; box-shadow:inset 0 0 0 2px #0E5C3A; }
+.pcolHead { display:flex; align-items:center; gap:7px; margin:2px 2px 4px; font-size:13.5px; }
+.pdot { width:9px; height:9px; border-radius:50%; flex:none; }
+.pcount { margin-left:auto; background:#fff; border:1px solid var(--line); border-radius:999px; padding:0 8px; font-size:12px; font-weight:700; }
+.pcolSub { font-size:11.5px; color:var(--mut); margin:0 2px 8px; }
+.pcard { background:#fff; border:1px solid var(--line); border-radius:12px; padding:10px 12px; margin-bottom:8px; cursor:grab; box-shadow:var(--shadow); transition:border-color .12s, transform .08s; }
+.pcard:hover { border-color:#0E5C3A; transform:translateY(-1px); }
+.pcust { font-size:13.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:150px; }
+.pval { font-weight:800; color:#0E5C3A; font-size:13.5px; }
+.psvc { color:var(--mut); font-size:12px; margin:1px 0 7px; }
+.pfoot { display:flex; align-items:center; gap:6px; }
+.pava { width:22px; height:22px; border-radius:50%; background:#0E5C3A; color:#fff; font-size:10px; font-weight:800; display:inline-flex; align-items:center; justify-content:center; }
+.punassigned { font-size:11px; font-weight:700; color:#B91C1C; background:#FEE2E2; border-radius:999px; padding:1px 7px; }
+.phot { font-size:11px; font-weight:700; background:#FFF7ED; color:#9A3412; border-radius:999px; padding:1px 7px; }
+.page { font-size:11px; color:var(--mut); margin-left:auto; font-weight:600; }
+.pnext { font-size:11.5px; color:var(--mut); margin-top:6px; border-top:1px dashed #E5E7EB; padding-top:5px; }
+.pempty { border:1.5px dashed #CBD5E1; border-radius:10px; color:var(--mut); font-size:12px; text-align:center; padding:14px 8px; }
