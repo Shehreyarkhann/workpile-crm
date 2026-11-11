@@ -347,3 +347,5 @@ aside.rail .sideHead { flex-direction: column; gap: 6px; }
 .qDoneBtn { width:80px; }
 .qBtn { width:104px; height:32px; }
 @media (max-width:640px){ .qRow { grid-template-columns:22px minmax(0,1fr) 96px; } .qBadge, .qQuick { display:none; } .qBtn { width:96px; } }
+
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }

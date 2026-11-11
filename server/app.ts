@@ -29,6 +29,20 @@ app.use((req: any, _res, next) => { // capture raw body for Stripe signature ver
   else next();
 });
 app.use(express.json({ limit: "50mb" }));
+// Rate limits (audit S-3): per-IP token buckets for auth + public write surfaces.
+const __rl = new Map<string, { n: number; reset: number }>();
+function rateLimit(bucket: string, max: number, windowMs: number) {
+  return (req: any, res: any, next: any) => {
+    const k = bucket + ":" + (req.ip || "?"); const t = Date.now();
+    let b = __rl.get(k); if (!b || t > b.reset) { b = { n: 0, reset: t + windowMs }; __rl.set(k, b); }
+    b.n++; if (b.n > max) return res.status(429).json({ error: { code: "rate_limited", message: "Too many requests — slow down and try again in a minute." } });
+    next();
+  };
+}
+app.use("/api/auth", rateLimit("auth", 40, 10 * 60 * 1000));
+app.use("/api/public", rateLimit("public", 60, 60 * 1000));
+app.use("/sign", rateLimit("sign", 60, 60 * 1000));
+app.use("/book", rateLimit("book", 60, 60 * 1000));
 
 // ---------- flow v3 (spec v3 §4): free stage movement, soft guardrails ----------
 // Stages are labels a human moves freely (any -> any). Control comes from the audit
@@ -54,9 +68,22 @@ function leadView(l: any) {
 
 function createLead(workspaceId: string, actor: string, input: any) {
   const key = dedupeKey(input.contact?.phone, input.contact?.email);
+  let possibleDupeOf: string | null = null;
   if (key) {
     const dupe = db.prepare("SELECT * FROM leads WHERE workspace_id=? AND dedupe_key=? AND state!='DUPLICATE'").get(workspaceId, key) as any;
-    if (dupe) return { lead: leadView(dupe), duplicate: true };
+    if (dupe) {
+      if ((input as any).bulk) return { lead: leadView(dupe), duplicate: true };
+      // W-6: never swallow a new request into a CLOSED lead, or into a different
+      // person's record (shared office numbers / info@ addresses). Those become a
+      // new lead flagged as a possible duplicate for human review instead.
+      const closedDupe = ["WON", "LOST", "NO_RESPONSE"].includes(dupe.state);
+      const dupeContact = dupe.contact_id ? (db.prepare("SELECT name FROM contacts WHERE id=?").get(dupe.contact_id) as any)?.name || "" : "";
+      const norm = (x: string) => String(x || "").toLowerCase().replace(/[^a-z ]/g, " ").replace(/\s+/g, " ").trim();
+      const a = norm(input.contact?.name), b = norm(dupeContact);
+      const nameDiff = !!(a && b && a !== b && !a.includes(b) && !b.includes(a));
+      if (!closedDupe && !nameDiff) return { lead: leadView(dupe), duplicate: true };
+      possibleDupeOf = dupe.id;
+    }
   }
   const cid = uid("ct");
   db.prepare("INSERT INTO contacts (id,workspace_id,name,phone,email,address) VALUES (?,?,?,?,?,?)")
@@ -91,7 +118,8 @@ function createLead(workspaceId: string, actor: string, input: any) {
       if (to) queueAndDeliver(workspaceId, { lead_id: id, channel: ch, to, subject: `We got your request — ${wsx.name}`, body: `Hi ${(input.contact?.name || "there").split(" ")[0]} — thanks for reaching out to ${wsx.name} about ${triage.service_guess || input.service_requested || "your project"}. We've got it, and a real person will call you shortly during business hours (Mon–Fri 8:00–5:30). Reply here any time.` }).catch(() => {});
     } } catch { /* first touch never blocks lead creation */ }
   try { onLeadCreated(workspaceId, id, input); } catch { /* campaigns never block creation */ }
-  return { lead: leadView(db.prepare("SELECT * FROM leads WHERE id=?").get(id)), duplicate: false };
+  if (possibleDupeOf) { try { db.prepare("INSERT INTO lead_events (id,lead_id,workspace_id,actor,type,from_state,to_state,payload,created_at) VALUES (?,?,?,?,?,?,?,?,?)").run(uid("evt"), id, workspaceId, "system", "possible_duplicate", null, null, JSON.stringify({ of: possibleDupeOf, reason: "same phone/email as an existing lead that is closed or under a different name — human review" }), now()); } catch { /* flag is best-effort */ } }
+  return { lead: leadView(db.prepare("SELECT * FROM leads WHERE id=?").get(id)), duplicate: false, possible_duplicate_of: possibleDupeOf };
 }
 
 function finalizeLead(workspaceId: string, actor: string, lead: any, toState: string) {
@@ -186,7 +214,7 @@ export function setStage(workspaceId: string, actor: string, lead: any, toRaw: s
   const WRITABLE = ["lost_reason", "outcome_reason_detail", "competitor", "hold_reason", "pm_id", "owner_id", "approver_id", "qualified_at", "next_action", "next_action_due_at"];
   const sets = ["state=?", "stage_changed_at=?", "updated_at=?", ...Object.keys(extra).filter(k => WRITABLE.includes(k)).map(k => `${k}=?`)];
   const vals = Object.entries(extra).filter(([k]) => WRITABLE.includes(k)).map(([, v]) => v);
-  db.prepare(`UPDATE leads SET ${sets.join(",")} WHERE id=?`).run(toState, now(), now(), ...vals, lead.id);
+  db.prepare(`UPDATE leads SET ${sets.join(",")} WHERE id=?`).run(toState, now(), now(), ...(vals as any[]), lead.id);
   const updated = db.prepare("SELECT * FROM leads WHERE id=?").get(lead.id) as any;
   if (wasFinal && !isFinal) { // reopen: supersede the outcome delivery, keep the audit trail
     db.prepare("UPDATE outcome_deliveries SET superseded_at=? WHERE lead_id=? AND superseded_at IS NULL").run(now(), lead.id);
@@ -935,7 +963,7 @@ app.post("/api/imports/csv", requireAuth, (req: any, res) => {
   for (const line of lines.slice(1)) {
     const cols = line.split(",").map(c => c.trim());
     const fullName = mi.name >= 0 && cols[mi.name] ? cols[mi.name] : [mi.first >= 0 ? cols[mi.first] : "", mi.last >= 0 ? cols[mi.last] : ""].join(" ").trim();
-    const r = createLead(req.user.workspace_id, req.user.id, { contact: { name: fullName, phone: cols[mi.phone] || "", email: cols[mi.email] || "" }, service_requested: mi.service >= 0 ? cols[mi.service] : "", est_value: mi.value >= 0 ? Number(String(cols[mi.value]).replace(/[^0-9.]/g, "")) || 0 : 0, location: mi.location >= 0 ? cols[mi.location] : "", source: format + "-import" });
+    const r = createLead(req.user.workspace_id, req.user.id, { contact: { name: fullName, phone: cols[mi.phone] || "", email: cols[mi.email] || "" }, service_requested: mi.service >= 0 ? cols[mi.service] : "", est_value: mi.value >= 0 ? Number(String(cols[mi.value]).replace(/[^0-9.]/g, "")) || 0 : 0, location: mi.location >= 0 ? cols[mi.location] : "", source: format + "-import", bulk: true });
     r.duplicate ? dupes++ : created++;
   }
   const id = uid("imp");
@@ -1008,7 +1036,7 @@ function ingestBatch(ws: string, actorId: string, emails: any[]): { results: any
     const parsed = parseEmail(e);
     by_category[parsed.category] = (by_category[parsed.category] || 0) + 1;
     if (parsed.is_lead) {
-      const r = createLead(ws, "inbox", { contact: { name: e.from_name || "", phone: parsed.phone, email: e.from_email || "" }, service_requested: "", message: `${e.subject || ""}\n${e.body || ""}`, source: "email-inbox", created_at: e.received_at });
+      const r = createLead(ws, "inbox", { contact: { name: e.from_name || "", phone: parsed.phone, email: e.from_email || "" }, service_requested: "", message: `${e.subject || ""}\n${e.body || ""}`, source: "email-inbox", created_at: e.received_at, bulk: true });
       if (r.duplicate) duplicates++; else leads_created++;
       results.push({ category: "lead", lead_id: r.lead.id, duplicate: r.duplicate });
     } else {
@@ -1079,7 +1107,7 @@ app.post("/api/inbox/:id/reply", requireAuth, async (req: any, res) => {
 app.post("/api/inbox/:id/convert-lead", requireAuth, (req: any, res) => {
   const it = db.prepare("SELECT * FROM inbox_items WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!it) return res.status(404).json({ error: { code: "not_found" } });
-  const r = createLead(req.user.workspace_id, req.user.id, { contact: { name: it.from_name || "", phone: "", email: it.from_email || "" }, service_requested: "", message: `${it.subject || ""}\n${it.body || ""}`, source: "email-inbox-converted" });
+  const r = createLead(req.user.workspace_id, req.user.id, { contact: { name: it.from_name || "", phone: "", email: it.from_email || "" }, service_requested: "", message: `${it.subject || ""}\n${it.body || ""}`, source: "email-inbox-converted", bulk: true });
   db.prepare("UPDATE inbox_items SET status='done', completed_at=?, lead_id=? WHERE id=?").run(now(), r.lead.id, it.id);
   res.json({ lead_id: r.lead.id, duplicate: r.duplicate });
 });
@@ -1155,6 +1183,8 @@ app.get("/sign/:token", (req, res) => {
   let opts: any[] = []; try { opts = JSON.parse(p.options || "[]"); } catch { opts = []; }
   const optionsHtml = opts.length ? `<h3>Choose your option</h3>` + opts.map((o: any, ix: number) => `<label style="display:block;border:1px solid #ddd;border-radius:10px;padding:12px;margin:8px 0"><input type="radio" name="option" value="${String(o.name).replaceAll('"', "")}" ${ix === 0 ? "checked" : ""} style="width:auto"> <strong>${o.name} — $${Number(o.total).toFixed(2)}</strong><table>${(o.line_items || []).map((i: any) => `<tr><td>${i.name}</td><td>${i.qty || 1}</td><td>$${i.unit_price}</td></tr>`).join("")}</table></label>`).join("") : "";
   const expired = p.expires_at && new Date(p.expires_at) < new Date() && !s.signed_at;
+  const superseded = !s.signed_at && p.status === "withdrawn";
+  if ((expired || superseded) && !s.signed_at) return res.type("html").send(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><title>Proposal — ${"update needed"}</title><style>body{font-family:sans-serif;max-width:560px;margin:40px auto;padding:0 16px;line-height:1.6}</style><h1>📄 This proposal ${expired ? "has expired" : "has been replaced"}</h1><p>${expired ? "The signing window for this version has closed." : "A newer version of this proposal has been issued, so this link no longer accepts a signature."} Please contact the business and they'll send you the current proposal — same scope, current version.</p>`);
   const doc = (() => { try { return proposalDocument(p.id); } catch { return null; } })();
   const tplHtml = doc ? `${doc.template.logo ? `<img src="${doc.template.logo}" style="max-height:72px;max-width:260px">` : ""}` : "";
   const introHtml = doc ? doc.template.intro_html : "";
@@ -1323,8 +1353,8 @@ function requirePlatformAdmin(req: any, res: any, next: any) { if (!req.user?.is
 app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.isArray(req.body?.rows) ? req.body.rows : null; if (!rows) return res.status(422).json({ error: { code: "rows_required", message: "Send { rows: [...] } — export your leads as CSV/JSON and pass the parsed rows." } }); if (rows.length > 2000) return res.status(422).json({ error: { code: "too_many_rows", message: "The free audit covers up to 2,000 rows." } }); const report = analyzeBacklog(rows); const email = String(req.body?.email || "").trim(); if (email) { try { db.prepare("INSERT INTO audit_requests (id,email,rows_count,recoverable_value,recoverable_count,created_at) VALUES (?,?,?,?,?,?)").run(uid("aud"), email.slice(0, 160), report.rows, report.recoverable_value, report.recoverable_count, now()); } catch {} } res.json(report); });
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
-app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v22", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
+app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
+app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v23", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {
   const target = db.prepare("SELECT * FROM users WHERE id=?").get(String(req.body?.user_id || "")) as any;
@@ -1504,13 +1534,13 @@ app.post("/api/sync/run", requireAuth, async (req: any, res) => {
   if (ws.source_api_url) { // SSRF guard (v17): resolver-grade — every resolved address must be public
     const { assertPublicUrl } = await import("./netguard.ts");
     const chk = await assertPublicUrl(ws.source_api_url);
-    if (!chk.ok) return res.status(422).json({ error: { code: "blocked_source_url", message: `Source URL refused: ${chk.error}.` } });
+    if (!chk.ok) return res.status(422).json({ error: { code: "blocked_source_url", message: `Source URL refused: ${(chk as any).error}.` } });
   }
   let rows: any[] = [];
   try { const r = await fetch(`${url}${url.includes("?") ? "&" : "?"}from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, { headers: ws.source_api_key ? { Authorization: `Bearer ${ws.source_api_key}` } : {}, signal: AbortSignal.timeout(8000), redirect: "error" }); if (!r.ok) return res.status(502).json({ error: { code: "source_error", message: `Source returned ${r.status}` } }); rows = await r.json(); if (!Array.isArray(rows)) return res.status(502).json({ error: { code: "source_shape", message: "Source must return a JSON array of leads." } }); }
   catch (e: any) { return res.status(502).json({ error: { code: "source_unreachable", message: String(e.message || e) } }); }
   let created = 0, duplicates = 0, errors = 0;
-  for (const row of rows) { try { const r = createLead(req.user.workspace_id, req.user.id, row); r.duplicate ? duplicates++ : created++; } catch { errors++; } }
+  for (const row of rows) { try { const r = createLead(req.user.workspace_id, req.user.id, { ...row, bulk: true }); r.duplicate ? duplicates++ : created++; } catch { errors++; } }
   const stats = { fetched: rows.length, created, duplicates, errors, from, to, at: now(), source: ws.source_api_url ? "custom" : "demo" };
   db.prepare("UPDATE workspaces SET last_sync_at=?, last_sync_stats=? WHERE id=?").run(stats.at, JSON.stringify(stats), ws.id);
   db.prepare("INSERT INTO imports (id,workspace_id,filename,mapping,totals,status,created_at) VALUES (?,?,?,?,?,?,?)").run(uid("imp"), ws.id, "api-sync", "{}", JSON.stringify({ created, dupes: duplicates }), "committed", now());
@@ -1548,7 +1578,7 @@ app.post("/api/proposals/:id/send", requireAuth, async (req: any, res) => {
   if (__appr && __appr.content_hash && proposalContentHash(p) !== __appr.content_hash) {
     const nid = uid("apr");
     db.prepare("INSERT INTO approvals (id,workspace_id,lead_id,proposal_id,submitted_by,approver_id,tier,submitted_at) VALUES (?,?,?,?,?,?,?,?)").run(nid, req.user.workspace_id, l.id, p.id, req.user.id, __appr.approver_id, __appr.tier || "manager", now());
-    notify(req.user.workspace_id, [__appr.approver_id], "approval.requested", "Proposal changed since approval", `${v.contact_name || "Lead"} — the proposal was edited after your approval, so it needs a fresh decision before it can send.`, l.id);
+    notify(req.user.workspace_id, [String(__appr.approver_id)], "approval.requested", "Proposal changed since approval", `${v.contact_name || "Lead"} — the proposal was edited after your approval, so it needs a fresh decision before it can send.`, l.id);
     return res.status(422).json({ error: { code: "approval_invalidated", message: "This proposal changed after it was approved. It has been resubmitted for a fresh approval — it cannot send until the new decision lands.", approval_id: nid } });
   }
   const token = ensureSignToken(p.id);
@@ -1567,6 +1597,7 @@ app.post("/api/proposals/:id/send", requireAuth, async (req: any, res) => {
   if (r.status === "suppressed") return res.status(422).json({ error: { code: "suppressed", message: `This ${channel} address is on the workspace suppression list — the proposal was NOT sent. Remove the suppression in Automations if this is a mistake.` } });
   if (!["sent", "delivered", "test_mode"].includes(r.status)) return res.status(502).json({ error: { code: "delivery_failed", message: `Delivery failed (status: ${r.status}) — the proposal was NOT marked sent and no follow-ups were scheduled. Fix the channel and retry.` } });
   db.prepare("UPDATE proposals SET status='sent', sent_at=? WHERE id=?").run(now(), p.id);
+  db.prepare("UPDATE proposals SET delivery_mode=? WHERE id=?").run(r.status === "test_mode" ? "test" : "live", p.id);
   emitOutbox(req.user.workspace_id, "proposal.sent", p.id, { lead_id: l.id, total: p.total, channel });
   if (["NEW", "WORKING", "QUALIFIED", "PROPOSAL"].includes(l.state)) setStage(req.user.workspace_id, req.user.id, l, "SENT");
   enrollFollowup(req.user.workspace_id, l.id, p.id);
@@ -1646,7 +1677,7 @@ app.post("/v1/leads/:id/outcome", requireApiKey(["outcomes:write"]), (req: any, 
   // The pushing system is the source of truth for this final: finalize directly from any
   // open state (the interactive state machine stays strict for in-app transitions).
   const sets = ["state=?", "updated_at=?", ...Object.keys(extra).map(k => `${k}=?`)];
-  db.prepare(`UPDATE leads SET ${sets.join(",")} WHERE id=?`).run(to, now(), ...Object.values(extra), l.id);
+  db.prepare(`UPDATE leads SET ${sets.join(",")} WHERE id=?`).run(to, now(), ...(Object.values(extra) as any[]), l.id);
   const updated = db.prepare("SELECT * FROM leads WHERE id=?").get(l.id) as any;
   logEvent(req.workspace_id, l.id, "api", "state_changed", l.state, to, { origin: "api_outcome_push" });
   finalizeLead(req.workspace_id, "api", updated, to);
@@ -1667,7 +1698,7 @@ app.post("/api/integrations/slack/test", requireAuth, async (req: any, res) => {
   const { assertPublicUrl } = await import("./netguard.ts");
   let hostOk = false; try { hostOk = new URL(ws.slack_webhook_url).hostname === "hooks.slack.com"; } catch { hostOk = false; }
   if (!hostOk) return res.status(422).json({ error: { code: "blocked_url", message: "Slack webhooks must be on hooks.slack.com." } });
-  const chkS = await assertPublicUrl(ws.slack_webhook_url); if (!chkS.ok) return res.status(422).json({ error: { code: "blocked_url", message: chkS.error } });
+  const chkS = await assertPublicUrl(ws.slack_webhook_url); if (!chkS.ok) return res.status(422).json({ error: { code: "blocked_url", message: (chkS as any).error } });
   try { const r = await fetch(ws.slack_webhook_url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "✅ Workpile test message — Slack notifications are connected." }), redirect: "error" }); res.json({ ok: r.ok, status: r.status }); }
   catch (e: any) { res.status(502).json({ error: { code: "slack_unreachable", message: String(e.message || e) } }); }
 });
@@ -1965,6 +1996,7 @@ app.post("/webhooks/twilio/inbound", express.urlencoded({ extended: false }), (r
     db.prepare("INSERT INTO messages_outbox (id,workspace_id,lead_id,channel,to_addr,subject,body,status,direction,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
       .run(uid("msg"), hit.workspace_id, hit.lead_id, "sms", from, null, body, "received", "in", now());
     db.prepare("UPDATE leads SET consent_contact_ok=1, consent_source=COALESCE(consent_source,'inbound_sms') WHERE id=? AND consent_contact_ok=0").run(hit.lead_id);
+    if (["STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"].includes(body.trim().toUpperCase())) { try { db.prepare("INSERT OR IGNORE INTO suppressions (id,workspace_id,kind,value,reason,source,created_by,created_at) VALUES (?,?,?,?,?,?,?,?)").run(uid("sup"), hit.workspace_id, "phone", digits, "Customer texted STOP", "sms_stop", null, now()); stopFollowups(hit.lead_id, "opted_out"); db.prepare("UPDATE leads SET consent_contact_ok=0 WHERE id=?").run(hit.lead_id); } catch { /* opt-out is best-effort */ } }
     logEvent(hit.workspace_id, hit.lead_id, "customer", "message_in_sms", null, null, { from });
     stopFollowups(hit.lead_id, "customer_replied");
     notify(hit.workspace_id, [hit.owner_id], "message.reply", "Customer replied 💬", body.slice(0, 140), hit.lead_id);

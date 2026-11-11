@@ -39,6 +39,8 @@ export function sign(token: string, input: { signer_name: string; signer_email: 
   if (!ctx) return { ok: false, error: "invalid_link" };
   const { signature: s, proposal } = ctx;
   if (s.signed_at) return { ok: false, error: "already_signed" };
+  if (proposal.expires_at && new Date(proposal.expires_at) < new Date()) return { ok: false, error: "proposal_expired" };
+  if ((proposal as any).status === "withdrawn") return { ok: false, error: "proposal_withdrawn" };
   if (!input.consent) return { ok: false, error: "consent_required" };
   if (!input.signer_name || !input.typed_signature) return { ok: false, error: "name_and_signature_required" };
   if (input.typed_signature.trim().toLowerCase() !== input.signer_name.trim().toLowerCase()) return { ok: false, error: "signature_must_match_name" };

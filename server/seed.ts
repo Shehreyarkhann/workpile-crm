@@ -34,7 +34,7 @@ const samples: any[] = [
   { name: "Leo Grant", phone: "+15165550106", email: "leo@example.com", service: "24/7 emergency cleanup", value: 3000, state: "UNSERVICEABLE", days: 5, msg: "Need emergency cleanup tonight" },
   { name: "Amy Hart", phone: "+15165550107", email: "amy@example.com", service: "Septic inspection", value: 900, state: "LOST", days: 30, msg: "Septic inspection quote", lost: "NOT_A_FIT" },
 ];
-import("./app.ts").then(async ({ default: _ }) => {
+import("./app.ts").then(async () => {
   // create via direct inserts mirroring createLead's shape (seed is offline tooling)
   for (const s of samples) {
     const cid = uid("ct"); db.prepare("INSERT INTO contacts (id,workspace_id,name,phone,email) VALUES (?,?,?,?,?)").run(cid, ws, s.name, s.phone, s.email);

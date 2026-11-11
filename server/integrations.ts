@@ -33,7 +33,7 @@ export async function processEventDeliveries(fetchFn: FetchFn = fetch as any): P
   let delivered = 0, failed = 0;
   for (const d of rows) {
     try {
-      const r = await fetchFn(d.url, { method: "POST", headers: { "Content-Type": "application/json", "X-Workpile-Signature": signPayload(d.secret || "", d.payload), "X-Workpile-Delivery": d.id, "X-Workpile-Event": d.event }, body: d.payload });
+      const r = await fetchFn(d.url, { method: "POST", headers: { "Content-Type": "application/json", "X-Workpile-Signature": signPayload(d.secret || "", d.payload), "X-Workpile-Timestamp": String(Math.floor(Date.now() / 1000)), "X-Workpile-Signature-V2": (() => { const ts = String(Math.floor(Date.now() / 1000)); return `t=${ts},v1=${signPayload(d.secret || "", ts + "." + d.payload)}`; })(), "X-Workpile-Delivery": d.id, "X-Workpile-Event": d.event }, body: d.payload });
       if (r.status >= 200 && r.status < 300) { db.prepare("UPDATE webhook_deliveries SET last_status='delivered', delivered_at=?, attempts=attempts+1 WHERE id=?").run(now(), d.id); delivered++; }
       else throw new Error("HTTP " + r.status);
     } catch (e: any) {

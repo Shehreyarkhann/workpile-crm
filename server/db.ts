@@ -98,6 +98,7 @@ export function initSchema() {
     "ALTER TABLE workspaces ADD COLUMN agent_instructions TEXT",
     "ALTER TABLE agent_executions ADD COLUMN decided_by TEXT",
     "ALTER TABLE agent_executions ADD COLUMN decided_at TEXT",
+    "ALTER TABLE proposals ADD COLUMN delivery_mode TEXT",
     "UPDATE workspaces SET agent_level=4 WHERE agent_level IS NULL AND followup_enabled=1 AND (auto_score=1 OR auto_assign=1 OR auto_dedupe=1 OR auto_reactivate=1)",
     "ALTER TABLE sessions ADD COLUMN impersonated_by TEXT",
     "ALTER TABLE sessions ADD COLUMN impersonation_expires_at TEXT",

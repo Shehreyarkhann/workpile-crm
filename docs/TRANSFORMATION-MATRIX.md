@@ -91,70 +91,15 @@
 
 *Matrix v1.0 — Nov 10, 2026. Update this file with each tranche; a row is closed only when its gap is verified in production, not when code merges.*
 
-## UX phase (v14) — from the founder's ChatGPT UX review (Nov 10)
-| Brief demand | Change | Evidence |
-|---|---|---|
-| §1 one journey, no dead ends | Server-computed Next step on every lead + a Next-step action bar whose button performs the step (messages/proposals/tasks/details/job) | tests/ux.test.ts; screenshots-v21/02 |
-| §2C/§4 Customer 360 | Account detail aggregates proposals, payments, documents + proposed/collected/refunded totals; rendered in CustomerDetail | tests/ux.test.ts; screenshots-v21/04 |
-| §3 onboarding = first outcome | GET /api/onboarding (7 data-detected steps) + Home activation checklist w/ progress + deep links; hides when complete | tests/ux.test.ts; screenshots-v21/01 |
-| §4 connectivity | Job breadcrumb Lead → signed Proposal → Job (GET /api/jobs/:id origin) | tests/ux.test.ts; screenshots-v21/03 |
-| §5 acceptance | One toast pattern; Esc closes modals; focus-visible; UX-ACCEPTANCE.md w/ 5 moderated test scenarios | docs/UX-ACCEPTANCE.md, docs/UX-BLUEPRINT.md |
-Remaining by design: moderated testing with unfamiliar users (first cohort = the G.C. pilot team from Nov 16); formal component library deferred (§25).
-
-## V15 — repository-audit close-out (Nov 10, second audit)
-| Finding | Verdict on re-check | Fix |
-|---|---|---|
-| Duplicate onboarding (GettingStarted + OnboardingCard) | REAL — both rendered on Home | GettingStarted removed; single engine at /api/onboarding, 10 steps, stricter semantics (pricing needs a priced item; team = active users; first_send requires a VERIFIED provider delivery — test mode never counts; first_won = WON lead with its job) |
-| Next Step buttons only navigate | REAL for most kinds | Bar now executes: Log the call (POST /contact, sets first response), Send the nudge, Create follow-up task, Set next step, inline Assign-owner select, Open the approval; job open/create already executed |
-| 360 totals double-count versions | REAL | Proposed = current version per lead only; added signed, net collected (collected − refunds), outstanding (signed − net), with printed definitions |
-| 360 rows static | REAL | Proposals/payments/documents rows click through to their lead/job |
-| Job origin inferred, unordered | PARTLY STALE — jobs.proposal_id already existed and was written at creation; the v14 breadcrumb query ignored it | Breadcrumb now reads the stored proposal_id (fallback: latest signed, version-ordered); proposal segment clickable |
-| API keys unguarded | REAL P0 | can_settings required on list/create/revoke; scope allowlist validated; create/revoke audited |
-| Twilio webhook unsigned | REAL P0 | Endpoint disabled without TWILIO_AUTH_TOKEN; HMAC-SHA1 signature verified (timing-safe) when configured |
-| Settings returns broad record | REAL in effect — workspaces carries source_api_key | GET /api/settings returns a field whitelist; the sync key never leaves the server; source URL exposed as host only |
-| Proposal marked sent on failed delivery | REAL | Send commits only on sent/delivered/test_mode; suppressed → 422, provider failure → 502, no state change, no cadence enrollment |
-| Cadence advances on failed delivery | REAL | Failed delivery: no advance, 6h retry, stop after 3 failures (fail_count) |
-| Reactivation task duplication | REAL | Sweep skips leads with an open reactivation task |
-| Job claiming not atomic | REAL (single-worker today) | Claim is a guarded UPDATE (status='queued' must match) |
-| Sync URL SSRF | REAL | Custom source URLs: http(s) only, private/loopback/link-local blocked, redirect refused, 8s timeout |
-| Screenshots-v21 not in repo | REAL | docs/screenshots-v21 + v22 committed; acceptance doc carries verification-status labels |
-| Outbox has no consumers | PARTLY — webhooks fire via integrations emitEvent at write time; the outbox is the durable event record | Left as-is deliberately: wiring the relay to webhooks would double-deliver events that already emit directly |
-| LLM agent orchestrator / PG cutover / monolith split | REAL but phased by design | Agent needs the founder's LLM provider + keys decision; PG remains the host cutover item; the audit itself prescribes incremental (not big-bang) refactor |
-Tests: 165/165 (tests/v15.test.ts, 7 tests; slice11 Twilio test now signs its posts; ux onboarding total updated to 10).
-
-## V16 — audit roadmap Phases 2+3 first increment (Nov 10)
-| Item | Shipped |
-|---|---|
-| Customer 360 timeline (§1B.3) | Account detail merges lead events, messages in/out, approvals, signatures, payments, jobs, change orders, site visits into one chronological, clickable History (cap 80) |
-| Work Queue bulk (§Priority 1.4) | Multi-select on lead-backed items (approvals excluded — decisions stay individual): bulk assign owner, snooze 1d/3d, create follow-up tasks; POST /api/queue/bulk, audited |
-| Agent orchestrator v1 (§Priority 2) | server/orchestrator.ts: tool registry (prepare_proposals, ops_review, recover_revenue, exec_brief) + rules planner + policy = autonomy levels (draft tools plan-only below L2, recovery tasks below L3) + persistent runs (agent_runs) + report UI in AI Assistant ("tell it what to do", example chips, run history). Hard rules in code: never sends, never prices, approvals untouched. LLM provider seam (`llmProvider = null`) awaits the founder's provider/key decision |
-Tests: 168/168 (tests/v16.test.ts). Screenshots: docs/screenshots-v23 (agent full-sweep executed live on demo data — 2 drafts created; queue bulk bar; 360 timeline).
-
-## V17 — V15-audit close-out + Agentic AI transformation (Nov 10)
-| Audit item | Shipped |
-|---|---|
-| A. PATCH settings secret return | Both GET and PATCH return the shared DTO (extended with all non-secret UI fields incl. template/booking/review keys); secrets (source_api_key, slack_webhook_url, llm_api_key) never leave the server — test-proven |
-| B. Nudge consent + truthful status | SMS consent enforced at the CENTRAL send boundary (comms.queueMessage → blocked_consent) so UI, nudge, cadences and agent tools all inherit it; inbound call/SMS records its consent basis (inbound_call/inbound_sms); nudge returns honest sent/test_mode |
-| C. SSRF depth | Resolver-grade guard (server/netguard.ts): every resolved address must be public (v4/v6/CGNAT/metadata/mapped); Slack test additionally pins hooks.slack.com; residual DNS-rebinding race documented in code |
-| D. Job crash recovery | Worker leases (120s) + stale-lease recovery on every tick + idempotency keys on enqueue |
-| E. True receivables | Invoice records + lines + payment allocation + overpayment refusal + void rules; finances invoiced/AR/overdue now derive from invoices; signed-but-uninvoiced is labeled "uncollected contract value" everywhere; one-click backfill for flag-era jobs |
-| F. Delivery evidence | first_send requires provider-confirmed 'delivered' (accepted no longer counts) |
-| §3/P1 Agent platform | Provider layer (Anthropic/OpenAI/rules), governed tool registry (13 tools, control classes), persisted executions with per-step approval, global Agent panel, follow-ups via parent executions, token tracking, AGENT-SPEC.md |
-| L3≈L4 | L4 sweep now also drafts proposals proactively (test-proven difference) |
-Tests: 177/177 (tests/v17.test.ts, 9 tests incl. injection + governance evals; slice9/slice12/slice16/v7 tests updated where v17 deliberately changed contracts — PATCH response shape, nudge truthfulness, invoice-record finances, booking-slug ensure restored after the v15 DTO rewrite dropped it). Screenshots: docs/screenshots-v24.
-Named residuals: DNS-rebinding IP pinning; LLM multi-turn tool loop (v17 plans in one structured call); provider delivery callbacks depend on Resend/Twilio credentials (founder items); PG cutover unchanged.
-
-## V18 — Home calendar rebuilt + one-click AI mass triage (his Nov 10 asks)
-- **Calendar**: /api/home agenda widened to −14d..+14d, cap 200, ALL scheduled sources — tasks (with ids), callbacks, crew schedule, follow-ups, site visits (with time), invoice due dates, document expiries, proposal expiries. Home card: Mon-start week strip with ‹ Week / Today / Week › navigation, click any day to switch, per-day item counts, an Overdue section on today, and inline ✓ Done on tasks (completes without leaving Home). Every row deep-links to its lead/job.
-- **Mass triage**: POST /api/agent/triage-untouched (also an agent instruction intent + panel chip). Per untouched lead (cap 25): qualify (read) → assign (execute) → draft first touch (draft) run immediately; the SEND is an approval-class step per lead. Home agent card carries the one-click button with the live untouched count; the panel opens focused on the run; "Select all N pending" makes approval one more click. Sends still pass the central consent boundary; unconsented SMS fails truthfully in the step result.
-- **Bug caught by screenshot QA**: hooks added below HomeDash's `if (!home)` early return crashed Home with React #310 (rendered more hooks) the moment data loaded — Vite build did NOT catch it. Rule reinforced: new hooks go ABOVE any early return; smoke-render Home logged-in after any HomeDash change.
-
-## V19 — Scheduling workflow chain repaired (his Nov 10 Ops asks)
-Root causes found: (1) ensureWeek only created timesheets for PM/LEAD_OWNER users, so assigning anyone else (e.g. OPS_ADMIN) in the Ops crew schedule produced no timesheet below; (2) the per-job time grid built its sections ONLY from existing time entries, so a newly scheduled job had no tab until hours existed; (3) moving a job to SCHEDULED set nothing — no date/time, no crew-schedule rows, no timesheets — so the job never appeared in Ops; (4) the Ops cards never refreshed each other after an assignment.
-- Stage → SCHEDULED now takes a date+time (JobDetail picker, default tomorrow 09:00; API defaults + flags `defaulted` when not given), stores scheduled_start/end, syncs the job's crew into job_schedule for that day, and ensures that week's timesheets. Moving back to AWAITING_SCHEDULING removes the synced rows and clears the slot.
-- ensureWeek covers PM/LEAD_OWNER/OPS_ADMIN + anyone with a schedule row that week; POST /api/schedule ensures the week immediately.
-- GET /api/schedule returns `jobs` (scheduled starts) → Ops "Jobs starting this week" strip; time grid unions scheduled jobs as sections; /api/calendar and the Home agenda include scheduled jobs (kind "job").
-- Ops cards cross-refresh via a `wp-ops` window event (assign/delete → timesheets + grid reload live).
-
-## V20 — agent governance visibility (fourth audit response, 2026-11-10)
-Audit's §1 verified FABRICATED (no OpenRouter, no Postgres runtime, V19 contents invented) — see docs/AUDIT-RESPONSE-V20.md. Real items closed: decision attribution (decided_by/decided_at + panel), Agent playbook (system prompt + 13-tool locked list visible, house rules appended to planning), search + invoices/proposals, topbar online/offline + offline-queue pill. 186/186 tests.
+## V23 — Audit-response tranche (2026-11-11)
+Built from the "Critical Audit and Category-Leading Blueprint" (82 findings vs the
+2026-11-10 spec snapshot). Full claim-by-claim verdict: `docs/AUDIT-RESPONSE-V23.md`.
+Real fixes shipped: rate limits on auth/public surfaces (S-3); webhook timestamp
+signatures (S-12); ingest dedupe guard — closed/different-name collisions create
+flagged leads, imports keep classic dedupe (W-6); sign expiry enforcement + explicit
+Withdraw mechanism (W-7); delivery_mode split — North Star no longer silently counts
+test-mode sends (B-4); global reduced-motion gate (U-5); honest agent status label
+(U-8); J/K shortcut toggle (U-4); email opt-out footer + inbound SMS STOP (S-7);
+tsc --noEmit gate in CI + glob test discovery (A-3/A-4) — 7 latent type errors fixed.
+Founder decisions tee'd up, NOT taken: pricing model (B-2), ICP (Q3), Postgres/host
+split (A-1/R-1), MFA tranche (S-2), counsel (S-8).
