@@ -78,7 +78,7 @@ export function proposalDocument(proposalId: string) {
   };
   return {
     workspace_id: p.workspace_id,
-    ref, proposal: { id: p.id, version: p.version, status: p.status, total: p.total, created_at: p.created_at },
+    ref, proposal: { id: p.id, version: p.version, status: p.status, total: p.total, created_at: p.created_at, expires_at: p.expires_at || null, deposit_pct: p.deposit_pct || null, deposit_amount: p.deposit_amount || null, options: (() => { try { return JSON.parse(p.options || "null"); } catch { return null; } })(), selected_option: p.selected_option || null },
     items: JSON.parse(p.line_items || "[]"),
     lead: { service_requested: lead?.service_requested, location: lead?.location, notes: lead?.notes },
     contact: { name: contact?.name, email: contact?.email, phone: contact?.phone },

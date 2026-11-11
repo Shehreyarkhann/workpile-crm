@@ -45,7 +45,7 @@ test("DOCX signature block: signature spans full width, name+date share the row 
   const made = await proposalDocx(P2.j.id); assert.ok(made);
   const { writeFileSync } = await import("node:fs"); writeFileSync("/tmp/v31.docx", made.buffer);
   const xml = execSync(`python3 -c "import zipfile; print(zipfile.ZipFile('/tmp/v31.docx').read('word/document.xml').decode())"`).toString();
-  const acc = xml.slice(xml.indexOf("Acceptance"));
+  const acc = xml.slice(xml.indexOf("ACCEPTANCE"));
   assert.ok(acc.includes('gridSpan'), "signature row spans both columns");
   assert.ok(acc.indexOf("Signature") < acc.indexOf("Name (print)"), "signature label above the name/date row");
   assert.ok(acc.indexOf("Name (print)") < acc.indexOf("Date"), "name before date on the shared row");

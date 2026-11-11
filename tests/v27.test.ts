@@ -31,7 +31,7 @@ test("job attachments: upload a photo, list it, inline download, delete", async 
   const after = await J(`/api/attachments?entity_type=job&entity_id=${jid}`, {}, O); assert.equal(after.j.length, 0);
 });
 
-test("docx: signature block is an aligned table (Signature | Name (print) | Date)", async () => {
+test("docx: signature block is an aligned table (signature row over Name + Date)", async () => {
   const svc = dbm.db.prepare("SELECT id FROM services LIMIT 1").get() as any;
   const pb = await J("/api/price-book", { method: "POST", body: { name: "Phase I ESA", unit: "job", standard_price: 2500, floor_price: 2000, service_id: svc?.id || null } }, O);
   const lead = await J("/api/leads", { method: "POST", body: { contact: { name: "Doc Client", email: "dc@v27.test" }, service_requested: "Phase I ESA", est_value: 2500 } }, O);
@@ -41,8 +41,9 @@ test("docx: signature block is an aligned table (Signature | Name (print) | Date
   const out = await proposalDocx(prop.j.id); assert.ok(out);
   const p = join(dir, "p.docx"); writeFileSync(p, out.buffer);
   const xml = execSync(`python3 -c "import zipfile; print(zipfile.ZipFile('${p}').read('word/document.xml').decode())"`, { maxBuffer: 8 * 1024 * 1024 }).toString();
-  const acc = xml.indexOf("Acceptance"); assert.ok(acc > 0);
+  const acc = xml.indexOf("ACCEPTANCE"); assert.ok(acc > 0);
   const after = xml.slice(acc);
   assert.ok(after.includes("<w:tbl>"), "signature block rendered as a table");
-  assert.ok(after.includes("Name (print)") && after.includes("Signature") && after.includes("Date"), "all three fields labeled in columns");
+  assert.ok(after.includes("gridSpan"), "v31+ layout: the signature line spans the full width");
+  assert.ok(after.indexOf("Signature") < after.indexOf("Name (print)") && after.indexOf("Name (print)") < after.indexOf("Date"), "signature on its own row above Name + Date");
 });
