@@ -614,6 +614,46 @@ function Handoffs() {
   </div>);
 }
 
+function InboxQueue({ inbox, reload }: any) {
+  const [cat, setCat] = useState("all"); const [openId, setOpenId] = useState(""); const [sug, setSug] = useState<any>(null); const [draft, setDraft] = useState(""); const [msg, setMsg] = useState("");
+  const cats = ["all", "client_active_job", "proposal", "field", "vendor", "finance", "admin"];
+  const counts: Record<string, number> = {}; for (const i of inbox) if ((i.status || "open") === "open") counts[i.category] = (counts[i.category] || 0) + 1;
+  const openCount = inbox.filter((i: any) => (i.status || "open") === "open").length;
+  const shown = inbox.filter((i: any) => cat === "all" || i.category === cat);
+  const [comments, setComments] = useState<any[]>([]); const [canned, setCanned] = useState<any[]>([]); const [cText, setCText] = useState("");
+  useEffect(() => { api("/api/canned-replies").then(setCanned).catch(() => {}); }, []);
+  const expand = async (i: any) => { if (openId === i.id) { setOpenId(""); return; } setOpenId(i.id); setSug(null); const r = await api("/api/inbox/" + i.id + "/suggestion").catch(() => null); setSug(r); if (r) setDraft(r.draft_body); api("/api/inbox/" + i.id + "/claim", { method: "POST", body: {} }).catch(() => {}); api("/api/inbox/" + i.id + "/comments").then(setComments).catch(() => {}); };
+  const act = async (fn: () => Promise<any>, okMsg: string) => { const r = await fn().catch((e: any) => ({ error: e.message })); setMsg(r?.error ? "Failed: " + r.error : okMsg); reload(); };
+  return (<div className="card"><h3>Inbox queue — everything that isn't a lead, worked like a queue</h3>
+    <p className="muted">Triaged on arrival, each with an owner, a due date, and an AI-suggested next action with a ready-to-send reply. {openCount} open.</p>
+    {msg && <div className="ok">{msg}</div>}
+    <div className="rowflex" style={{ marginBottom: 10 }}>{cats.map(c => <button key={c} className={"btn small " + (cat === c ? "" : "ghost")} onClick={() => setCat(c)}>{c === "all" ? `All (${openCount} open)` : `${c.replaceAll("_", " ")}${counts[c] ? ` (${counts[c]})` : ""}`}</button>)}</div>
+    {shown.map((i: any) => { const doneIt = (i.status || "open") === "done"; return <div key={i.id} style={{ borderBottom: "1px solid #eef2f7", padding: "9px 0", opacity: doneIt ? 0.55 : 1 }}>
+      <div className="rowflex" style={{ cursor: "pointer" }} onClick={() => expand(i)}><span className="badge b-TRIAGED">{i.category.replaceAll("_", " ")}</span><b>{i.from_name || i.from_email}</b><span style={{ flex: 1 }}>{i.subject}</span>
+        {i.overdue && !doneIt && <span className="st fail">overdue</span>}{doneIt ? <span className="st pass">done</span> : <span className="muted">due {dOnly(i.next_action_due_at)} · {i.owner_name || "unassigned"}</span>}</div>
+      {openId === i.id && <div style={{ margin: "10px 0 4px", padding: 12, background: "#f8fafc", borderRadius: 10 }}>
+        <p style={{ whiteSpace: "pre-wrap", margin: "0 0 10px" }} className="muted">{String(i.body || "").slice(0, 900)}</p>
+        {sug ? <div><p style={{ margin: "0 0 4px" }}><b>🤖 Suggested: {sug.action}</b></p><p className="muted" style={{ margin: "0 0 8px" }}>{sug.why}</p>
+          <label className="f">Reply — edit freely, sends from your workspace</label>
+          <textarea rows={7} value={draft} onChange={e => setDraft(e.target.value)} />
+          <div className="rowflex"><select style={{ width: 230 }} defaultValue="" onChange={e => { const c = canned.find((x: any) => x.id === e.target.value); if (c) setDraft(c.body); e.target.value = ""; }}><option value="">Insert a canned reply…</option>{canned.map((c: any) => <option key={c.id} value={c.id}>{c.title}</option>)}</select>{i.claimed_by && <span className="tinyBadge">👀 being handled</span>}</div>
+          <div className="rowflex" style={{ marginTop: 8 }}>
+            <button className="btn small" onClick={() => act(async () => { const r = await api("/api/inbox/" + i.id + "/reply", { method: "POST", body: { body: draft } }); return r; }, "Reply queued/sent ✓ — item closed")}>✉ Send reply & close</button>
+            {!doneIt ? <button className="btn ghost small" onClick={() => act(() => api("/api/inbox/" + i.id, { method: "PATCH", body: { status: "done" } }), "Marked done ✓")}>✓ Mark done</button> : <button className="btn ghost small" onClick={() => act(() => api("/api/inbox/" + i.id, { method: "PATCH", body: { status: "open" } }), "Reopened ✓")}>Reopen</button>}
+            <button className="btn ghost small" onClick={() => act(() => api("/api/inbox/" + i.id, { method: "PATCH", body: { snooze_days: 1 } }), "Snoozed to tomorrow ✓")}>💤 Snooze 1d</button>
+            <button className="btn ghost small" onClick={() => act(() => api("/api/inbox/" + i.id + "/convert-task", { method: "POST", body: {} }), "Task created for the owner ✓")}>Make task</button>
+            <button className="btn ghost small" onClick={() => act(() => api("/api/inbox/" + i.id + "/convert-lead", { method: "POST", body: {} }), "Converted to a lead ✓")}>Convert to lead</button>
+          </div>
+          <div style={{ marginTop: 12, borderTop: "1px solid #e5e7eb", paddingTop: 8 }}><b style={{ fontSize: 13 }}>Team discussion — on this email, not in a hallway</b>
+            {comments.map((c: any) => <p key={c.id} style={{ margin: "5px 0", fontSize: 13 }}><b>{c.user_name || "Teammate"}</b> <span className="muted">{dt(c.created_at)}</span><br />{c.body}</p>)}
+            <div className="rowflex"><input placeholder="Add a comment for the team…" value={cText} onChange={e => setCText(e.target.value)} style={{ flex: 1 }} /><button className="btn ghost small" disabled={!cText.trim()} onClick={async () => { await api("/api/inbox/" + i.id + "/comments", { method: "POST", body: { body: cText.trim() } }); setCText(""); api("/api/inbox/" + i.id + "/comments").then(setComments).catch(() => {}); }}>Comment</button></div></div></div> : <p className="muted">Loading suggestion…</p>}
+      </div>}
+    </div>; })}
+    {shown.length === 0 && <p className="muted">Nothing here — this category is clear.</p>}
+  </div>);
+}
+
+
 function Ops() {
   function FieldReportsCard() {
   const today = new Date().toLocaleDateString("en-CA");
@@ -672,6 +712,7 @@ function ScheduleCard() {
       <input placeholder="Note (arrival time, phase…)" value={note} onChange={e => setNote(e.target.value)} style={{ flex: 1 }} />
       <button className="btn small" disabled={!jobId} onClick={assign}>Assign</button><button className="btn ghost small" onClick={() => setSel(null)}>Cancel</button></div></div>}
   </div>);
+
 }
 
 function TimesheetsCard() {
@@ -706,45 +747,6 @@ function TimesheetsCard() {
   </div>);
 }
 
-function InboxQueue({ inbox, reload }: any) {
-  const [cat, setCat] = useState("all"); const [openId, setOpenId] = useState(""); const [sug, setSug] = useState<any>(null); const [draft, setDraft] = useState(""); const [msg, setMsg] = useState("");
-  const cats = ["all", "client_active_job", "proposal", "field", "vendor", "finance", "admin"];
-  const counts: Record<string, number> = {}; for (const i of inbox) if ((i.status || "open") === "open") counts[i.category] = (counts[i.category] || 0) + 1;
-  const openCount = inbox.filter((i: any) => (i.status || "open") === "open").length;
-  const shown = inbox.filter((i: any) => cat === "all" || i.category === cat);
-  const [comments, setComments] = useState<any[]>([]); const [canned, setCanned] = useState<any[]>([]); const [cText, setCText] = useState("");
-  useEffect(() => { api("/api/canned-replies").then(setCanned).catch(() => {}); }, []);
-  const expand = async (i: any) => { if (openId === i.id) { setOpenId(""); return; } setOpenId(i.id); setSug(null); const r = await api("/api/inbox/" + i.id + "/suggestion").catch(() => null); setSug(r); if (r) setDraft(r.draft_body); api("/api/inbox/" + i.id + "/claim", { method: "POST", body: {} }).catch(() => {}); api("/api/inbox/" + i.id + "/comments").then(setComments).catch(() => {}); };
-  const act = async (fn: () => Promise<any>, okMsg: string) => { const r = await fn().catch((e: any) => ({ error: e.message })); setMsg(r?.error ? "Failed: " + r.error : okMsg); reload(); };
-  return (<div className="card"><h3>Inbox queue — everything that isn't a lead, worked like a queue</h3>
-    <p className="muted">Triaged on arrival, each with an owner, a due date, and an AI-suggested next action with a ready-to-send reply. {openCount} open.</p>
-    {msg && <div className="ok">{msg}</div>}
-    <div className="rowflex" style={{ marginBottom: 10 }}>{cats.map(c => <button key={c} className={"btn small " + (cat === c ? "" : "ghost")} onClick={() => setCat(c)}>{c === "all" ? `All (${openCount} open)` : `${c.replaceAll("_", " ")}${counts[c] ? ` (${counts[c]})` : ""}`}</button>)}</div>
-    {shown.map((i: any) => { const doneIt = (i.status || "open") === "done"; return <div key={i.id} style={{ borderBottom: "1px solid #eef2f7", padding: "9px 0", opacity: doneIt ? 0.55 : 1 }}>
-      <div className="rowflex" style={{ cursor: "pointer" }} onClick={() => expand(i)}><span className="badge b-TRIAGED">{i.category.replaceAll("_", " ")}</span><b>{i.from_name || i.from_email}</b><span style={{ flex: 1 }}>{i.subject}</span>
-        {i.overdue && !doneIt && <span className="st fail">overdue</span>}{doneIt ? <span className="st pass">done</span> : <span className="muted">due {dOnly(i.next_action_due_at)} · {i.owner_name || "unassigned"}</span>}</div>
-      {openId === i.id && <div style={{ margin: "10px 0 4px", padding: 12, background: "#f8fafc", borderRadius: 10 }}>
-        <p style={{ whiteSpace: "pre-wrap", margin: "0 0 10px" }} className="muted">{String(i.body || "").slice(0, 900)}</p>
-        {sug ? <div><p style={{ margin: "0 0 4px" }}><b>🤖 Suggested: {sug.action}</b></p><p className="muted" style={{ margin: "0 0 8px" }}>{sug.why}</p>
-          <label className="f">Reply — edit freely, sends from your workspace</label>
-          <textarea rows={7} value={draft} onChange={e => setDraft(e.target.value)} />
-          <div className="rowflex"><select style={{ width: 230 }} defaultValue="" onChange={e => { const c = canned.find((x: any) => x.id === e.target.value); if (c) setDraft(c.body); e.target.value = ""; }}><option value="">Insert a canned reply…</option>{canned.map((c: any) => <option key={c.id} value={c.id}>{c.title}</option>)}</select>{i.claimed_by && <span className="tinyBadge">👀 being handled</span>}</div>
-          <div className="rowflex" style={{ marginTop: 8 }}>
-            <button className="btn small" onClick={() => act(async () => { const r = await api("/api/inbox/" + i.id + "/reply", { method: "POST", body: { body: draft } }); return r; }, "Reply queued/sent ✓ — item closed")}>✉ Send reply & close</button>
-            {!doneIt ? <button className="btn ghost small" onClick={() => act(() => api("/api/inbox/" + i.id, { method: "PATCH", body: { status: "done" } }), "Marked done ✓")}>✓ Mark done</button> : <button className="btn ghost small" onClick={() => act(() => api("/api/inbox/" + i.id, { method: "PATCH", body: { status: "open" } }), "Reopened ✓")}>Reopen</button>}
-            <button className="btn ghost small" onClick={() => act(() => api("/api/inbox/" + i.id, { method: "PATCH", body: { snooze_days: 1 } }), "Snoozed to tomorrow ✓")}>💤 Snooze 1d</button>
-            <button className="btn ghost small" onClick={() => act(() => api("/api/inbox/" + i.id + "/convert-task", { method: "POST", body: {} }), "Task created for the owner ✓")}>Make task</button>
-            <button className="btn ghost small" onClick={() => act(() => api("/api/inbox/" + i.id + "/convert-lead", { method: "POST", body: {} }), "Converted to a lead ✓")}>Convert to lead</button>
-          </div>
-          <div style={{ marginTop: 12, borderTop: "1px solid #e5e7eb", paddingTop: 8 }}><b style={{ fontSize: 13 }}>Team discussion — on this email, not in a hallway</b>
-            {comments.map((c: any) => <p key={c.id} style={{ margin: "5px 0", fontSize: 13 }}><b>{c.user_name || "Teammate"}</b> <span className="muted">{dt(c.created_at)}</span><br />{c.body}</p>)}
-            <div className="rowflex"><input placeholder="Add a comment for the team…" value={cText} onChange={e => setCText(e.target.value)} style={{ flex: 1 }} /><button className="btn ghost small" disabled={!cText.trim()} onClick={async () => { await api("/api/inbox/" + i.id + "/comments", { method: "POST", body: { body: cText.trim() } }); setCText(""); api("/api/inbox/" + i.id + "/comments").then(setComments).catch(() => {}); }}>Comment</button></div></div></div> : <p className="muted">Loading suggestion…</p>}
-      </div>}
-    </div>; })}
-    {shown.length === 0 && <p className="muted">Nothing here — this category is clear.</p>}
-  </div>);
-}
-
 const [d, setD] = useState<any>(null); const [inbox, setInbox] = useState<any[]>([]);
   const load = () => { api("/api/ops").then(setD).catch(() => {}); api("/api/inbox").then(setInbox).catch(() => {}); };
   useEffect(load, []);
@@ -765,6 +767,7 @@ const [d, setD] = useState<any>(null); const [inbox, setInbox] = useState<any[]>
     <TimeGridCard />
     <InboxQueue inbox={inbox} reload={load} />
   </div>);
+
 }
 
 function AccessModal({ member, close, done }: any) {
@@ -1069,7 +1072,7 @@ function Reports() {
     </tbody></table></div></div>);
 }
 
-class EB extends React.Component<any, any> { state = { err: "" }; static getDerivedStateFromError(e: any) { return { err: String(e && e.message || e) }; } componentDidCatch(e: any, info: any) { console.error("EB-CATCH:", e.message, (info.componentStack || "").slice(0, 900)); } render() { return this.state.err ? <div className="err">Render error: {this.state.err}</div> : this.props.children; } }
+class EB extends React.Component<any, any> { state = { err: "" }; static getDerivedStateFromError(e: any) { return { err: String(e && e.message || e) }; } componentDidCatch(e: any, info: any) { console.error("EB-CATCH:", e.message, (info.componentStack || "").slice(0, 900)); } render() { return this.state.err ? <div className="card" style={{ maxWidth: 560, margin: "40px auto", textAlign: "center", padding: 28 }}><div style={{ fontSize: 30 }}>🧯</div><h3 style={{ margin: "8px 0" }}>This screen hit a snag</h3><p className="muted">The rest of Workpile is fine — your other tabs still work. This view failed to render:</p><p className="err" style={{ textAlign: "left" }}>{this.state.err}</p><button className="btn" onClick={() => this.setState({ err: "" })}>Try this view again</button></div> : this.props.children; } }
 
 function LogoMark({ size = 30 }: any) { return (<svg width={size} height={size} viewBox="0 0 64 64" aria-label="Workpile" style={{ flex: "none", display: "block" }}><rect width="64" height="64" rx="14" fill="#0e5c3a"/><rect x="12" y="41" width="40" height="9" rx="4.5" fill="#ffffff"/><rect x="17" y="29.5" width="30" height="9" rx="4.5" fill="#ffffff" opacity="0.92"/><rect x="22" y="18" width="20" height="9" rx="4.5" fill="#4ade80"/></svg>); }
 function Logo({ light }: any) { return <span className="logo" style={light ? { color: "#fff" } : {}}><LogoMark size={30} /><span className="ltxt">Workpile</span></span>; }
@@ -2402,7 +2405,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
         <button className="btn ghost" title="Toggle dark mode" onClick={() => setTheme(t => t === "dark" ? "light" : "dark")}>{theme === "dark" ? "☀️" : "🌙"}</button>
         <OnlinePill /><button className="btn ghost" onClick={() => setAgentOpen(true)}>✦ Agent</button><button className="btn ghost" title="Log time (T)" onClick={() => setLtOpen(true)}>⏱ Log time</button><button className="btn" onClick={() => setCreating(true)}>+ New Lead</button><button className="avatarBtn" onClick={() => setProfOpen(true)} title={"Your profile — " + user.name}><Avatar u={user} size={32} /></button></div>
       {user && user.email_verified === 0 && <div className="verifyBar">✉️ Verify your email to secure your account and enable password recovery. <button className="btn ghost small" onClick={async () => { const r = await api("/api/auth/resend-verify", { method: "POST", body: {} }).catch((e: any) => ({ error: e.message })); setVerifyMsg(r.verify_url ? "Test mode \u2014 verify here: " + r.verify_url : r.error ? r.error : "Verification email sent \u2014 check your inbox."); }}>Resend verification</button>{verifyMsg && <span style={{ marginLeft: 8 }}>{verifyMsg}</span>}</div>}
-      <EB>
+      <EB key={nav.view}>
       {nav.view === "queue" && <WorkQueue openLead={openLead} openJob={(id: string) => setJobOpen(id)} go={go} />}
       {nav.view === "jobs" && <JobsBoard openJob={(id: string) => setJobOpen(id)} />}
       {nav.view === "customers" && <Customers openCustomer={(id: string) => setCustOpen(id)} tabSignal={tabSignal} />}
