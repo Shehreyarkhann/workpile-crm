@@ -5,10 +5,10 @@ import { db, uid, now, hashPassword, verifyPassword, apiKeyHash, logEvent, audit
 import { triageLead, packetCheck, demandGap, demandPool, injectionScan } from "./agents.ts";
 import { metrics, morningBrief } from "./metrics.ts";
 import { parseEmail, parseMbox, parseEmailCsv, suggestInboxAction, inboxPriority } from "./inbox.ts";
-import { proposalDocx } from "./docx.ts";
+import { proposalDocx, invoiceDocx } from "./docx.ts";
 import { getTemplate, proposalDocument, sanitizeHtml, resolveDocTemplateId } from "./proptemplate.ts";
 import { ensureSignToken, getByToken, sign } from "./sign.ts";
-import { createDeposit, markPaid, verifyStripeSignature, handleStripeEvent, stripeMode } from "./payments.ts";
+import { createDeposit, createInvoicePayment, markPaid, verifyStripeSignature, handleStripeEvent, stripeMode } from "./payments.ts";
 import { getFlags, setFlag, workspaceHealth, runSynthetics } from "./admin.ts";
 import { billingStatus, createCheckout, handleBillingEvent, PLANS, PLAN_ALIASES, planOf, ensureSubscription, seatCheck } from "./billing.ts";
 import { cleanupPreview, cleanupApply, insights, insightsV2, reactivateStale, scoreLead, nextBestAction, runAutomationsFor, logAgentRun, agentLevel, AGENT_LEVELS } from "./ai.ts";
@@ -649,8 +649,9 @@ app.get("/api/schedule/jobs", requireAuth, (req: any, res) => {
   res.json(rows);
 });
 // ---- Invoices (v17): real records + payment allocation; the source of AR truth ----
-const invView = (i: any) => ({ ...i, lines: JSON.parse(i.lines || "[]"), balance: Math.round(((i.total || 0) - (i.paid_amount || 0)) * 100) / 100, overdue: i.status !== "paid" && i.status !== "void" && i.due_at && new Date(i.due_at) < new Date() });
-app.get("/api/invoices", requireAuth, (req: any, res) => { res.json((db.prepare("SELECT i.*, j.service_requested FROM invoices i LEFT JOIN jobs j ON j.id=i.job_id WHERE i.workspace_id=? ORDER BY i.created_at DESC LIMIT 200").all(req.user.workspace_id) as any[]).map(invView)); });
+const ensureInvoiceToken = (i: any): string => { if (!i.token) { i.token = uid("invtok") + randomBytes(12).toString("hex"); try { db.prepare("UPDATE invoices SET token=? WHERE id=?").run(i.token, i.id); } catch { /* read-only race */ } } return i.token; };
+const invView = (i: any) => ({ ...i, token: ensureInvoiceToken(i), link: "/invoice/" + ensureInvoiceToken(i), lines: JSON.parse(i.lines || "[]"), balance: Math.round(((i.total || 0) - (i.paid_amount || 0)) * 100) / 100, overdue: i.status !== "paid" && i.status !== "void" && i.due_at && new Date(i.due_at) < new Date() });
+app.get("/api/invoices", requireAuth, (req: any, res) => { res.json((db.prepare("SELECT i.*, l.service_requested FROM invoices i LEFT JOIN leads l ON l.id=i.lead_id WHERE i.workspace_id=? ORDER BY i.created_at DESC LIMIT 200").all(req.user.workspace_id) as any[]).map(invView)); });
 app.post("/api/jobs/:id/invoice", requireAuth, (req: any, res) => {
   const ws = req.user.workspace_id; const job = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, ws) as any;
   if (!job) return res.status(404).json({ error: { code: "not_found" } });
@@ -658,7 +659,8 @@ app.post("/api/jobs/:id/invoice", requireAuth, (req: any, res) => {
   if (open) return res.status(409).json({ error: { code: "invoice_open", message: "This job already has an open invoice — collect or void it first." } });
   const n = ((db.prepare("SELECT COUNT(*) c FROM invoices WHERE workspace_id=?").get(ws) as any).c || 0) + 1;
   const id = uid("inv"); const total = Math.round((job.value || 0) * 100) / 100;
-  const lines = [{ description: `Job — ${job.service_requested || "services"}`, qty: 1, unit_price: total, line_total: total }];
+  const leadSvc = (db.prepare("SELECT service_requested FROM leads WHERE id=?").get(job.lead_id) as any)?.service_requested;
+  const lines = [{ description: `Job — ${leadSvc || "services"}`, qty: 1, unit_price: total, line_total: total }];
   db.prepare("INSERT INTO invoices (id,workspace_id,lead_id,job_id,proposal_id,number,status,lines,total,paid_amount,due_at,issued_at,source,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'manual',?)")
     .run(id, ws, job.lead_id, job.id, job.proposal_id || null, "INV-" + String(n).padStart(4, "0"), "sent", JSON.stringify(lines), total, 0, new Date(Date.now() + (Number(req.body?.due_days || 30)) * 86400000).toISOString(), now(), now());
   db.prepare("UPDATE jobs SET invoice_status='invoiced' WHERE id=?").run(job.id);
@@ -683,7 +685,89 @@ app.post("/api/invoices/:id/payments", requireAuth, (req: any, res) => {
   res.status(201).json(invView(db.prepare("SELECT * FROM invoices WHERE id=?").get(inv.id)));
 });
 app.post("/api/invoices/:id/void", requireAuth, (req: any, res) => { const inv = db.prepare("SELECT * FROM invoices WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any; if (!inv) return res.status(404).json({ error: { code: "not_found" } }); if ((inv.paid_amount || 0) > 0) return res.status(422).json({ error: { code: "has_payments", message: "An invoice with payments cannot be voided — refund through the proposal instead." } }); db.prepare("UPDATE invoices SET status='void' WHERE id=?").run(inv.id); res.json({ ok: true }); });
-app.post("/api/invoices/backfill", requireAuth, needPerm("can_settings"), (req: any, res) => { const ws = req.user.workspace_id; let made = 0; for (const job of db.prepare("SELECT * FROM jobs WHERE workspace_id=? AND invoice_status IN ('invoiced','paid')").all(ws) as any[]) { if (db.prepare("SELECT id FROM invoices WHERE job_id=?").get(job.id)) continue; const n = ((db.prepare("SELECT COUNT(*) c FROM invoices WHERE workspace_id=?").get(ws) as any).c || 0) + 1; const paid = job.invoice_status === "paid"; db.prepare("INSERT INTO invoices (id,workspace_id,lead_id,job_id,proposal_id,number,status,lines,total,paid_amount,due_at,issued_at,source,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(uid("inv"), ws, job.lead_id, job.id, job.proposal_id || null, "INV-" + String(n).padStart(4, "0"), paid ? "paid" : "sent", JSON.stringify([{ description: `Job — ${job.service_requested || "services"}`, qty: 1, unit_price: job.value || 0, line_total: job.value || 0 }]), job.value || 0, paid ? (job.value || 0) : 0, now(), job.created_at, "backfill", now()); made++; } audit(ws, req.user.id, "invoice.backfill", "invoice", null, { made }); res.json({ ok: true, made }); });
+app.post("/api/invoices/:id/send", requireAuth, async (req: any, res) => {
+  const ws = req.user.workspace_id;
+  const inv = db.prepare("SELECT * FROM invoices WHERE id=? AND workspace_id=?").get(req.params.id, ws) as any;
+  if (!inv) return res.status(404).json({ error: { code: "not_found" } });
+  if (inv.status === "void") return res.status(422).json({ error: { code: "void_invoice" } });
+  const lead = db.prepare("SELECT * FROM leads WHERE id=?").get(inv.lead_id) as any;
+  const contact = lead?.contact_id ? db.prepare("SELECT * FROM contacts WHERE id=?").get(lead.contact_id) as any : null;
+  const email = contact?.email || lead?.contact_email;
+  if (!email) return res.status(422).json({ error: { code: "no_email", message: "This customer has no email address on file — add one to the lead first." } });
+  const tpl = getTemplate(ws);
+  const base = `${req.protocol}://${req.get("host")}`;
+  const link = `${base}/invoice/${ensureInvoiceToken(inv)}`;
+  const balance = Math.round(((inv.total || 0) - (inv.paid_amount || 0)) * 100) / 100;
+  const body = `Hello ${contact?.name || "there"},\n\nYour invoice ${inv.number} from ${tpl.company} is ready.\n\nTotal: $${Number(inv.total || 0).toFixed(2)}${(inv.paid_amount || 0) > 0 ? `\nPaid: $${Number(inv.paid_amount).toFixed(2)}` : ""}\nBalance due: $${balance.toFixed(2)}${inv.due_at ? `\nDue: ${new Date(inv.due_at).toLocaleDateString()}` : ""}\n\nView and pay online: ${link}\n\nThank you,\n${tpl.company}`;
+  const msg: any = await queueAndDeliver(ws, { lead_id: inv.lead_id, channel: "email", to: email, subject: `Invoice ${inv.number} from ${tpl.company} — balance $${balance.toFixed(2)}`, body });
+  if (msg?.status === "suppressed") return res.status(422).json({ error: { code: "suppressed", message: "This address has opted out of email." } });
+  db.prepare("UPDATE invoices SET sent_at=? WHERE id=?").run(now(), inv.id);
+  audit(ws, req.user.id, "invoice.sent", "invoice", inv.id, { to: email, status: msg?.status });
+  res.json({ ok: true, delivery: msg?.status || "queued", test_mode: msg?.status === "test_mode", link });
+});
+app.get("/api/invoices/:id/document", requireAuth, async (req: any, res) => {
+  const inv = db.prepare("SELECT * FROM invoices WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!inv) return res.status(404).json({ error: { code: "not_found" } });
+  const base = `${req.protocol}://${req.get("host")}`;
+  const out = await invoiceDocx(inv.id, `${base}/invoice/${ensureInvoiceToken(inv)}`);
+  if (!out) return res.status(404).json({ error: { code: "not_found" } });
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+  res.setHeader("Content-Disposition", `attachment; filename="${out.filename}"`);
+  res.send(out.buffer);
+});
+function invoiceByToken(token: string) {
+  const inv = db.prepare("SELECT * FROM invoices WHERE token=?").get(token) as any;
+  if (!inv) return null;
+  const lead = db.prepare("SELECT * FROM leads WHERE id=?").get(inv.lead_id) as any;
+  const contact = lead?.contact_id ? db.prepare("SELECT * FROM contacts WHERE id=?").get(lead.contact_id) as any : null;
+  const job = inv.job_id ? db.prepare("SELECT * FROM jobs WHERE id=?").get(inv.job_id) as any : null;
+  return { inv, lead, contact, job, tpl: getTemplate(inv.workspace_id) };
+}
+app.get("/invoice/:token", (req, res) => {
+  const ctx = invoiceByToken(req.params.token);
+  if (!ctx) return res.status(404).send("Invoice not found");
+  const { inv, lead, contact, job, tpl } = ctx;
+  const e = (s: any) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const money = (n: any) => "$" + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const lines = JSON.parse(inv.lines || "[]") as any[];
+  const balance = Math.round(((inv.total || 0) - (inv.paid_amount || 0)) * 100) / 100;
+  const paid = inv.status === "paid" || balance <= 0;
+  res.type("html").send(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><title>Invoice ${e(inv.number)} — ${e(tpl.company)}</title><style>
+  body{font-family:-apple-system,'Segoe UI',Roboto,sans-serif;max-width:720px;margin:0 auto;padding:26px 18px 40px;color:#101613;background:#fff}
+  .lh{display:flex;justify-content:space-between;gap:16px;border-bottom:3px solid #0E5C3A;padding-bottom:14px}
+  .co{font-size:26px;font-weight:800;color:#0E5C3A;letter-spacing:-.02em}.tag{color:#5B6B62;font-size:13px;margin-top:2px}
+  .ct{text-align:right;color:#5B6B62;font-size:13px;line-height:1.5}
+  h1{font-size:21px;letter-spacing:.04em;color:#0E5C3A;margin:22px 0 2px}.svc{color:#5B6B62;margin:0 0 16px}
+  .meta{display:flex;gap:26px;flex-wrap:wrap;background:#EDF2EE;border-radius:10px;padding:12px 16px;font-size:13.5px;margin-bottom:18px}
+  .meta b{display:block;font-size:11px;letter-spacing:.08em;color:#0E5C3A;margin-bottom:2px}
+  table{width:100%;border-collapse:collapse;font-size:14.5px}th{background:#0E5C3A;color:#fff;text-align:left;padding:9px 10px;font-size:12.5px;letter-spacing:.05em}
+  td{padding:9px 10px;border-bottom:1px solid #D9DEDB}.r{text-align:right}
+  .tot td{border-bottom:0;font-weight:700}.band td{background:#0E5C3A;color:#fff;font-weight:800;font-size:16px}
+  .paybtn{background:#0E5C3A;color:#fff;border:0;padding:14px 22px;border-radius:10px;width:100%;font-size:16px;font-weight:700;cursor:pointer;margin-top:18px}
+  .paidbox{background:#dcfce7;color:#166534;border-radius:10px;padding:14px 16px;font-weight:700;text-align:center;margin-top:18px}
+  .note{background:#fffbeb;color:#92400e;border-radius:10px;padding:10px 14px;font-size:13.5px;margin-top:14px}
+  .docfoot{color:#5B6B62;font-size:12.5px;text-align:center;margin-top:28px;border-top:1px solid #D9DEDB;padding-top:12px}
+  </style>
+  <div class="lh"><div><div class="co">${e(tpl.company)}</div>${tpl.tagline ? `<div class="tag">${e(tpl.tagline)}</div>` : ""}</div><div class="ct">${e(tpl.contact_line)}${tpl.address ? `<br>${e(tpl.address)}` : ""}</div></div>
+  <h1>INVOICE</h1><p class="svc">${e(inv.number)}${job?.service_requested || lead?.service_requested ? " · " + e(job?.service_requested || lead?.service_requested) : ""}</p>
+  <div class="meta"><div><b>BILLED TO</b>${e(contact?.name || lead?.contact_name || "—")}</div><div><b>ISSUED</b>${new Date(inv.issued_at || inv.created_at).toLocaleDateString()}</div>${inv.due_at ? `<div><b>DUE</b>${new Date(inv.due_at).toLocaleDateString()}</div>` : ""}<div><b>STATUS</b>${paid ? "Paid" : e(String(inv.status).replace("_", " "))}</div></div>
+  ${req.query.paid ? `<div class="paidbox">✅ Payment received — thank you!</div>` : ""}
+  <table><tr><th>Description</th><th class="r">Qty</th><th class="r">Unit price</th><th class="r">Amount</th></tr>
+  ${lines.map((l: any) => `<tr><td>${e(l.description || l.name || "Service")}</td><td class="r">${e(l.qty ?? 1)}</td><td class="r">${money(l.unit_price)}</td><td class="r">${money(l.line_total ?? (Number(l.unit_price || 0) * (l.qty || 1)))}</td></tr>`).join("")}
+  <tr class="tot"><td colspan="3" class="r">Total</td><td class="r">${money(inv.total)}</td></tr>
+  ${(inv.paid_amount || 0) > 0 ? `<tr class="tot"><td colspan="3" class="r">Paid</td><td class="r">−${money(inv.paid_amount)}</td></tr>` : ""}
+  <tr class="band"><td colspan="3" class="r">BALANCE DUE</td><td class="r">${money(balance)}</td></tr></table>
+  ${paid ? `<div class="paidbox">✅ This invoice is paid in full. Thank you!</div>` : inv.status === "void" ? `<div class="note">This invoice has been voided.</div>` : `<form method="POST" action="/invoice/${e(inv.token)}/pay"><button class="paybtn">Pay ${money(balance)} →</button></form><p class="note">You'll be taken to a secure payment page. ${stripeMode() === "test" ? "This deployment is in test mode — no real charge is made." : ""}</p>`}
+  <div class="docfoot">${e(tpl.company)} · Invoice ${e(inv.number)}</div>`);
+});
+app.post("/invoice/:token/pay", express.urlencoded({ extended: false }), async (req, res) => {
+  const ctx = invoiceByToken(req.params.token);
+  if (!ctx) return res.status(404).send("Invoice not found");
+  const base = `${req.protocol}://${req.get("host")}`;
+  try { const pay = await createInvoicePayment(ctx.inv.id, base); if (!pay) return res.redirect(`/invoice/${req.params.token}`); res.redirect(pay.link); }
+  catch (e: any) { res.redirect(`/invoice/${req.params.token}`); }
+});
+app.post("/api/invoices/backfill", requireAuth, needPerm("can_settings"), (req: any, res) => { const ws = req.user.workspace_id; let made = 0; for (const job of db.prepare("SELECT * FROM jobs WHERE workspace_id=? AND invoice_status IN ('invoiced','paid')").all(ws) as any[]) { if (db.prepare("SELECT id FROM invoices WHERE job_id=?").get(job.id)) continue; const n = ((db.prepare("SELECT COUNT(*) c FROM invoices WHERE workspace_id=?").get(ws) as any).c || 0) + 1; const paid = job.invoice_status === "paid"; db.prepare("INSERT INTO invoices (id,workspace_id,lead_id,job_id,proposal_id,number,status,lines,total,paid_amount,due_at,issued_at,source,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(uid("inv"), ws, job.lead_id, job.id, job.proposal_id || null, "INV-" + String(n).padStart(4, "0"), paid ? "paid" : "sent", JSON.stringify([{ description: `Job — ${(db.prepare("SELECT service_requested FROM leads WHERE id=?").get(job.lead_id) as any)?.service_requested || "services"}`, qty: 1, unit_price: job.value || 0, line_total: job.value || 0 }]), job.value || 0, paid ? (job.value || 0) : 0, now(), job.created_at, "backfill", now()); made++; } audit(ws, req.user.id, "invoice.backfill", "invoice", null, { made }); res.json({ ok: true, made }); });
 app.get("/api/schedule", requireAuth, (req: any, res) => {
   const ws = req.user.workspace_id;
   const week = String(req.query.week || weekStartOf(new Date()));
@@ -1436,8 +1520,8 @@ app.get("/pay/test/:paymentId", (req, res) => {
   const pay = db.prepare("SELECT * FROM payments WHERE id=?").get(req.params.paymentId) as any;
   if (!pay) return res.status(404).send("Not found");
   res.type("html").send(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:sans-serif;max-width:480px;margin:24px auto;padding:0 16px}button{background:#14532d;color:#fff;border:0;padding:12px 20px;border-radius:8px;width:100%}</style>
-  <h1>Test Mode — Deposit</h1><p>Amount: <strong>$${Number(pay.amount).toFixed(2)}</strong> · Status: ${pay.status}</p>
-  ${pay.status === "paid" ? "<p>✅ Paid (test mode)</p>" : `<form method="POST" action="/pay/test/${pay.id}"><button>Pay Deposit (test)</button></form>`}
+  <h1>Test Mode — ${pay.kind === "invoice" ? "Invoice payment" : "Deposit"}</h1><p>Amount: <strong>$${Number(pay.amount).toFixed(2)}</strong> · Status: ${pay.status}</p>
+  ${pay.status === "paid" ? "<p>✅ Paid (test mode)</p>" : `<form method="POST" action="/pay/test/${pay.id}"><button>Pay ${pay.kind === "invoice" ? "Invoice" : "Deposit"} (test)</button></form>`}
   <p><small>No real charge. Connect STRIPE_SECRET_KEY and this becomes a live Stripe Checkout link automatically.</small></p>`);
 });
 app.post("/pay/test/:paymentId", express.urlencoded({ extended: false }), (req, res) => { markPaid(req.params.paymentId); res.redirect(`/pay/test/${req.params.paymentId}`); });
@@ -1461,7 +1545,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v34.1", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
+app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: "v35", jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {
   const target = db.prepare("SELECT * FROM users WHERE id=?").get(String(req.body?.user_id || "")) as any;

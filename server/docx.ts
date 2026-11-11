@@ -4,7 +4,8 @@
 // proposal meta table, shaded investment table with a total band, terms,
 // and an acceptance block with the v31 signature layout.
 import { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, Footer, AlignmentType, BorderStyle, ShadingType, ImageRun, PageNumber } from "docx";
-import { proposalDocument, htmlToParagraphs } from "./proptemplate.ts";
+import { proposalDocument, htmlToParagraphs, getTemplate } from "./proptemplate.ts";
+import { db } from "./db.ts";
 
 const PINE = "0E5C3A", INK = "101613", GRAY = "5B6B62", LINE = "D9DEDB", BAND = "EDF2EE";
 const money = (n: any) => "$" + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -105,4 +106,61 @@ export async function proposalDocx(proposalId: string): Promise<{ buffer: Buffer
   ] }] });
   const buffer = await Packer.toBuffer(doc);
   return { buffer, filename: `proposal-${String(d.lead.service_requested).replace(/\W+/g, "-").toLowerCase()}-v${d.proposal.version}.docx` };
+}
+
+// V35: invoices get the same professional document as proposals — letterhead,
+// billed-to meta, itemized lines, totals with the balance due, and the pay link.
+export async function invoiceDocx(invoiceId: string, payUrl: string): Promise<{ buffer: Buffer; filename: string } | null> {
+  const inv = db.prepare("SELECT * FROM invoices WHERE id=?").get(invoiceId) as any;
+  if (!inv) return null;
+  const t = getTemplate(inv.workspace_id);
+  const lead = db.prepare("SELECT * FROM leads WHERE id=?").get(inv.lead_id) as any;
+  const contact = lead?.contact_id ? db.prepare("SELECT * FROM contacts WHERE id=?").get(lead.contact_id) as any : null;
+  const job = inv.job_id ? db.prepare("SELECT * FROM jobs WHERE id=?").get(inv.job_id) as any : null;
+  const lines = JSON.parse(inv.lines || "[]") as any[];
+  const balance = Math.round(((inv.total || 0) - (inv.paid_amount || 0)) * 100) / 100;
+  const money = (n: any) => "$" + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  let logoPara: Paragraph | null = null;
+  if (t.logo && /^data:image\/(png|jpeg|jpg);base64,/.test(t.logo)) {
+    try { const type = t.logo.includes("image/png") ? "png" : "jpg"; const buf = Buffer.from(t.logo.split(",")[1], "base64"); logoPara = new Paragraph({ children: [new ImageRun({ type, data: buf, transformation: { width: 150, height: 56 } })] }); } catch { logoPara = null; }
+  }
+  const letterhead = new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, columnWidths: [55, 45], rows: [new TableRow({ children: [
+    new TableCell({ borders: noBorders(), width: { size: 55, type: WidthType.PERCENTAGE }, children: [logoPara || P(t.company, { bold: true, size: 34, color: PINE, after: 0 }), ...(t.tagline ? [P(t.tagline, { size: 18, color: GRAY, after: 0 })] : [])] }),
+    new TableCell({ borders: noBorders(), width: { size: 45, type: WidthType.PERCENTAGE }, children: [
+      ...(t.contact_line ? [new Paragraph({ alignment: AlignmentType.RIGHT, spacing: { after: 20 }, children: [new TextRun({ text: t.contact_line, size: 18, color: GRAY, font: "Calibri" })] })] : []),
+      ...(t.address ? [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: t.address, size: 18, color: GRAY, font: "Calibri" })] })] : []),
+    ] }),
+  ] })] });
+  const rule = new Paragraph({ spacing: { before: 110, after: 200 }, border: { bottom: { style: BorderStyle.SINGLE, size: 16, color: PINE } }, children: [] });
+  const labelCell = (txt: string, w: number) => new TableCell({ width: { size: w, type: WidthType.PERCENTAGE }, shading: shade(BAND), borders: cellBorders(), children: [P(txt, { bold: true, size: 16, color: PINE, after: 0 })] });
+  const infoCell = (ls: [string, boolean?][], w: number) => new TableCell({ width: { size: w, type: WidthType.PERCENTAGE }, borders: cellBorders(), children: ls.map(([txt, b]) => P(txt, { bold: !!b, size: 19, after: 26 })) });
+  const meta = new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, columnWidths: [36, 30, 34], rows: [
+    new TableRow({ children: [labelCell("BILLED TO", 36), labelCell("SERVICE", 30), labelCell("INVOICE DETAILS", 34)] }),
+    new TableRow({ children: [
+      infoCell([[contact?.name || lead?.contact_name || "—", true], ...(contact?.email ? [[contact.email] as [string]] : []), ...(contact?.phone ? [[contact.phone] as [string]] : [])], 36),
+      infoCell([[String(job?.service_requested || lead?.service_requested || "Services"), true], ...(lead?.location ? [[lead.location] as [string]] : [])], 30),
+      infoCell([["Invoice " + inv.number, true], ["Issued: " + new Date(inv.issued_at || inv.created_at).toLocaleDateString()] as [string], ...(inv.due_at ? [["Due: " + new Date(inv.due_at).toLocaleDateString()] as [string]] : []), ["Status: " + String(inv.status).replace("_", " ")] as [string]], 34),
+    ] }),
+  ] });
+  const head = (txt: string, w: number, right = false) => new TableCell({ width: { size: w, type: WidthType.PERCENTAGE }, shading: shade(PINE), borders: cellBorders(PINE), children: [new Paragraph({ alignment: right ? AlignmentType.RIGHT : undefined, children: [new TextRun({ text: txt, bold: true, size: 19, color: "FFFFFF", font: "Calibri" })] })] });
+  const td2 = (txt: string, w: number, o: any = {}) => new TableCell({ width: { size: w, type: WidthType.PERCENTAGE }, shading: o.fill ? shade(o.fill) : undefined, borders: cellBorders(), children: [new Paragraph({ alignment: o.right ? AlignmentType.RIGHT : o.center ? AlignmentType.CENTER : undefined, children: [new TextRun({ text: txt, bold: o.bold, size: 20, color: o.color ?? INK, font: "Calibri" })] })] });
+  const itemsTable = new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, columnWidths: [52, 10, 18, 20], rows: [
+    new TableRow({ children: [head("DESCRIPTION", 52), head("QTY", 10, true), head("UNIT PRICE", 18, true), head("AMOUNT", 20, true)] }),
+    ...lines.map((l: any) => new TableRow({ children: [td2(String(l.description || l.name || "Service"), 52), td2(String(l.qty ?? 1), 10, { right: true }), td2(money(l.unit_price), 18, { right: true }), td2(money(l.line_total ?? (Number(l.unit_price || 0) * (l.qty || 1))), 20, { right: true })] })),
+    new TableRow({ children: [td2("", 52), td2("", 10), td2("TOTAL", 18, { right: true, bold: true }), td2(money(inv.total), 20, { right: true, bold: true })] }),
+    ...(Number(inv.paid_amount || 0) > 0 ? [new TableRow({ children: [td2("", 52), td2("", 10), td2("PAID", 18, { right: true }), td2(money(inv.paid_amount), 20, { right: true })] })] : []),
+    new TableRow({ children: [new TableCell({ width: { size: 80, type: WidthType.PERCENTAGE }, shading: shade(PINE), borders: cellBorders(PINE), children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: "BALANCE DUE", bold: true, size: 20, color: "FFFFFF", font: "Calibri" })] })] }), new TableCell({ width: { size: 20, type: WidthType.PERCENTAGE }, shading: shade(PINE), borders: cellBorders(PINE), children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: money(balance), bold: true, size: 20, color: "FFFFFF", font: "Calibri" })] })] })] }),
+  ] });
+  const footer = new Footer({ children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: `${t.company} · Invoice ${inv.number} · Page `, size: 16, color: GRAY, font: "Calibri" }), new TextRun({ size: 16, color: GRAY, font: "Calibri", children: [PageNumber.CURRENT] })] })] });
+  const doc = new Document({ styles: { default: { document: { run: { font: "Calibri", size: 21, color: INK } } } }, sections: [{ footers: { default: footer }, children: [
+    letterhead, rule,
+    P("INVOICE", { bold: true, size: 40, color: PINE, after: 40 }),
+    P(inv.number + (job?.service_requested ? " · " + job.service_requested : ""), { size: 20, color: GRAY, after: 200 }),
+    meta,
+    H("Charges"),
+    itemsTable,
+    ...(balance > 0 ? [H("Payment"), P(`Please pay the balance of ${money(balance)}${inv.due_at ? " by " + new Date(inv.due_at).toLocaleDateString() : ""}. You can pay online here: ${payUrl}`), P("Questions about this invoice? Reply to the email it arrived with, or call us — we're happy to help.")] : [H("Payment"), P("Paid in full — thank you. This invoice is settled.")]),
+  ] }] });
+  const buffer = await Packer.toBuffer(doc);
+  return { buffer: Buffer.from(buffer), filename: `${inv.number}.docx` };
 }
