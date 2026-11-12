@@ -12,7 +12,7 @@ import { getProvider, providerStatus } from "./llm.ts";
 import { agentLevel } from "./ai.ts";
 import { qualifiedLeadsMissingProposals } from "./proposals-core.ts";
 
-export interface Step { id: string; call_id?: string; tool: string; args: any; control: string; label: string; status: "pending" | "approved" | "rejected" | "done" | "failed" | "skipped"; needs_approval: boolean; result?: string; refs?: any; verified?: boolean }
+export interface Step { id: string; call_id?: string; policy?: string; tool: string; args: any; control: string; label: string; status: "pending" | "approved" | "rejected" | "done" | "failed" | "skipped"; needs_approval: boolean; result?: string; refs?: any; verified?: boolean }
 const J = (v: any, d: any) => { try { return JSON.parse(v); } catch { return d; } };
 
 export function needsApproval(control: string, level: number): boolean {
@@ -94,6 +94,7 @@ export async function createTriageExecution(ws: string, userId: string): Promise
   const w = db.prepare("SELECT * FROM workspaces WHERE id=?").get(ws) as any;
   const level = agentLevel(w);
   const { steps, count } = triageSteps(ws, level);
+  try { const { applyEarnedPolicy } = await import("./autonomy.ts"); applyEarnedPolicy(ws, steps, level); } catch { /* base policy stands */ }
   const id = uid("exe");
   db.prepare("INSERT INTO agent_executions (id,workspace_id,user_id,parent_id,instruction,status,planner,plan,context,created_at,updated_at) VALUES (?,?,?,NULL,?,'executing','rules-v1 (mass triage)',?,?,?,?)")
     .run(id, ws, userId, `Handle all untouched leads (${count})`, JSON.stringify(steps), JSON.stringify({ ...businessContext(ws), triage_count: count }), now(), now());
@@ -127,6 +128,7 @@ export async function createExecution(ws: string, userId: string, instruction: s
   } else if (/\binbox\b/.test(" " + instruction.toLowerCase() + " ")) { steps = inboxSteps(ws, level).steps; planner = "rules-v1 (inbox)"; runNow = true; }
   else if (/untouched|first touch|handle (all )?(the )?new leads|triage/.test(" " + instruction.toLowerCase() + " ")) { steps = triageSteps(ws, level).steps; planner = "rules-v1 (mass triage)"; }
   else steps = rulesPlan(ws, instruction, level);
+  try { const { applyEarnedPolicy } = await import("./autonomy.ts"); applyEarnedPolicy(ws, steps, level); } catch { /* base policy stands */ }
   const awaiting = steps.some(s => s.needs_approval && s.status === "pending");
   db.prepare("UPDATE agent_executions SET planner=?, plan=?, tokens_in=?, tokens_out=?, status=?, updated_at=? WHERE id=?").run(planner, JSON.stringify(steps), tokens.in, tokens.out, awaiting ? "awaiting_approval" : "executing", now(), id);
   const ex = getExecution(ws, id);

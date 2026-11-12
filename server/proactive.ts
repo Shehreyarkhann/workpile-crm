@@ -29,6 +29,7 @@ function ownerId(ws: string): string | null {
 
 async function fire(ws: string, trigger: Trigger, instruction: string, steps: Step[], note: string): Promise<boolean> {
   const actor = ownerId(ws); if (!actor || !steps.length) return false;
+  try { const { applyEarnedPolicy } = await import("./autonomy.ts"); const wRow = db.prepare("SELECT * FROM workspaces WHERE id=?").get(ws) as any; applyEarnedPolicy(ws, steps, agentLevel(wRow)); } catch { /* base policy stands */ }
   const id = uid("exe");
   db.prepare("INSERT INTO agent_executions (id,workspace_id,user_id,parent_id,instruction,status,planner,plan,context,created_at,updated_at) VALUES (?,?,?,NULL,?,'executing','proactive (rules)',?,'{}',?,?)")
     .run(id, ws, actor, `[proactive:${trigger}] ${instruction}`, JSON.stringify(steps), now(), now());

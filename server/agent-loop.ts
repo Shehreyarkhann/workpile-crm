@@ -58,6 +58,7 @@ async function drive(ws: string, exId: string): Promise<any> {
       const tool = TOOLS[call.name];
       if (!tool) { results.push({ id: call.id, content: `Error: unknown tool "${call.name}" — use only the provided tools.` }); continue; }
       const s = mkStep(call.name, call.args || {}, level); s.call_id = call.id;
+      try { const { applyEarnedPolicy } = await import("./autonomy.ts"); applyEarnedPolicy(ws, [s], level); } catch { /* base policy stands */ }
       if (gated) { s.needs_approval = true; s.status = "pending"; steps.push(s); continue; }
       if (s.needs_approval) { gated = true; steps.push(s); continue; }
       s.status = "approved";
