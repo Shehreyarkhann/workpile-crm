@@ -640,9 +640,9 @@ aside.rail button.on .nshort { background:#ffffff22; }
 @media (max-width: 900px) { .lp3StatsIn { grid-template-columns:repeat(2,1fr); } .lp3StoryGrid { grid-template-columns:1fr; } .hmSide { display:none; } .hmChip { display:none; } .lp3Tr { grid-template-columns:1fr 1fr; } .lp3Email input { width:150px; } }
 
 /* ---- auth v2 (floating card, brand panel) ---- */
-.a2Stage{min-height:100vh;display:flex;align-items:center;justify-content:center;background:radial-gradient(1100px 620px at 50% 28%,#EDF1EE,#DFE4E0);padding:26px}
-.a2Card{width:min(1240px,100%);min-height:min(800px,calc(100vh - 52px));background:#fff;border-radius:26px;box-shadow:0 30px 80px rgba(16,22,19,.16),0 2px 8px rgba(16,22,19,.06);display:flex;padding:14px;gap:14px;position:relative}
-.a2Left{flex:0 0 46%;display:flex;flex-direction:column;padding:30px 56px 56px}
+.a2Stage{min-height:100vh;display:flex;background:#F7F8F6}
+.a2Card{width:100%;min-height:100vh;background:#F7F8F6;display:flex;position:relative}
+.a2Left{flex:0 0 46%;display:flex;flex-direction:column;padding:34px 64px 26px;background:#F7F8F6}
 .a2Logo{cursor:pointer;align-self:flex-start}
 .a2Body{flex:1;display:flex;flex-direction:column;justify-content:center;max-width:400px;width:100%;margin:0 auto}
 .a2H1{font-size:31px;font-weight:800;letter-spacing:-.03em;color:#101613;text-align:center}
@@ -668,7 +668,7 @@ aside.rail button.on .nshort { background:#ffffff22; }
 .a2Str i{height:4px;flex:1;border-radius:2px;background:#E4EAE5}
 .a2Str i.on{background:#22C55E}
 .a2Str em{font-style:normal;font-size:12px;color:#5B6B62;margin-left:6px}
-.a2Panel{flex:1;background:#083B25;border-radius:18px;color:#fff;padding:52px 54px;position:relative;overflow:hidden;display:flex;flex-direction:column}
+.a2Panel{flex:1;background:#083B25;color:#fff;padding:52px 54px;position:relative;overflow:hidden;display:flex;flex-direction:column}
 .a2Panel::before{content:"";position:absolute;right:-160px;top:-160px;width:460px;height:460px;border-radius:50%;background:rgba(34,197,94,.14)}
 .a2Panel::after{content:"";position:absolute;left:-120px;bottom:-180px;width:380px;height:380px;border-radius:50%;background:rgba(255,255,255,.045)}
 .a2Panel h2{font-size:34px;font-weight:800;letter-spacing:-.025em;line-height:1.22;max-width:430px;position:relative;z-index:1}
@@ -693,6 +693,6 @@ aside.rail button.on .nshort { background:#ffffff22; }
 .a2Mini i{font-style:normal;flex:1;text-align:center;font-size:12px;font-weight:700;padding:7px 0;border-radius:8px}
 .a2Mini .ap{background:#0E5C3A;color:#fff}
 .a2Mini .rv{background:#EEF2EF;color:#37423B}
-.a2Foot{position:absolute;left:58px;right:58px;bottom:20px;display:flex;justify-content:space-between;font-size:12.5px;color:#9AA79E;z-index:2}
-@media (max-width:1020px){.a2Panel{display:none}.a2Left{flex:1;padding:28px 26px 60px}.a2Foot{left:26px;right:26px}}
-@media (max-width:560px){.a2Stage{padding:0}.a2Card{border-radius:0;box-shadow:none;min-height:100vh;padding:8px}.a2H1,.a2Sub{text-align:left}.a2Foot{position:static;margin-top:26px;padding:0 18px 10px}}
+.a2Foot{margin-top:auto;padding-top:24px;display:flex;justify-content:space-between;font-size:12.5px;color:#9AA79E}
+@media (max-width:1020px){.a2Panel{display:none}.a2Left{flex:1;padding:28px 26px 24px}}
+@media (max-width:560px){.a2H1,.a2Sub{text-align:left}}
