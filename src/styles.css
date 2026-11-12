@@ -520,3 +520,60 @@ aside.rail button.on .nshort { background:#ffffff22; }
 .page { font-size:11px; color:var(--mut); margin-left:auto; font-weight:600; }
 .pnext { font-size:11.5px; color:var(--mut); margin-top:6px; border-top:1px dashed #E5E7EB; padding-top:5px; }
 .pempty { border:1.5px dashed #CBD5E1; border-radius:10px; color:var(--mut); font-size:12px; text-align:center; padding:14px 8px; }
+
+/* ——— V47 landing (official site) ——— */
+.lp2Trust { max-width:1160px; margin:34px auto 0; padding:0 24px; }
+.lp2TrustKick { text-transform:uppercase; letter-spacing:.14em; font-size:11.5px; font-weight:800; color:var(--mut); text-align:center; margin:0 0 12px; }
+.lp2TrustRow { display:flex; gap:18px; align-items:stretch; justify-content:center; flex-wrap:wrap; }
+.lp2TrustCard { display:flex; gap:14px; align-items:center; background:#fff; border:1px solid var(--line); border-radius:16px; padding:16px 20px; box-shadow:0 8px 24px rgba(16,22,19,.06); flex-wrap:wrap; }
+.lp2TrustLogo { width:52px; height:52px; border-radius:14px; background:#083B25; color:#fff; display:flex; align-items:center; justify-content:center; font-weight:800; font-size:17px; letter-spacing:-.02em; }
+.lp2Chip { font-size:11.5px; font-weight:800; padding:4px 10px; border-radius:999px; background:#EEF2F7; color:#475569; white-space:nowrap; }
+.lp2Chip.ok { background:#DCFCE7; color:#166534; }
+.lp2TrustNote { max-width:340px; color:var(--mut); font-size:14px; line-height:1.55; align-self:center; margin:0; }
+.lp2Sec { max-width:1160px; margin:0 auto; padding:72px 24px 8px; }
+.lp2H2 { font-size:clamp(28px,4.4vw,42px); letter-spacing:-.028em; line-height:1.12; text-align:center; margin:0 auto 12px; max-width:760px; }
+.lp2Sub { text-align:center; color:#334155; font-size:16.5px; line-height:1.6; max-width:720px; margin:0 auto 34px; }
+.lp2IntGrid { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+.lp2Int { background:#fff; border:1px solid var(--line); border-radius:16px; padding:18px; transition:box-shadow .18s, transform .18s; }
+.lp2Int:hover { box-shadow:0 14px 34px rgba(8,59,37,.12); transform:translateY(-2px); }
+.lp2IntTop { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px; }
+.lp2Logo { width:48px; height:48px; border-radius:13px; display:flex; align-items:center; justify-content:center; color:#fff; font-size:16px; box-shadow:inset 0 0 0 1px rgba(16,22,19,.08); }
+.lp2Logo b { font-weight:800; letter-spacing:-.01em; }
+.lp2IntName { font-size:17px; display:block; margin-bottom:6px; }
+.lp2Int p { margin:0; color:#475569; font-size:14px; line-height:1.6; }
+.lp2Note { text-align:center; color:var(--mut); font-size:14px; margin-top:22px; }
+.lp2Bento { display:grid; grid-template-columns:repeat(2,1fr); gap:14px; }
+.lp2Card { background:#fff; border:1px solid var(--line); border-radius:18px; padding:22px; overflow:hidden; }
+.lp2Card h3 { margin:8px 0 8px; font-size:20px; letter-spacing:-.02em; }
+.lp2Card p { margin:0; color:#475569; font-size:14.5px; line-height:1.62; }
+.lp2Card .lpShotSm { margin-top:16px; }
+.lp2Tag { font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.12em; color:#0E5C3A; background:#E7F5EC; padding:4px 10px; border-radius:999px; }
+.lp2Dark { margin-top:76px; background:#083B25; color:#D9EFE2; }
+.lp2DarkIn { max-width:1160px; margin:0 auto; padding:64px 24px; }
+.lp2Dark h2 { color:#fff; font-size:clamp(26px,4vw,38px); letter-spacing:-.025em; margin:0 0 30px; }
+.lp2DarkGrid { display:grid; grid-template-columns:repeat(2,1fr); gap:22px 34px; }
+.lp2DarkGrid b { color:#fff; font-size:16.5px; }
+.lp2DarkGrid p { margin:6px 0 0; line-height:1.6; font-size:14.5px; color:#BFE3CE; }
+.lp2Steps { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+.lp2Step { background:#fff; border:1px solid var(--line); border-radius:18px; padding:22px; }
+.lp2Step span { width:34px; height:34px; border-radius:50%; background:#0E5C3A; color:#fff; font-weight:800; display:flex; align-items:center; justify-content:center; }
+.lp2Step h3 { margin:12px 0 6px; font-size:18px; }
+.lp2Step p { margin:0; color:#475569; font-size:14.5px; line-height:1.6; }
+.lp2Toggle { display:flex; gap:8px; justify-content:center; margin-bottom:22px; }
+.lp2Toggle .chip { padding:9px 16px; border-radius:999px; border:1px solid var(--line); background:#fff; font-weight:700; cursor:pointer; }
+.lp2Toggle .chip.on { background:#0E5C3A; color:#fff; border-color:#0E5C3A; }
+.lp2PriceGrid { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; align-items:stretch; }
+.lp2Price { position:relative; background:#fff; border:1px solid var(--line); border-radius:20px; padding:26px 24px; display:flex; flex-direction:column; }
+.lp2Price.hot { border:2px solid #0E5C3A; box-shadow:0 20px 44px rgba(8,59,37,.14); }
+.lp2Pop { position:absolute; top:-13px; left:50%; transform:translateX(-50%); background:#0E5C3A; color:#fff; font-size:11.5px; font-weight:800; padding:5px 12px; border-radius:999px; white-space:nowrap; }
+.lp2Price h3 { margin:0; font-size:21px; }
+.lp2PriceTag { color:var(--mut); font-size:13.5px; margin:5px 0 14px; min-height:34px; }
+.lp2Amt { display:flex; align-items:baseline; gap:7px; margin-bottom:16px; }
+.lp2Amt b { font-size:42px; letter-spacing:-.03em; }
+.lp2Amt span { color:var(--mut); font-size:13.5px; }
+.lp2Price ul { list-style:none; margin:0 0 20px; padding:0; flex:1; }
+.lp2Price li { font-size:14px; padding:5px 0; color:#334155; }
+.lp2Cta { max-width:1160px; margin:76px auto 0; background:#083B25; border-radius:24px; padding:56px 32px; text-align:center; color:#D9EFE2; }
+.lp2Cta h2 { color:#fff; font-size:clamp(28px,4.4vw,42px); letter-spacing:-.028em; margin:0 0 12px; }
+.lp2Cta p { max-width:620px; margin:0 auto 24px; line-height:1.6; font-size:16px; }
+@media (max-width: 900px) { .lp2IntGrid, .lp2PriceGrid, .lp2Steps { grid-template-columns:1fr; } .lp2Bento, .lp2DarkGrid { grid-template-columns:1fr; } .lp2TrustNote { max-width:none; text-align:center; } }
