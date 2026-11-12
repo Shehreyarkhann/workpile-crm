@@ -42,7 +42,7 @@ export function outreachVars(ws: any, lead: any, contact: any): Record<string, s
   return {
     first_name: first, name: full || first, email: contact?.email || "", phone: contact?.phone || "",
     company, service: lead?.service_requested || "", business: ws?.name || "", from_name: ws?.from_name || ws?.name || "",
-    city: lead?.city || "", state: lead?.state || "",
+    city: lead?.city || "", state: lead?.state || "", review_link: ws?.review_url || "",
   };
 }
 export function unresolvedVars(tpl: string, vars: Record<string, string>): string[] {
@@ -131,7 +131,10 @@ export async function processCampaigns(_baseUrl = ""): Promise<{ sent: number; s
     const ws = db.prepare("SELECT * FROM workspaces WHERE id=?").get(e.workspace_id) as any;
     const lead = db.prepare("SELECT * FROM leads WHERE id=?").get(e.lead_id) as any;
     if (!c || !ws || !lead) { db.prepare("UPDATE campaign_enrollments SET status='stopped', stop_reason='gone', updated_at=? WHERE id=?").run(now(), e.id); stopped++; continue; }
-    if (FINALS.includes(lead.state)) { db.prepare("UPDATE campaign_enrollments SET status='stopped', stop_reason='finalized', updated_at=? WHERE id=?").run(now(), e.id); stopped++; continue; }
+    // Post-sale campaigns (auto_trigger: review after the job, referral after
+    // payment) exist precisely for WON customers — they are exempt from the
+    // finalized stop. Every other final state stops every campaign.
+    if (FINALS.includes(lead.state) && !(lead.state === "WON" && c.auto_trigger && c.auto_trigger !== "none")) { db.prepare("UPDATE campaign_enrollments SET status='stopped', stop_reason='finalized', updated_at=? WHERE id=?").run(now(), e.id); stopped++; continue; }
     if (c.stop_on_reply !== 0 && leadRepliedSince(lead, e.created_at)) { db.prepare("UPDATE campaign_enrollments SET status='replied', stop_reason='customer_replied', updated_at=? WHERE id=?").run(now(), e.id); stopped++; continue; }
     const tz = ws.tz || "America/New_York";
     const at = new Date();
@@ -150,7 +153,7 @@ export async function processCampaigns(_baseUrl = ""): Promise<{ sent: number; s
       let variants: any[] = []; try { variants = JSON.parse(step.variants || "[]"); } catch { /* none */ }
       const all = [{ subject: step.subject || "", body: step.body || "" }, ...variants];
       let assigned: Record<string, number> = {}; try { assigned = JSON.parse(e.variants || "{}"); } catch { /* fresh */ }
-      if (assigned[e.step_idx] === undefined) { assigned[e.step_idx] = pickVariantIndex(e.id + "::step" + e.step_idx, all.length); db.prepare("UPDATE campaign_enrollments SET variants=? WHERE id=?").run(JSON.stringify(assigned), e.id); }
+      if (assigned[e.step_idx] === undefined) { assigned[e.step_idx] = chooseVariant(c.id, e.step_idx, e.id, all.length); db.prepare("UPDATE campaign_enrollments SET variants=? WHERE id=?").run(JSON.stringify(assigned), e.id); }
       const vIdx = Math.min(assigned[e.step_idx], all.length - 1);
       const vars = outreachVars(ws, lead, contact);
       const seed = e.id + "::step" + e.step_idx + "::v" + vIdx;
@@ -163,7 +166,7 @@ export async function processCampaigns(_baseUrl = ""): Promise<{ sent: number; s
         if (picked.exhausted) { db.prepare("UPDATE campaign_enrollments SET next_due_at=?, updated_at=? WHERE id=?").run(nextWindowSlot(c, new Date(at.getTime() + 86400000), tz).toISOString(), now(), e.id); deferred++; continue; }
         sender = picked.identity;
       }
-      const delivered = await queueAndDeliver(e.workspace_id, { lead_id: lead.id, channel: step.channel, to, subject, body, from_email: sender?.email || undefined });
+      const delivered = await queueAndDeliver(e.workspace_id, { lead_id: lead.id, channel: step.channel, to, subject, body, from_email: sender?.email || undefined, track: step.channel === "email" });
       if (delivered && delivered.status === "suppressed") { db.prepare("UPDATE campaign_enrollments SET status='stopped', stop_reason='suppressed', updated_at=? WHERE id=?").run(now(), e.id); stopped++; continue; }
       if (!delivered || !["sent", "delivered", "test_mode"].includes(delivered.status)) {
         if (delivered && delivered.status === "failed") db.prepare("INSERT INTO campaign_sends (id,workspace_id,campaign_id,enrollment_id,lead_id,step_idx,variant,message_id,sender_id,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,'failed',?)").run(uid("csnd"), e.workspace_id, c.id, e.id, lead.id, e.step_idx, vIdx, (delivered as any).id || null, sender?.id || null, now());
@@ -184,18 +187,54 @@ export async function processCampaigns(_baseUrl = ""): Promise<{ sent: number; s
 }
 
 // ---------- stats ----------
+export function variantReplyMap(campaignId: string): Map<string, number> {
+  // Replies attributed to the variant of the enrollment's most recent send.
+  const steps = db.prepare("SELECT id FROM campaign_steps WHERE campaign_id=? ORDER BY position").all(campaignId) as any[];
+  const out = new Map<string, number>();
+  const enrs = db.prepare("SELECT * FROM campaign_enrollments WHERE campaign_id=? AND sent_count>0").all(campaignId) as any[];
+  for (const e of enrs) {
+    const lead = db.prepare("SELECT * FROM leads WHERE id=?").get(e.lead_id) as any; if (!lead) continue;
+    if (!(e.status === "replied" || leadRepliedSince(lead, e.created_at))) continue;
+    const lastStep = Math.max(0, Math.min(e.step_idx, steps.length - 1));
+    let assigned: any = {}; try { assigned = JSON.parse(e.variants || "{}"); } catch { /* none */ }
+    const v = assigned[lastStep] ?? assigned[String(lastStep)] ?? 0;
+    const k = lastStep + ":" + v; out.set(k, (out.get(k) || 0) + 1);
+  }
+  return out;
+}
+export function winningVariant(campaignId: string, stepIdx: number): number | null {
+  const sends = db.prepare("SELECT variant, COUNT(*) n FROM campaign_sends WHERE campaign_id=? AND step_idx=? AND status='sent' GROUP BY variant").all(campaignId, stepIdx) as any[];
+  if (sends.length < 2) return null;
+  if (sends.some(s => s.n < 15) || sends.reduce((a, s) => a + s.n, 0) < 40) return null;
+  const rm = variantReplyMap(campaignId);
+  const rates = sends.map(s => ({ v: s.variant, rate: (rm.get(stepIdx + ":" + s.variant) || 0) / s.n }));
+  rates.sort((a, b) => b.rate - a.rate);
+  if (rates[0].rate > 0 && rates[0].rate >= 2 * Math.max(rates[1].rate, 0.005)) return rates[0].v;
+  return null;
+}
+export function chooseVariant(campaignId: string, stepIdx: number, enrollmentId: string, count: number): number {
+  if (count <= 1) return 0;
+  const winner = winningVariant(campaignId, stepIdx);
+  if (winner !== null && winner < count) { return hashSeed(enrollmentId + "::opt") % 5 < 4 ? winner : pickVariantIndex(enrollmentId + "::step" + stepIdx, count); }
+  return pickVariantIndex(enrollmentId + "::step" + stepIdx, count);
+}
 export function campaignOutreachStats(campaignId: string) {
   const steps = db.prepare("SELECT * FROM campaign_steps WHERE campaign_id=? ORDER BY position").all(campaignId) as any[];
   const sends = db.prepare("SELECT step_idx, variant, COUNT(*) n FROM campaign_sends WHERE campaign_id=? AND status='sent' GROUP BY step_idx, variant").all(campaignId) as any[];
   const failed = (db.prepare("SELECT COUNT(*) n FROM campaign_sends WHERE campaign_id=? AND status='failed'").get(campaignId) as any).n || 0;
   const replies = db.prepare("SELECT COUNT(*) n FROM campaign_enrollments WHERE campaign_id=? AND status='replied'").get(campaignId) as any;
   const byStatus = db.prepare("SELECT status, COUNT(*) n FROM campaign_enrollments WHERE campaign_id=? GROUP BY status").all(campaignId) as any[];
+  const rm = variantReplyMap(campaignId);
   const perStep = steps.map((s, i) => {
     const rows = sends.filter(r => r.step_idx === i);
     const total = rows.reduce((a, r) => a + r.n, 0);
     let variants: any[] = []; try { variants = JSON.parse(s.variants || "[]"); } catch { /* none */ }
-    return { step_idx: i, channel: s.channel, subject: s.subject, sent: total, variants: [{ variant: 0, sent: rows.find(r => r.variant === 0)?.n || 0 }, ...variants.map((_v: any, vi: number) => ({ variant: vi + 1, sent: rows.find(r => r.variant === vi + 1)?.n || 0 }))] };
+    const winner = winningVariant(campaignId, i);
+    const vrow = (vi: number) => { const sent = rows.find(r => r.variant === vi)?.n || 0; const rep = rm.get(i + ":" + vi) || 0; return { variant: vi, sent, replies: rep, reply_rate: sent ? Math.round((rep / sent) * 1000) / 10 : null, winner: winner === vi }; };
+    return { step_idx: i, channel: s.channel, subject: s.subject, sent: total, variants: [vrow(0), ...variants.map((_v: any, vi: number) => vrow(vi + 1))] };
   });
   const totalSent = sends.reduce((a, r) => a + r.n, 0);
-  return { steps: perStep, total_sent: totalSent, failed, failure_rate: totalSent + failed ? Math.round((failed / (totalSent + failed)) * 1000) / 10 : null, replies: replies.n || 0, reply_rate: totalSent ? Math.round(((replies.n || 0) / totalSent) * 1000) / 10 : null, enrollments: Object.fromEntries(byStatus.map(r => [r.status, r.n])) };
+  const ev = db.prepare("SELECT kind, COUNT(*) n FROM track_events WHERE token IN (SELECT mo.track_token FROM campaign_sends cs JOIN messages_outbox mo ON mo.id=cs.message_id WHERE cs.campaign_id=? AND mo.track_token IS NOT NULL) GROUP BY kind").all(campaignId) as any[];
+  const opens = ev.find(r => r.kind === "open")?.n || 0, clicks = ev.find(r => r.kind === "click")?.n || 0;
+  return { steps: perStep, total_sent: totalSent, failed, failure_rate: totalSent + failed ? Math.round((failed / (totalSent + failed)) * 1000) / 10 : null, replies: replies.n || 0, reply_rate: totalSent ? Math.round(((replies.n || 0) / totalSent) * 1000) / 10 : null, opens, open_rate: totalSent ? Math.round((opens / totalSent) * 1000) / 10 : null, clicks, click_rate: totalSent ? Math.round((clicks / totalSent) * 1000) / 10 : null, enrollments: Object.fromEntries(byStatus.map(r => [r.status, r.n])) };
 }

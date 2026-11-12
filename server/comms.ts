@@ -45,11 +45,11 @@ export async function resolveAttachments(workspaceId: string, refs: AttachRef[])
   return out;
 }
 
-export function queueMessage(workspaceId: string, m: { lead_id?: string; channel: "email" | "sms"; to: string; subject?: string; body: string; attachments?: AttachRef[]; from_email?: string }) {
+export function queueMessage(workspaceId: string, m: { lead_id?: string; channel: "email" | "sms"; to: string; subject?: string; body: string; attachments?: AttachRef[]; from_email?: string; transactional?: boolean; track?: boolean }) {
   const id = uid("msg");
   // Central send boundary (v17): SMS consent is enforced HERE so every caller — UI, nudge,
   // cadences, agent tools — inherits it. No path can text a lead that has not consented.
-  if (m.channel === "sms" && m.lead_id) {
+  if (m.channel === "sms" && m.lead_id && !m.transactional) {
     const ld = db.prepare("SELECT consent_contact_ok FROM leads WHERE id=? AND workspace_id=?").get(m.lead_id, workspaceId) as any;
     if (ld && !ld.consent_contact_ok) {
       db.prepare("INSERT INTO messages_outbox (id,workspace_id,lead_id,channel,to_addr,subject,body,status,error,created_at) VALUES (?,?,?,?,?,?,?, 'blocked_consent', ?, ?)")
@@ -63,8 +63,8 @@ export function queueMessage(workspaceId: string, m: { lead_id?: string; channel
       .run(id, workspaceId, m.lead_id || null, m.channel, m.to, m.subject || null, m.body, `suppressed: ${sup.reason || sup.source || "on suppression list"}`, now());
     return id;
   }
-  db.prepare("INSERT INTO messages_outbox (id,workspace_id,lead_id,channel,to_addr,subject,body,attachments,created_at,from_addr) VALUES (?,?,?,?,?,?,?,?,?,?)")
-    .run(id, workspaceId, m.lead_id || null, m.channel, m.to, m.subject || null, m.body, m.attachments && m.attachments.length ? JSON.stringify(m.attachments) : null, now(), m.from_email || null);
+  db.prepare("INSERT INTO messages_outbox (id,workspace_id,lead_id,channel,to_addr,subject,body,attachments,created_at,from_addr,track_token) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+    .run(id, workspaceId, m.lead_id || null, m.channel, m.to, m.subject || null, m.body, m.attachments && m.attachments.length ? JSON.stringify(m.attachments) : null, now(), m.from_email || null, m.track ? uid("trk") : null);
   return id;
 }
 
@@ -80,7 +80,12 @@ export async function deliverMessage(id: string, fetchFn: FetchFn = fetch as any
       if (!emailConfigured()) { db.prepare("UPDATE messages_outbox SET status='test_mode', provider='resend' WHERE id=?").run(id); return { ...m, status: "test_mode" }; }
       let atts: { filename: string; content: string }[] = [];
       try { if ((m as any).attachments) atts = await resolveAttachments(m.workspace_id, JSON.parse((m as any).attachments)); } catch { atts = []; }
-      const r = await fetchFn("https://api.resend.com/emails", { method: "POST", headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ from: (m as any).from_addr ? `${ws.from_name || ws.name} <${(m as any).from_addr}>` : ws.from_email ? `${ws.from_name || ws.name} <${ws.from_email}>` : `Workpile <noreply@workpile.io>`, ...(ws.reply_email ? { reply_to: ws.reply_email } : {}), to: [m.to_addr], subject: m.subject || "Message from " + ws.name, text: m.body + `\n\n—\n${ws.name} · You're receiving this because you requested a proposal or service from ${ws.name}. Reply STOP to stop follow-up messages.`, ...(atts.length ? { attachments: atts } : {}) }) });
+      const tok = (m as any).track_token as string | null;
+      let html: string | undefined;
+      if (tok) { const base = process.env.BASE_URL || "https://workpile.claimpaid.io"; const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        const linked = esc(m.body).replace(/https?:\/\/[^\s<]+/g, (u: string) => `<a href="${base}/t/c/${tok}?u=${encodeURIComponent(u)}">${u}</a>`);
+        html = `<div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.55;color:#101613">${linked.replace(/\n/g, "<br>")}<br><br>—<br>${esc(ws.name)} · You're receiving this because you requested a proposal or service from ${esc(ws.name)}. Reply STOP to stop follow-up messages.<img src="${base}/t/o/${tok}.gif" width="1" height="1" alt="" style="display:none"></div>`; }
+      const r = await fetchFn("https://api.resend.com/emails", { method: "POST", headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ from: (m as any).from_addr ? `${ws.from_name || ws.name} <${(m as any).from_addr}>` : ws.from_email ? `${ws.from_name || ws.name} <${ws.from_email}>` : `Workpile <noreply@workpile.io>`, ...(ws.reply_email ? { reply_to: ws.reply_email } : {}), to: [m.to_addr], subject: m.subject || "Message from " + ws.name, text: m.body + `\n\n—\n${ws.name} · You're receiving this because you requested a proposal or service from ${ws.name}. Reply STOP to stop follow-up messages.`, ...(html ? { html } : {}), ...(atts.length ? { attachments: atts } : {}) }) });
       const j = await r.json().catch(() => ({}));
       if (r.status >= 200 && r.status < 300) { db.prepare("UPDATE messages_outbox SET status='sent', provider='resend', provider_id=?, sent_at=? WHERE id=?").run(j.id || "", now(), id); return { ...m, status: "sent" }; }
       throw new Error("Resend HTTP " + r.status + " " + JSON.stringify(j).slice(0, 120));
@@ -99,7 +104,7 @@ export async function deliverMessage(id: string, fetchFn: FetchFn = fetch as any
   }
 }
 
-export async function queueAndDeliver(workspaceId: string, m: { lead_id?: string; channel: "email" | "sms"; to: string; subject?: string; body: string; attachments?: AttachRef[]; from_email?: string }) {
+export async function queueAndDeliver(workspaceId: string, m: { lead_id?: string; channel: "email" | "sms"; to: string; subject?: string; body: string; attachments?: AttachRef[]; from_email?: string; transactional?: boolean; track?: boolean }) {
   const id = queueMessage(workspaceId, m);
   return deliverMessage(id);
 }

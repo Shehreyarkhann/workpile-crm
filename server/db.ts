@@ -178,6 +178,9 @@ export function initSchema() {
     "ALTER TABLE inbox_items ADD COLUMN reply_label TEXT",
     "ALTER TABLE messages_outbox ADD COLUMN reply_label TEXT",
     "ALTER TABLE messages_outbox ADD COLUMN from_addr TEXT",
+    "ALTER TABLE messages_outbox ADD COLUMN track_token TEXT",
+    "ALTER TABLE workspaces ADD COLUMN missed_call_text TEXT",
+    "ALTER TABLE services ADD COLUMN cycle_months INTEGER DEFAULT 0",
     // crm.ts initCrmSchema also ALTERs these, but its ALTERs run at import time — before
     // initSchema creates the tables on a FRESH database — so they silently no-op there and
     // only land on the second boot. Mirrored here so fresh installs are correct on boot #1.

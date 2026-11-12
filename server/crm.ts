@@ -41,6 +41,7 @@ import { stepsFor, addBusinessDays } from "./followups.ts";
 import { notify } from "./comms.ts";
 import { enrollLead, campaignOutreachStats, renderOutreach, outreachVars, unresolvedVars, nextWindowSlot } from "./outreach.ts";
 import { ensureLabels, applyLabel } from "./labels.ts";
+import { onJobCompleted as lcJobDone, onInvoicePaid as lcInvPaid } from "./lifecycle.ts";
 import { ensureIdentities, identityView, domainChecks, failureStats } from "./deliverability.ts";
 
 const J = (s: any, fb: any = null) => { try { return JSON.parse(s ?? ""); } catch { return fb; } };
@@ -94,6 +95,11 @@ export function initCrmSchema() {
   alter("ALTER TABLE campaign_sends ADD COLUMN status TEXT DEFAULT 'sent'");
   db.exec(`
   CREATE TABLE IF NOT EXISTS sender_identities (id TEXT PRIMARY KEY, workspace_id TEXT, name TEXT, email TEXT, daily_limit INTEGER DEFAULT 30, active INTEGER DEFAULT 1, is_default INTEGER DEFAULT 0, warmup_override INTEGER DEFAULT 0, created_at TEXT);
+  `);
+  alter("ALTER TABLE campaigns ADD COLUMN auto_trigger TEXT DEFAULT 'none'");
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS track_events (id TEXT PRIMARY KEY, workspace_id TEXT, token TEXT, kind TEXT, url TEXT, created_at TEXT);
+  CREATE TABLE IF NOT EXISTS recurrences (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, service TEXT, due_date TEXT, status TEXT DEFAULT 'scheduled', opportunity_id TEXT, created_from_job TEXT, created_at TEXT);
   `);
 }
 
@@ -331,7 +337,7 @@ export function registerCrm(app: any, requireAuth: any, needPerm: any = null) {
     const members = db.prepare(`SELECT m.*, l.service_requested, l.state, l.est_value, ct.name contact_name FROM campaign_members m JOIN leads l ON l.id=m.lead_id LEFT JOIN contacts ct ON ct.id=l.contact_id WHERE m.campaign_id=? ORDER BY m.created_at DESC`).all(c.id);
     const steps = db.prepare("SELECT * FROM campaign_steps WHERE campaign_id=? ORDER BY position").all(c.id);
     res.json({ campaign: c, stats: campaignStats(c), members, steps, outreach: c.kind === "outreach" ? campaignOutreachStats(c.id) : null }); });
-  app.patch("/api/campaigns/:id", requireAuth, (req: any, res: any) => { const b = req.body || {}; const F = ["name", "type", "status", "starts_on", "ends_on", "cost", "notes", "kind", "send_days", "sender_mode", "sender_id"]; const N = ["daily_cap", "ramp_step", "window_start", "window_end", "stop_on_reply"]; const sets = [...F.filter(f => b[f] !== undefined), ...N.filter(f => b[f] !== undefined)]; if (b.ramp_start !== undefined) sets.push("ramp_start"); if (!sets.length) return err(res, 422, "nothing to update");
+  app.patch("/api/campaigns/:id", requireAuth, (req: any, res: any) => { const b = req.body || {}; const F = ["name", "type", "status", "starts_on", "ends_on", "cost", "notes", "kind", "send_days", "sender_mode", "sender_id", "auto_trigger"]; const N = ["daily_cap", "ramp_step", "window_start", "window_end", "stop_on_reply"]; const sets = [...F.filter(f => b[f] !== undefined), ...N.filter(f => b[f] !== undefined)]; if (b.ramp_start !== undefined) sets.push("ramp_start"); if (!sets.length) return err(res, 422, "nothing to update");
     const val = (f: string) => f === "cost" ? Number(b[f]) || 0 : N.includes(f) ? Number(b[f]) || 0 : f === "ramp_start" ? (b[f] === null || b[f] === "" ? null : Number(b[f])) : b[f];
     db.prepare(`UPDATE campaigns SET ${sets.map(f => f + "=?").join(",")}, updated_at=? WHERE id=? AND workspace_id=?`).run(...sets.map(val), now(), req.params.id, ws(req)); res.json({ ok: true }); });
   app.post("/api/campaigns/:id/members", requireAuth, (req: any, res: any) => { const ids: string[] = req.body?.lead_ids || []; let added = 0;
@@ -345,6 +351,26 @@ export function registerCrm(app: any, requireAuth: any, needPerm: any = null) {
 
   // ----- v42: outreach sequences (steps, launch, enrollments, stats) -----
   const campGate = modGate("campaigns", "edit");
+  // v45 playbooks: the SMB retention campaigns, pre-written. Review asks arm
+  // on job completion, referral asks on payment, reactivation is manual.
+  const PLAYBOOKS: Record<string, any> = {
+    review: { name: "⭐ Review requests — after the job", auto_trigger: "job_completed", steps: [
+      { channel: "email", delay_days: 0, subject: "How did we do, {first_name}?", body: "Hi {first_name},\n\nThanks for trusting {business} with your {service}. If we earned it, a quick Google review helps a local business like ours more than any ad:\n\n{{review_link | our Google page}}\n\nAnd if anything fell short, reply here first — we'll make it right.\n\n— {from_name}" },
+      { channel: "sms", delay_days: 3, subject: "", body: "Hi {first_name}, it's {business} — thanks again for the {service} work. A quick review would mean a lot: {{review_link}}" } ] },
+    referral: { name: "🤝 Referral asks — happy customers", auto_trigger: "invoice_paid", steps: [
+      { channel: "email", delay_days: 2, subject: "Know anyone who needs {service}?", body: "Hi {first_name},\n\nGlad we could take care of the {service} for you. Most of our work comes from neighbors telling neighbors — if someone you know needs the same help, just point them our way and mention your name. We'll take great care of them.\n\nThanks for keeping it local,\n{from_name}" },
+      { channel: "email", delay_days: 9, subject: "One last nudge, {first_name}", body: "Hi {first_name} — quick follow-up. If a friend or neighbor mentions a problem we solve, we'd be grateful for the introduction. Reply with their name and we'll reach out gently, crediting you.\n\n— {from_name}" } ] },
+    reactivation: { name: "🔁 Reactivation — past customers", auto_trigger: "none", steps: [
+      { channel: "email", delay_days: 0, subject: "{{RANDOM | It's been a while, {first_name} | Checking in, {first_name} | Your {service} may be due}}", body: "Hi {first_name},\n\nIt's {business} — we handled your {service} a while back. Services like this run on a cycle, and yours may be coming due. Want us to take a look before it becomes urgent?\n\nReply here or call us — we'll get you on the schedule.\n\n— {from_name}" },
+      { channel: "email", delay_days: 5, subject: "Still thinking it over, {first_name}?", body: "Hi {first_name} — just floating this back up. If your {service} is due (or overdue), a visit now is cheaper than an emergency later. Happy to check our records and tell you exactly where you stand — no charge for the look.\n\n— {from_name}" } ] },
+  };
+  app.post("/api/campaigns/playbook", requireAuth, campGate, (req: any, res: any) => { const pb = PLAYBOOKS[String(req.body?.kind || "")]; if (!pb) return err(res, 422, "unknown playbook");
+    const id = uid("camp"); db.prepare("INSERT INTO campaigns (id,workspace_id,name,type,status,kind,auto_trigger,created_at,updated_at) VALUES (?,?,?,'outreach','draft','outreach',?,?,?)").run(id, ws(req), pb.name, pb.auto_trigger, now(), now());
+    pb.steps.forEach((s: any, i: number) => db.prepare("INSERT INTO campaign_steps (id,workspace_id,campaign_id,position,channel,delay_days,subject,body,variants,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(uid("cstep"), ws(req), id, i, s.channel, s.delay_days, s.subject, s.body, "[]", now(), now()));
+    res.status(201).json(db.prepare("SELECT * FROM campaigns WHERE id=?").get(id)); });
+  app.get("/api/recurrences", requireAuth, (req: any, res: any) => { res.json(db.prepare(`SELECT r.*, ct.name AS contact_name FROM recurrences r LEFT JOIN leads l ON l.id=r.lead_id LEFT JOIN contacts ct ON ct.id=l.contact_id WHERE r.workspace_id=? ORDER BY r.due_date LIMIT 100`).all(ws(req))); });
+
+
   const getCamp = (req: any) => db.prepare("SELECT * FROM campaigns WHERE id=? AND workspace_id=?").get(req.params.id, ws(req)) as any;
   app.get("/api/campaigns/:id/steps", requireAuth, (req: any, res: any) => { if (!getCamp(req)) return err(res, 404, "not found"); res.json(db.prepare("SELECT * FROM campaign_steps WHERE campaign_id=? ORDER BY position").all(req.params.id)); });
   app.post("/api/campaigns/:id/steps", requireAuth, campGate, (req: any, res: any) => { const c = getCamp(req); if (!c) return err(res, 404, "not found"); const b = req.body || {};
@@ -625,12 +651,13 @@ export function registerHome(app: any, requireAuth: any) {
         db.prepare("INSERT INTO payments (id,workspace_id,proposal_id,invoice_id,kind,amount,mode,status,created_at,paid_at) VALUES (?,?,?,?,'invoice_payment',?,'test','paid',?,?)").run(uid("pay"), wsId, inv.proposal_id || null, inv.id, balance, now(), now());
         db.prepare("UPDATE invoices SET paid_amount=?, status='paid' WHERE id=?").run(inv.total || 0, inv.id);
         if (inv.job_id) db.prepare("UPDATE jobs SET invoice_status='paid' WHERE id=?").run(inv.job_id);
+        { const jl = inv.job_id ? db.prepare("SELECT lead_id FROM jobs WHERE id=?").get(inv.job_id) as any : null; lcInvPaid(wsId, jl?.lead_id || inv.lead_id); }
         audit(wsId, req.user.id, "invoice.payment", "invoice", inv.id, { amount: balance, via: "calendar" });
         return res.json({ ok: true, message: "Invoice " + inv.number + " paid in full ✓ ($" + balance.toLocaleString() + " recorded)" }); }
       if (kind === "doc") { const d = raw("documents"); if (!d) return res.status(404).json({ error: { code: "not_found" } }); db.prepare("UPDATE documents SET status='received', received_at=?, expires_at=NULL WHERE id=?").run(now(), d.id); return res.json({ ok: true, message: `Document renewed/received ✓ — ${d.name} is on file.` }); }
       if (kind === "job") { const j = raw("jobs"); if (!j) return res.status(404).json({ error: { code: "not_found" } });
         if (j.stage === "SCHEDULED") { db.prepare("UPDATE jobs SET stage='IN_PROGRESS', updated_at=? WHERE id=?").run(now(), j.id); return res.json({ ok: true, message: "Job started ✓ — it's now In Progress." }); }
-        if (j.stage === "IN_PROGRESS") { db.prepare("UPDATE jobs SET stage='WORK_COMPLETED', updated_at=? WHERE id=?").run(now(), j.id); return res.json({ ok: true, message: "Work marked complete ✓ — next step is the paperwork." }); }
+        if (j.stage === "IN_PROGRESS") { db.prepare("UPDATE jobs SET stage='WORK_COMPLETED', updated_at=? WHERE id=?").run(now(), j.id); lcJobDone(wsId, { ...j, stage: "WORK_COMPLETED" }); return res.json({ ok: true, message: "Work marked complete ✓ — next step is the paperwork." }); }
         return res.status(422).json({ error: { code: "not_completable", message: `A job in ${String(j.stage).replaceAll("_", " ")} is advanced from the job itself.` } }); }
       if (kind === "expiry") { const p = raw("proposals"); if (!p) return res.status(404).json({ error: { code: "not_found" } }); const nd = new Date(new Date(p.expires_at || Date.now()).getTime() + 14 * 86400000).toISOString(); db.prepare("UPDATE proposals SET expires_at=? WHERE id=?").run(nd, p.id); return res.json({ ok: true, message: `Proposal validity extended to ${nd.slice(0, 10)} ✓` }); }
       return res.status(422).json({ error: { code: "bad_kind", message: "That item can't be completed from the calendar." } });
