@@ -35,6 +35,16 @@ export async function refreshAccess(provider: string, refreshToken: string, fetc
   const j = await tokenPost(url, form, fetchFn);
   return j.access_token;
 }
+// v52: refresh through the connection so a ROTATED refresh token (Microsoft
+// rotates them) is persisted — dropping it silently killed MS connections.
+async function accessFor(conn: any, fetchFn: FetchFn): Promise<string> {
+  const p = PROVIDERS[conn.provider]; const url = conn.provider === "google" ? "https://oauth2.googleapis.com/token" : "https://login.microsoftonline.com/common/oauth2/v2.0/token";
+  const form: Record<string, string> = { client_id: process.env[p.env_id]!, client_secret: process.env[p.env_secret]!, refresh_token: conn.token_ref, grant_type: "refresh_token" };
+  if (conn.provider === "microsoft") form.scope = p.scope;
+  const j = await tokenPost(url, form, fetchFn);
+  if (j.refresh_token && j.refresh_token !== conn.token_ref) { db.prepare("UPDATE oauth_connections SET token_ref=? WHERE id=?").run(j.refresh_token, conn.id); conn.token_ref = j.refresh_token; }
+  return j.access_token;
+}
 async function getJson(url: string, token: string, fetchFn: FetchFn) {
   const r = await fetchFn(url, { headers: { Authorization: `Bearer ${token}` } });
   const j = await r.json().catch(() => ({}));
@@ -62,7 +72,7 @@ function splitFrom(h: string): { name: string; email: string } {
 }
 
 export async function gmailPoll(conn: any, fetchFn: FetchFn = realFetch): Promise<any[]> {
-  const token = await refreshAccess("google", conn.token_ref, fetchFn);
+  const token = await accessFor(conn, fetchFn);
   const since = conn.last_poll_at ? Math.floor(new Date(conn.last_poll_at).getTime() / 1000) - 86400 : Math.floor(Date.now() / 1000) - 7 * 86400;
   const list = await getJson(`https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=25&q=${encodeURIComponent("after:" + since)}`, token, fetchFn);
   const out: any[] = [];
@@ -72,12 +82,11 @@ export async function gmailPoll(conn: any, fetchFn: FetchFn = realFetch): Promis
     const headers: Record<string, string> = {}; for (const h of full.payload?.headers || []) headers[h.name.toLowerCase()] = h.value;
     const from = splitFrom(headers.from || "");
     out.push({ from_email: from.email, from_name: from.name, subject: headers.subject || "", body: gmailBody(full.payload) || full.snippet || "", received_at: headers.date ? new Date(headers.date).toISOString() : now(), external_id: m.id });
-    db.prepare("INSERT OR IGNORE INTO mail_sync_seen (connection_id, provider_msg_id, created_at) VALUES (?,?,?)").run(conn.id, m.id, now());
   }
   return out;
 }
 export async function graphPoll(conn: any, fetchFn: FetchFn = realFetch): Promise<any[]> {
-  const token = await refreshAccess("microsoft", conn.token_ref, fetchFn);
+  const token = await accessFor(conn, fetchFn);
   const since = conn.last_poll_at ? new Date(conn.last_poll_at).getTime() - 86400000 : Date.now() - 7 * 86400000;
   const list = await getJson("https://graph.microsoft.com/v1.0/me/messages?$top=25&$orderby=receivedDateTime%20desc&$select=id,from,subject,bodyPreview,receivedDateTime", token, fetchFn);
   const out: any[] = [];
@@ -87,7 +96,6 @@ export async function graphPoll(conn: any, fetchFn: FetchFn = realFetch): Promis
     // bodyPreview is deliberate: the triage pipeline classifies + drafts from it,
     // and the poll stays cheap. Full bodies arrive via the email-in API today.
     out.push({ from_email: m.from?.emailAddress?.address || "", from_name: m.from?.emailAddress?.name || "", subject: m.subject || "", body: m.bodyPreview || "", received_at: m.receivedDateTime || now(), external_id: m.id });
-    db.prepare("INSERT OR IGNORE INTO mail_sync_seen (connection_id, provider_msg_id, created_at) VALUES (?,?,?)").run(conn.id, m.id, now());
   }
   return out;
 }
@@ -101,7 +109,12 @@ export async function processMailSync(ingest: (ws: string, actor: string, emails
     try {
       const emails = await poller(conn, fetchFn);
       polled++;
-      if (emails.length) { const r = ingest(conn.workspace_id, "mail-sync", emails); ingested += emails.length; void r; }
+      if (emails.length) { const r = ingest(conn.workspace_id, "mail-sync", emails); ingested += emails.length; void r;
+        // v52: messages are marked seen ONLY after ingest succeeded — a
+        // failure leaves them unseen so the next poll retries instead of
+        // losing customer mail forever.
+        for (const em of emails) if ((em as any).external_id) db.prepare("INSERT OR IGNORE INTO mail_sync_seen (connection_id, provider_msg_id, created_at) VALUES (?,?,?)").run(conn.id, (em as any).external_id, now());
+      }
       db.prepare("UPDATE oauth_connections SET last_poll_at=?, last_error=NULL WHERE id=?").run(now(), conn.id);
     } catch (e: any) { errors++; db.prepare("UPDATE oauth_connections SET last_error=? WHERE id=?").run(String(e?.message || e).slice(0, 240), conn.id); }
   }

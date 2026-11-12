@@ -12,7 +12,12 @@ export function suppressionFor(workspaceId: string, channel: string, to: string)
   const kind = channel === "sms" ? "phone" : "email";
   const value = kind === "email" ? String(to || "").toLowerCase().trim() : String(to || "").replace(/\D/g, "");
   if (!value) return null;
-  return db.prepare("SELECT * FROM suppressions WHERE workspace_id=? AND kind=? AND value=?").get(workspaceId, kind, value) || null;
+  const hit = db.prepare("SELECT * FROM suppressions WHERE workspace_id=? AND kind=? AND value=?").get(workspaceId, kind, value);
+  if (hit || kind === "email" || value.length <= 10) return hit || null;
+  // v52: STOP/unsubscribe suppressions are stored as last-10 digits; a send
+  // addressed with a country code (11 digits) must still match — the opt-out
+  // boundary never depends on how the number was formatted.
+  return db.prepare("SELECT * FROM suppressions WHERE workspace_id=? AND kind=? AND value=?").get(workspaceId, kind, value.slice(-10)) || null;
 }
 
 export type AttachRef = { kind: "attachment" | "proposal" | "invoice"; id: string; name?: string };

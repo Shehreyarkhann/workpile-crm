@@ -23,7 +23,7 @@ export function listFacts(ws: string, limit = 12): any[] {
   return db.prepare("SELECT * FROM agent_memories WHERE workspace_id=? ORDER BY created_at DESC LIMIT ?").all(ws, limit) as any[];
 }
 
-export function decisionStats(ws: string): { tool: string; decided: number; approved: number; rate: number }[] {
+export function decisionStats(ws: string, limit = 8): { tool: string; decided: number; approved: number; rate: number }[] {
   const rows = db.prepare("SELECT plan FROM agent_executions WHERE workspace_id=? AND created_at >= datetime('now','-60 days') ORDER BY created_at DESC LIMIT 200").all(ws) as any[];
   const byTool = new Map<string, { decided: number; approved: number }>();
   for (const r of rows) {
@@ -36,7 +36,7 @@ export function decisionStats(ws: string): { tool: string; decided: number; appr
       byTool.set(s.tool, e);
     }
   }
-  return [...byTool.entries()].filter(([, v]) => v.decided >= 2).map(([tool, v]) => ({ tool, decided: v.decided, approved: v.approved, rate: Math.round((v.approved / v.decided) * 100) })).sort((a, b) => b.decided - a.decided).slice(0, 8);
+  return [...byTool.entries()].filter(([, v]) => v.decided >= 2).map(([tool, v]) => ({ tool, decided: v.decided, approved: v.approved, rate: Math.round((v.approved / v.decided) * 100) })).sort((a, b) => b.decided - a.decided).slice(0, limit);
 }
 
 export function operatorBrief(ws: string): string {
@@ -50,7 +50,7 @@ export function operatorBrief(ws: string): string {
     `Business: ${w?.name || "this business"}.`,
     services.length ? `Services offered: ${services.join(", ")}.` : "",
     team.length ? `Team: ${team.join(", ")}.` : "",
-    `Right now: ${c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state NOT IN ('WON','LOST','NO_RESPONSE','JUNK','DUPLICATE','UNSERVICEABLE','CLOSED')")} open leads, ${c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=? AND stage NOT IN ('CLOSED','CANCELLED')")} active jobs, ${c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision='pending'")} approvals pending.`,
+    `Right now: ${c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state NOT IN ('WON','LOST','NO_RESPONSE','JUNK','DUPLICATE','UNSERVICEABLE','CLOSED')")} open leads, ${c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=? AND stage NOT IN ('CLOSED','CANCELLED')")} active jobs, ${c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NULL")} approvals pending.`,
     facts.length ? `Remembered facts about this business:\n${facts.map(f => `- ${f.content}`).join("\n")}` : "",
     stats.length ? `How the owner has decided your past steps (last 60 days): ${stats.map(s => `${s.tool} approved ${s.rate}% (${s.approved}/${s.decided})`).join("; ")}. Calibrate: lean into what gets approved; be more careful with what gets rejected.` : "",
   ].filter(Boolean);

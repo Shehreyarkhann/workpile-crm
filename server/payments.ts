@@ -7,6 +7,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { db, uid, now } from "./db.ts";
 import { emitEvent } from "./integrations.ts";
 import { notifyOwners } from "./comms.ts";
+import { onInvoicePaid } from "./lifecycle.ts";
 
 export function stripeMode(): "live" | "test" { return process.env.STRIPE_SECRET_KEY ? "live" : "test"; }
 
@@ -34,7 +35,7 @@ export async function createDeposit(proposalId: string, baseUrl: string): Promis
   } else {
     link = `${baseUrl}/pay/test/${id}`;
   }
-  db.prepare("INSERT INTO payments (id,workspace_id,proposal_id,amount,mode,stripe_session_id,status,link,created_at) VALUES (?,?,?,?,?,?,?,?,?)")
+  db.prepare("INSERT INTO payments (id,workspace_id,proposal_id,kind,amount,mode,stripe_session_id,status,link,created_at) VALUES (?,?,?,'deposit',?,?,?,?,?,?)")
     .run(id, p.workspace_id, p.id, amount, mode, sessionId, "pending", link, now());
   db.prepare("UPDATE proposals SET payment_status='deposit_pending' WHERE id=?").run(p.id);
   return db.prepare("SELECT * FROM payments WHERE id=?").get(id);
@@ -70,6 +71,32 @@ export async function createInvoicePayment(invoiceId: string, baseUrl: string): 
   return db.prepare("SELECT * FROM payments WHERE id=?").get(id);
 }
 
+// v52 deposit crediting: deposits collected against a lead's proposals are
+// real money already in hand. When an invoice is created for that lead, the
+// unapplied deposit balance credits the invoice — the customer is never
+// billed the deposit twice. Allocations are recorded as 'deposit_credit'
+// rows (status 'applied', NOT 'paid') so collected-cash never double-counts.
+export function depositsAvailable(ws: string, leadId: string): number {
+  if (!leadId) return 0;
+  const paid = (db.prepare("SELECT COALESCE(SUM(p.amount),0) v FROM payments p JOIN proposals pr ON pr.id=p.proposal_id WHERE p.workspace_id=? AND pr.lead_id=? AND p.status='paid' AND (p.kind='deposit' OR p.kind IS NULL)").get(ws, leadId) as any)?.v || 0;
+  const applied = (db.prepare("SELECT COALESCE(SUM(p.amount),0) v FROM payments p JOIN invoices i ON i.id=p.invoice_id WHERE p.workspace_id=? AND i.lead_id=? AND p.kind='deposit_credit' AND p.status='applied'").get(ws, leadId) as any)?.v || 0;
+  return Math.round((paid - applied) * 100) / 100;
+}
+export function applyDepositsToInvoice(ws: string, inv: any): number {
+  if (!inv || inv.status === "void" || !inv.lead_id) return 0;
+  const balance = Math.round(((inv.total || 0) - (inv.paid_amount || 0)) * 100) / 100;
+  if (balance <= 0) return 0;
+  const credit = Math.min(balance, Math.max(0, depositsAvailable(ws, inv.lead_id)));
+  if (credit <= 0) return 0;
+  db.prepare("INSERT INTO payments (id,workspace_id,proposal_id,invoice_id,kind,amount,mode,status,created_at,paid_at) VALUES (?,?,?,?,'deposit_credit',?,'internal','applied',?,?)").run(uid("pay"), ws, inv.proposal_id || null, inv.id, credit, now(), now());
+  const paidAmt = Math.round(((inv.paid_amount || 0) + credit) * 100) / 100;
+  const full = paidAmt >= (inv.total || 0) - 0.001;
+  db.prepare("UPDATE invoices SET paid_amount=?, status=? WHERE id=?").run(paidAmt, full ? "paid" : "partially_paid", inv.id);
+  if (full && inv.job_id) db.prepare("UPDATE jobs SET invoice_status='paid' WHERE id=?").run(inv.job_id);
+  if (full) { try { onInvoicePaid(ws, inv.lead_id); } catch { /* hook never blocks crediting */ } }
+  return credit;
+}
+
 export function markPaid(paymentId: string): boolean {
   const pay = db.prepare("SELECT * FROM payments WHERE id=?").get(paymentId) as any;
   if (!pay || pay.status === "paid") return false;
@@ -81,6 +108,7 @@ export function markPaid(paymentId: string): boolean {
       const full = paidAmount >= (inv.total || 0);
       db.prepare("UPDATE invoices SET paid_amount=?, status=? WHERE id=?").run(paidAmount, full ? "paid" : "partially_paid", inv.id);
       if (full && inv.job_id) db.prepare("UPDATE jobs SET invoice_status='paid' WHERE id=?").run(inv.job_id);
+      if (full && inv.lead_id) { try { onInvoicePaid(pay.workspace_id, inv.lead_id); } catch { /* lifecycle hook never blocks a payment */ } }
       emitEvent(pay.workspace_id, "invoice.paid", { lead_id: inv.lead_id, invoice_id: inv.id, amount: pay.amount });
       notifyOwners(pay.workspace_id, "invoice.paid", "Invoice paid 💳", `Invoice ${inv.number} — $${pay.amount} received${full ? " in full" : ""}.`, inv.lead_id);
       db.prepare("INSERT INTO outbox (id,workspace_id,kind,payload,idempotency_key,created_at) VALUES (?,?,?,?,?,?)")

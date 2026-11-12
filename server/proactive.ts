@@ -34,9 +34,10 @@ async function fire(ws: string, trigger: Trigger, instruction: string, steps: St
   db.prepare("INSERT INTO agent_executions (id,workspace_id,user_id,parent_id,instruction,status,planner,plan,context,created_at,updated_at) VALUES (?,?,?,NULL,?,'executing','proactive (rules)',?,'{}',?,?)")
     .run(id, ws, actor, `[proactive:${trigger}] ${instruction}`, JSON.stringify(steps), now(), now());
   db.prepare("INSERT INTO proactive_log (id,workspace_id,trigger_name,execution_id,created_at) VALUES (?,?,?,?,?)").run(uid("pro"), ws, trigger, id, now());
-  const pending = steps.some(s => s.status === "pending");
-  if (!pending) await runExecution(ws, id);
-  else db.prepare("UPDATE agent_executions SET status='awaiting_approval', updated_at=? WHERE id=?").run(now(), id);
+  // v52: run the auto-approved half NOW (drafts, tasks), exactly like a
+  // human-started triage — finalizeExecution parks the rest as
+  // awaiting_approval. Previously a single gated step froze the whole run.
+  await runExecution(ws, id);
   const ex = db.prepare("SELECT status FROM agent_executions WHERE id=?").get(id) as any;
   notifyOwners(ws, "agent.proactive", "🤖 Your operator prepared work", `${note} Open the Agent panel to ${ex?.status === "awaiting_approval" ? "review and approve it" : "see what it did"}.`);
   return true;
@@ -52,7 +53,7 @@ export async function processProactive(): Promise<{ fired: string[] }> {
       // 1) Untouched leads sitting > 24h — the classic silent leak.
       if (!recentlyFired(ws, "untouched_leads") && !stillWaiting(ws, "untouched_leads")) {
         const n = (db.prepare("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='NEW' AND first_touch_at IS NULL AND first_response_at IS NULL AND created_at < datetime('now','-24 hours')").get(ws) as any).c;
-        if (n > 0) { const { steps, count } = triageSteps(ws, level, 10); if (count && await fire(ws, "untouched_leads", `Triage ${count} untouched lead(s) — the oldest have waited 24h+`, steps, `${count} lead(s) have sat untouched for over a day — the operator qualified, assigned and drafted first touches for them.`)) fired.push(ws + ":untouched_leads"); }
+        if (n > 0) { const { steps, count } = triageSteps(ws, level, 10, { minAgeHours: 24 }); if (count && await fire(ws, "untouched_leads", `Triage ${count} untouched lead(s) — the oldest have waited 24h+`, steps, `${count} lead(s) have sat untouched for over a day — the operator qualified, assigned and drafted first touches for them.`)) fired.push(ws + ":untouched_leads"); }
       }
       // 2) Overdue invoices — money already earned, quietly aging.
       if (!recentlyFired(ws, "overdue_invoices") && !stillWaiting(ws, "overdue_invoices")) {
@@ -73,7 +74,7 @@ export async function processProactive(): Promise<{ fired: string[] }> {
       }
       // 5) Stale approvals — the work is done; it's the DECISION that's stuck. A reminder, not an execution.
       if (!recentlyFired(ws, "stale_approvals")) {
-        const n = (db.prepare("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision='pending' AND submitted_at < datetime('now','-48 hours')").get(ws) as any).c;
+        const n = (db.prepare("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NULL AND submitted_at < datetime('now','-48 hours')").get(ws) as any).c;
         if (n > 0) { db.prepare("INSERT INTO proactive_log (id,workspace_id,trigger_name,execution_id,created_at) VALUES (?,?,?,?,?)").run(uid("pro"), ws, "stale_approvals", null, now()); notifyOwners(ws, "agent.proactive", "⏳ Approvals are waiting on you", `${n} approval(s) have been pending for over 48 hours — the work behind them can't move until they're decided.`); fired.push(ws + ":stale_approvals"); }
       }
     } catch { /* one workspace's failure never stops the scan */ }

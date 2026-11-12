@@ -57,8 +57,15 @@ export async function processFollowups(baseUrl = ""): Promise<{ sent: number; st
   for (const e of due) {
     const lead = db.prepare("SELECT * FROM leads WHERE id=?").get(e.lead_id) as any;
     const prop = db.prepare("SELECT * FROM proposals WHERE id=?").get(e.proposal_id) as any;
-    if (!lead || !prop || FINALS.includes(lead.state) || prop.status === "signed") { stopFollowups(e.lead_id, !lead ? "lead_gone" : prop?.status === "signed" ? "signed" : "finalized"); stopped++; continue; }
+    if (!lead || !prop || FINALS.includes(lead.state) || prop.status === "signed" || prop.status === "withdrawn" || prop.status === "expired") { stopFollowups(e.lead_id, !lead ? "lead_gone" : prop?.status === "signed" ? "signed" : (prop?.status === "withdrawn" || prop?.status === "expired") ? "proposal_" + prop.status : "finalized"); stopped++; continue; }
     const ws = db.prepare("SELECT * FROM workspaces WHERE id=?").get(e.workspace_id) as any;
+    // v52: a reply from the customer — linked inbox item or inbound message
+    // since enrollment — ends the cadence. No more nudging people who answered.
+    const replied = db.prepare("SELECT 1 x FROM inbox_items WHERE workspace_id=? AND lead_id=? AND received_at>? LIMIT 1").get(e.workspace_id, lead.id, e.created_at) || db.prepare("SELECT 1 x FROM messages_outbox WHERE workspace_id=? AND lead_id=? AND direction='in' AND created_at>? LIMIT 1").get(e.workspace_id, lead.id, e.created_at);
+    if (replied) { stopFollowups(lead.id, "replied"); stopped++; continue; }
+    // v52 kill switches are honored by the PROCESSOR, not just at enrollment:
+    // follow-ups off (or cadence paused) means active sequences do not send.
+    if (!ws?.followup_enabled || ws?.cadence_paused) continue;
     if (ws && ws.quiet_start !== null && ws.quiet_start !== undefined && ws.quiet_end !== null && ws.quiet_end !== undefined) {
       try {
         const hour = Number(new Intl.DateTimeFormat("en-US", { hour: "numeric", hour12: false, timeZone: ws.tz || "America/New_York" }).format(new Date()));

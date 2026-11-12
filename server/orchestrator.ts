@@ -6,25 +6,26 @@
 import { db, uid, now } from "./db.ts";
 import { agentLevel, reactivateStale } from "./ai.ts";
 import { draftProposalForLead, qualifiedLeadsMissingProposals } from "./proposals-core.ts";
+import { requiredLevel } from "./autonomy.ts";
 
 export const llmProvider: null | { name: string } = null; // founder decision pending — rules planner is live
 
 type ToolResult = { tool: string; mode: "executed" | "plan"; summary: string; items: { label: string; lead_id?: string; job_id?: string; value?: number }[] };
-type Tool = { name: string; description: string; minLevel: number; run: (ws: string, actor: string, level: number) => ToolResult };
+type Tool = { name: string; description: string; minLevel: number; run: (ws: string, actor: string, level: number, minLevel?: number) => ToolResult };
 
 const money = (n: number) => "$" + Math.round(n || 0).toLocaleString();
 
 const prepareProposals: Tool = {
   name: "prepare_proposals", description: "Draft proposals for qualified leads that have none", minLevel: 2,
-  run(ws, actor, level) {
+  run(ws, actor, level, minLevel = this.minLevel) {
     const leads = qualifiedLeadsMissingProposals(ws, 25);
     const items: ToolResult["items"] = [];
     for (const l of leads) {
-      if (level < this.minLevel) { items.push({ label: `Would draft: ${l.service_requested} (${money(l.est_value)})`, lead_id: l.id, value: l.est_value || 0 }); continue; }
+      if (level < minLevel) { items.push({ label: `Would draft: ${l.service_requested} (${money(l.est_value)})`, lead_id: l.id, value: l.est_value || 0 }); continue; }
       const r = draftProposalForLead(ws, l);
       items.push({ label: `Drafted: ${l.service_requested} — ${money(r.total)}${r.priced === "price_book" ? " (price book)" : " (estimate — review)"}`, lead_id: l.id, value: r.total });
     }
-    return { tool: this.name, mode: level >= this.minLevel ? "executed" : "plan", summary: leads.length ? `${items.length} qualified lead${items.length === 1 ? "" : "s"} ${level >= this.minLevel ? "drafted" : "would be drafted (autonomy L" + level + " < L" + this.minLevel + ")"} — drafts only, nothing sent, approvals still apply at send.` : "No qualified leads are missing a proposal.", items };
+    return { tool: this.name, mode: level >= minLevel ? "executed" : "plan", summary: leads.length ? `${items.length} qualified lead${items.length === 1 ? "" : "s"} ${level >= minLevel ? "drafted" : "would be drafted (autonomy L" + level + " < L" + minLevel + ")"} — drafts only, nothing sent, approvals still apply at send.` : "No qualified leads are missing a proposal.", items };
   },
 };
 
@@ -44,14 +45,14 @@ const opsReview: Tool = {
 
 const recoverRevenue: Tool = {
   name: "recover_revenue", description: "Find stale leads and cold proposals; create reactivation work at L3+", minLevel: 3,
-  run(ws, actor, level) {
+  run(ws, actor, level, minLevel = this.minLevel) {
     const cold = db.prepare(`SELECT p.*, l.service_requested FROM proposals p JOIN leads l ON l.id=p.lead_id WHERE p.workspace_id=? AND p.status='sent' AND julianday('now') - julianday(p.sent_at) >= 7 ORDER BY p.total DESC LIMIT 15`).all(ws) as any[];
     const items: ToolResult["items"] = cold.map(p => ({ label: `Cold proposal: ${p.service_requested} — ${money(p.total)} sent ${Math.floor((Date.now() - new Date(p.sent_at).getTime()) / 86400000)}d ago`, lead_id: p.lead_id, value: p.total }));
     let taskNote = "";
-    if (level >= this.minLevel) { const r = reactivateStale(ws, actor); taskNote = ` Created ${r.tasks_created} reactivation task${r.tasks_created === 1 ? "" : "s"}.`; }
-    else taskNote = ` (Reactivation tasks need autonomy L3 — currently L${level}; report only.)`;
+    if (level >= minLevel) { const r = reactivateStale(ws, actor); taskNote = ` Created ${r.tasks_created} reactivation task${r.tasks_created === 1 ? "" : "s"}.`; }
+    else taskNote = ` (Reactivation tasks need autonomy L${minLevel} — currently L${level}; report only.)`;
     const staleValue = (db.prepare("SELECT COALESCE(SUM(est_value),0) s FROM leads WHERE workspace_id=? AND state IN ('NEW','WORKING','QUALIFIED','PROPOSAL','SENT','FOLLOWUP') AND julianday('now') - julianday(updated_at) >= 14").get(ws) as any).s;
-    return { tool: this.name, mode: level >= this.minLevel ? "executed" : "plan", summary: `${items.length} cold proposals (${money(items.reduce((a, i) => a + (i.value || 0), 0))}) + ${money(staleValue)} in 14d+ stale open leads.${taskNote}`, items };
+    return { tool: this.name, mode: level >= minLevel ? "executed" : "plan", summary: `${items.length} cold proposals (${money(items.reduce((a, i) => a + (i.value || 0), 0))}) + ${money(staleValue)} in 14d+ stale open leads.${taskNote}`, items };
   },
 };
 
@@ -83,7 +84,11 @@ export function runCommand(ws: string, actor: string, text: string) {
   const w = db.prepare("SELECT * FROM workspaces WHERE id=?").get(ws) as any;
   const level = agentLevel(w);
   const plan = planCommand(text);
-  const results = plan.tools.map(name => TOOLS[name].run(ws, actor, level));
+  // v52 policy parity: the sweep answers to the SAME earned-autonomy engine
+  // as the governed stack, via each tool's governed analog — a demoted tool
+  // class stops auto-executing here too, an earned one is honored.
+  const ANALOG: Record<string, string> = { prepare_proposals: "prepare_proposal", recover_revenue: "create_followup_task", ops_review: "get_revenue_report", exec_brief: "get_revenue_report" };
+  const results = plan.tools.map(name => { const analog = ANALOG[name]; const req = analog ? requiredLevel(ws, analog) : null; const threshold = req && Number.isFinite(req.required) ? req.required : TOOLS[name].minLevel; const r = TOOLS[name].run(ws, actor, level, threshold); if (req?.adjustment) (r as any).policy = `${req.adjustment} via ${analog}: threshold L${threshold} (base L${TOOLS[name].minLevel})`; return r; });
   const runId = uid("run");
   const output = { command: text, intent: plan.intent, planner: llmProvider ? llmProvider.name : "rules-v1", autonomy_level: level, results };
   db.prepare("INSERT INTO agent_runs (id,workspace_id,agent,lead_id,model,prompt_version,input_hash,output,confidence,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)")

@@ -19,7 +19,7 @@ const cache = new Map<string, { at: number; stats: Map<string, { decided: number
 function statsFor(ws: string) {
   const hit = cache.get(ws);
   if (hit && Date.now() - hit.at < 60000) return hit.stats;
-  const m = new Map(decisionStats(ws).map(s => [s.tool, s]));
+  const m = new Map(decisionStats(ws, 40).map(s => [s.tool, s]));
   cache.set(ws, { at: Date.now(), stats: m });
   return m;
 }

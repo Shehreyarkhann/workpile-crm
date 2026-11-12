@@ -46,6 +46,7 @@ export async function pushInvoiceToQb(workspaceId: string, invoiceId: string, fe
   if (!conn) { const e: any = new Error("QuickBooks is not connected for this workspace."); e.code = "qb_not_connected"; throw e; }
   const inv = db.prepare("SELECT * FROM invoices WHERE id=? AND workspace_id=?").get(invoiceId, workspaceId) as any;
   if (!inv) { const e: any = new Error("invoice not found"); e.code = "not_found"; throw e; }
+  if (inv.status === "void") { const e: any = new Error("void invoices are never pushed to QuickBooks"); e.code = "invoice_void"; throw e; }
   if (inv.qb_id) return { qb_id: inv.qb_id, already: true };
   const lead = inv.lead_id ? db.prepare("SELECT * FROM leads WHERE id=?").get(inv.lead_id) as any : null;
   const contact = lead?.contact_id ? db.prepare("SELECT * FROM contacts WHERE id=?").get(lead.contact_id) as any : null;

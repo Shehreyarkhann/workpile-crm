@@ -37,6 +37,7 @@ export function initSchema() {
   CREATE TABLE IF NOT EXISTS activities (id TEXT PRIMARY KEY, lead_id TEXT, workspace_id TEXT, user_id TEXT, type TEXT, body TEXT, outcome TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, assignee_id TEXT, type TEXT, title TEXT, due_at TEXT, status TEXT DEFAULT 'open', completed_at TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS approvals (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, proposal_id TEXT, submitted_by TEXT, approver_id TEXT, tier TEXT, decision TEXT, reason_code TEXT, edits_diff TEXT, submitted_at TEXT, decided_at TEXT);
+  UPDATE approvals SET decision=NULL WHERE decision='pending'; -- v52: ONE pending representation (NULL) across UI, agent and readers
   CREATE TABLE IF NOT EXISTS services (id TEXT PRIMARY KEY, workspace_id TEXT, name TEXT, active INTEGER DEFAULT 1, is_catalog INTEGER DEFAULT 1);
   CREATE TABLE IF NOT EXISTS price_book_items (id TEXT PRIMARY KEY, workspace_id TEXT, service_id TEXT, name TEXT, unit TEXT, standard_price REAL, floor_price REAL);
   CREATE TABLE IF NOT EXISTS templates (id TEXT PRIMARY KEY, workspace_id TEXT, service_id TEXT, kind TEXT, name TEXT, body TEXT, version INTEGER DEFAULT 1, active INTEGER DEFAULT 1);

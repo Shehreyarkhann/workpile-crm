@@ -89,7 +89,7 @@ test("proactive: the five leaks prepare governed work — once", async () => {
   const jobId = dbm.uid("job");
   dbm.db.prepare("INSERT INTO jobs (id,workspace_id,lead_id,stage,value,created_at,updated_at) VALUES (?,?,?,'IN_PROGRESS',3000,?,?)").run(jobId, ws2, l2, dbm.now(), dbm.now());
   dbm.db.prepare("INSERT INTO documents (id,workspace_id,job_id,lead_id,name,required,status) VALUES (?,?,?,?,'COI',1,'missing')").run(dbm.uid("doc"), ws2, jobId, l2);
-  dbm.db.prepare("INSERT INTO approvals (id,workspace_id,lead_id,proposal_id,tier,submitted_by,submitted_at,decision) VALUES (?,?,?,?,'ops','u1',datetime('now','-3 days'),'pending')").run(dbm.uid("apr"), ws2, l3, propId);
+  dbm.db.prepare("INSERT INTO approvals (id,workspace_id,lead_id,proposal_id,tier,submitted_by,submitted_at) VALUES (?,?,?,?,'ops','u1',datetime('now','-3 days'))").run(dbm.uid("apr"), ws2, l3, propId);
   const notifBefore = (dbm.db.prepare("SELECT COUNT(*) c FROM notifications WHERE workspace_id=?").get(ws2) as any).c;
   const r1 = await pro.processProactive();
   assert.ok(r1.fired.filter(f => f.startsWith(ws2)).length >= 5, JSON.stringify(r1.fired));

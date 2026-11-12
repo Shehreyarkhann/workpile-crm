@@ -18,6 +18,7 @@ before(async () => {
   dbm.initSchema();
   const { hashPassword, uid, now } = dbm;
   wsId = uid("ws"); dbm.db.prepare("INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)").run(wsId, "V8 Co", now());
+  dbm.db.prepare("UPDATE workspaces SET followup_enabled=1 WHERE id=?").run(wsId); // v52: the processor honors the kill switch — this scenario models an enabled cadence
   dbm.db.prepare("INSERT INTO users (id,workspace_id,name,email,password_hash,role) VALUES (?,?,?,?,?,?)").run(uid("usr"), wsId, "Olivia Owner", "o@v8.co", hashPassword("password1"), "OWNER");
   dbm.db.prepare("INSERT INTO users (id,workspace_id,name,email,password_hash,role) VALUES (?,?,?,?,?,?)").run(uid("usr"), wsId, "Larry Lead", "l@v8.co", hashPassword("password1"), "LEAD_OWNER");
   const app = (await import("../server/app.ts")).app;

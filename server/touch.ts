@@ -14,6 +14,6 @@ export function touchLead(workspaceId: string, leadId: string, kind: string, act
   const l = db.prepare("SELECT first_touch_at FROM leads WHERE id=? AND workspace_id=?").get(leadId, workspaceId) as any;
   if (!l || l.first_touch_at) return false;
   db.prepare("UPDATE leads SET first_touch_at=?, first_touch_kind=? WHERE id=?").run(now(), kind, leadId);
-  try { db.prepare("INSERT INTO lead_events (id, workspace_id, lead_id, kind, actor_id, body, created_at) VALUES (?,?,?,?,?,?,?)").run("ev_" + Math.random().toString(36).slice(2, 12), workspaceId, leadId, "first_touch", actorId || null, `First touch — ${kind}`, now()); } catch { /* events are best-effort */ }
+  try { db.prepare("INSERT INTO lead_events (id, lead_id, workspace_id, actor, type, payload, created_at) VALUES (?,?,?,?,?,?,?)").run("ev_" + Math.random().toString(36).slice(2, 12), leadId, workspaceId, actorId || null, "first_touch", JSON.stringify({ kind }), now()); } catch { /* events are best-effort */ }
   return true;
 }

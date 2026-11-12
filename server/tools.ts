@@ -101,8 +101,8 @@ export const TOOLS: Record<string, ToolDef> = {
     parameters: { type: "object", properties: { lead_id: { type: "string" } }, required: ["lead_id"] },
     run(ws, actor, args) { const l = leadOf(ws, args.lead_id); if (!l) throw new Error("lead not found in this workspace");
       const p = db.prepare("SELECT * FROM proposals WHERE lead_id=? ORDER BY version DESC LIMIT 1").get(l.id) as any; if (!p) throw new Error("no proposal to submit");
-      const ex = db.prepare("SELECT id FROM approvals WHERE proposal_id=? AND decision='pending'").get(p.id); if (ex) return { summary: "An approval is already pending for this proposal.", refs: { lead_id: l.id, approval_id: ex.id } };
-      const id = uid("apr"); db.prepare("INSERT INTO approvals (id,workspace_id,lead_id,proposal_id,tier,submitted_by,submitted_at,decision) VALUES (?,?,?,?,?,?,?, 'pending')").run(id, ws, l.id, p.id, (p.total || 0) > 25000 ? "ceo" : "ops", actor, now());
+      const ex = db.prepare("SELECT id FROM approvals WHERE proposal_id=? AND decision IS NULL").get(p.id); if (ex) return { summary: "An approval is already pending for this proposal.", refs: { lead_id: l.id, approval_id: ex.id } };
+      const id = uid("apr"); db.prepare("INSERT INTO approvals (id,workspace_id,lead_id,proposal_id,tier,submitted_by,submitted_at) VALUES (?,?,?,?,?,?,?)").run(id, ws, l.id, p.id, (p.total || 0) > 25000 ? "ceo" : "ops", actor, now());
       return { summary: `Approval requested for the ${money(p.total)} proposal (${l.service_requested}).`, refs: { lead_id: l.id, approval_id: id } }; } },
   schedule_site_visit: { name: "schedule_site_visit", description: "Schedule a site visit for a lead (tomorrow 10:00 by default).", control: "execute",
     parameters: { type: "object", properties: { lead_id: { type: "string" }, when: { type: "string" } }, required: ["lead_id"] },
@@ -153,7 +153,7 @@ export const TOOLS: Record<string, ToolDef> = {
       return { summary: `Open AR ${money((sent.bal || 0) + (part.bal || 0))} (${sent.c} sent, ${part.c} partial) · collected last 30d ${money(collected30)} · paid in full: ${paid.c} invoices.${overdue.length ? " Most overdue: " + overdue.map(o => `${o.number} ${o.name || ""} ${money((o.total || 0) - (o.paid_amount || 0))} due ${String(o.due_at).slice(0, 10)}`).join("; ") + "." : " Nothing overdue."}`, refs: { open_ar: (sent.bal || 0) + (part.bal || 0), overdue: overdue.map(o => o.number) } }; } },
   create_invoice: { name: "create_invoice", description: "Create the invoice for a completed/ready job from its signed value (does NOT send it).", control: "draft",
     parameters: { type: "object", properties: { job_id: { type: "string" } }, required: ["job_id"] },
-    run(ws, _a, args) { const job = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(args.job_id, ws) as any; if (!job) throw new Error("job not found in this workspace");
+    async run(ws, _a, args) { const job = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(args.job_id, ws) as any; if (!job) throw new Error("job not found in this workspace");
       const ex = db.prepare("SELECT id, number FROM invoices WHERE job_id=?").get(job.id) as any; if (ex) return { summary: `Invoice ${ex.number} already exists for this job — no duplicate.`, refs: { job_id: job.id, invoice_id: ex.id } };
       const svc = (db.prepare("SELECT service_requested FROM leads WHERE id=?").get(job.lead_id) as any)?.service_requested || "services";
       const n = ((db.prepare("SELECT COUNT(*) c FROM invoices WHERE workspace_id=?").get(ws) as any).c || 0) + 1;
@@ -161,7 +161,9 @@ export const TOOLS: Record<string, ToolDef> = {
       db.prepare("INSERT INTO invoices (id,workspace_id,lead_id,job_id,proposal_id,number,status,lines,total,paid_amount,due_at,issued_at,source,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'agent',?)")
         .run(id, ws, job.lead_id, job.id, job.proposal_id || null, "INV-" + String(n).padStart(4, "0"), "sent", JSON.stringify([{ description: `Job — ${svc}`, qty: 1, unit_price: total, line_total: total }]), total, 0, new Date(Date.now() + 30 * 86400000).toISOString(), now(), now());
       db.prepare("UPDATE jobs SET invoice_status='invoiced' WHERE id=?").run(job.id);
-      return { summary: `Invoice INV-${String(n).padStart(4, "0")} created for ${svc}: ${money(total)}, due in 30 days. Not sent — send it from the invoice when ready.`, refs: { job_id: job.id, invoice_id: id } }; } },
+      let credit = 0; try { const { applyDepositsToInvoice } = await import("./payments.ts"); credit = applyDepositsToInvoice(ws, db.prepare("SELECT * FROM invoices WHERE id=?").get(id)); } catch { /* best-effort */ }
+      const after = db.prepare("SELECT status, paid_amount FROM invoices WHERE id=?").get(id) as any;
+      return { summary: `Invoice INV-${String(n).padStart(4, "0")} created for ${svc}: ${money(total)}, due in 30 days. Not sent — send it from the invoice when ready.${credit > 0 ? ` Deposit credit applied: ${money(credit)} — balance now ${money(total - (after?.paid_amount || 0))}${after?.status === "paid" ? " (PAID IN FULL by the deposit)" : ""}.` : ""}`, refs: { job_id: job.id, invoice_id: id, deposit_credit: credit } }; } },
   record_payment: { name: "record_payment", description: "Record a payment against an invoice (check/cash/card received outside Stripe). Financial — ALWAYS requires human approval. Full payment fires the referral playbook hook.", control: "approval",
     parameters: { type: "object", properties: { invoice_id: { type: "string" }, amount: { type: "number" } }, required: ["invoice_id", "amount"] },
     async run(ws, _a, args) { const inv = db.prepare("SELECT * FROM invoices WHERE id=? AND workspace_id=?").get(args.invoice_id, ws) as any; if (!inv) throw new Error("invoice not found in this workspace");
@@ -172,7 +174,7 @@ export const TOOLS: Record<string, ToolDef> = {
       db.prepare("INSERT INTO payments (id,workspace_id,proposal_id,invoice_id,kind,amount,mode,status,created_at,paid_at) VALUES (?,?,?,?,'invoice_payment',?,?,'paid',?,?)").run(uid("pay"), ws, inv.proposal_id || null, inv.id, amount, "test", now(), now());
       const paidAmt = Math.round(((inv.paid_amount || 0) + amount) * 100) / 100; const status = paidAmt >= (inv.total || 0) - 0.001 ? "paid" : "partially_paid";
       db.prepare("UPDATE invoices SET paid_amount=?, status=? WHERE id=?").run(paidAmt, status, inv.id);
-      if (status === "paid") { try { const { onInvoicePaid } = await import("./lifecycle.ts"); await onInvoicePaid(ws, inv.lead_id); } catch { /* playbook hook is best-effort here */ } }
+      if (status === "paid") { if (inv.job_id) db.prepare("UPDATE jobs SET invoice_status='paid' WHERE id=?").run(inv.job_id); try { const { onInvoicePaid } = await import("./lifecycle.ts"); await onInvoicePaid(ws, inv.lead_id); } catch { /* playbook hook is best-effort here */ } }
       return { summary: `Recorded ${money(amount)} on invoice ${inv.number} — now ${status === "paid" ? "PAID IN FULL" : `${money(paidAmt)} of ${money(inv.total)} paid`}.`, refs: { invoice_id: inv.id, status } }; } },
   draft_status_report: { name: "draft_status_report", description: "Draft the weekly status report (the owner's one-pager): new leads, proposals, approvals pending, jobs, collected, and the biggest stuck items.", control: "draft",
     parameters: { type: "object", properties: {} },
@@ -181,7 +183,7 @@ export const TOOLS: Record<string, ToolDef> = {
       const sent = wk("SELECT COUNT(*) c FROM proposals WHERE workspace_id=? AND sent_at >= datetime('now','-7 days')").c;
       const signed = wk("SELECT COALESCE(SUM(total),0) s FROM proposals WHERE workspace_id=? AND status='signed' AND signed_at >= datetime('now','-7 days')").s;
       const coll = wk("SELECT COALESCE(SUM(amount),0) s FROM payments WHERE workspace_id=? AND status='paid' AND created_at >= datetime('now','-7 days')").s;
-      const pend = wk("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision='pending'").c;
+      const pend = wk("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NULL").c;
       const jobsDone = wk("SELECT COUNT(*) c FROM jobs WHERE workspace_id=? AND stage='COMPLETED' AND updated_at >= datetime('now','-7 days')").c;
       const stuck = db.prepare("SELECT service_requested, est_value FROM leads WHERE workspace_id=? AND state IN ('NEW','WORKING') AND first_touch_at IS NULL ORDER BY est_value DESC LIMIT 3").all(ws) as any[];
       const report = `Weekly status — last 7 days: ${nl} new leads · ${sent} proposals sent · ${money(signed)} signed · ${jobsDone} jobs completed · ${money(coll)} collected. Waiting on the owner: ${pend} approval(s).${stuck.length ? " Biggest untouched: " + stuck.map(s => `${s.service_requested} (${money(s.est_value)})`).join(", ") + "." : " No untouched high-value leads."}`;
@@ -205,6 +207,75 @@ export const TOOLS: Record<string, ToolDef> = {
       const { enrollLead } = await import("./outreach.ts");
       const ok = enrollLead(camp, l.id, new Date());
       return { summary: ok ? `Enrolled ${l.contact_name || l.service_requested} in "${camp.name}" — step 1 sends inside the campaign's window and caps.` : `${l.contact_name || l.service_requested} was already enrolled in "${camp.name}" — no duplicate.`, refs: { lead_id: l.id, campaign_id: camp.id, enrolled: ok } }; } },
+  send_proposal: { name: "send_proposal", description: "Send a proposal to the customer with its signing link. Customer-facing — ALWAYS requires human approval of the step, AND the proposal must have passed the workspace approval gate (submit_for_approval + an approver's decision) whenever policy requires it. Marks sent only on a real provider result.", control: "approval",
+    parameters: { type: "object", properties: { proposal_id: { type: "string" }, channel: { type: "string", enum: ["email", "sms"] } }, required: ["proposal_id"] },
+    async run(ws, actor, args) { const p = db.prepare("SELECT * FROM proposals WHERE id=? AND workspace_id=?").get(args.proposal_id, ws) as any; if (!p) throw new Error("proposal not found in this workspace");
+      if (p.status === "signed") throw new Error("proposal is already signed");
+      if (p.status === "sent") return { summary: `Proposal ${p.number ? "PROP-" + p.number : p.id} was already sent — not re-sent.`, refs: { proposal_id: p.id, lead_id: p.lead_id, already: true } };
+      const l = leadOf(ws, p.lead_id); const w = db.prepare("SELECT * FROM workspaces WHERE id=?").get(ws) as any;
+      const policy = w?.approval_policy || "always";
+      const gateNeeded = policy === "always" || (policy === "amount" && (p.total || 0) > (w?.approval_threshold ?? 25000));
+      if (gateNeeded) { const ap = db.prepare("SELECT * FROM approvals WHERE proposal_id=? AND decision='approved' ORDER BY decided_at DESC").get(p.id) as any;
+        if (!ap) throw new Error("this proposal has not passed the approval gate — run submit_for_approval and let a human approver decide first");
+        if (ap.decided_at && (p as any).updated_at && String((p as any).updated_at) > String(ap.decided_at)) throw new Error("the proposal changed after it was approved — the approval is invalidated; resubmit for approval"); }
+      const channel = args.channel === "sms" ? "sms" : "email";
+      const to = channel === "sms" ? l.contact_phone : l.contact_email; if (!to) throw new Error(`the customer has no ${channel === "sms" ? "phone" : "email"} on file`);
+      const { ensureSignToken } = await import("./sign.ts"); const token = ensureSignToken(p.id); if (!token) throw new Error("could not create a signing link");
+      const base = process.env.BASE_URL || "https://workpile.claimpaid.io"; const link = `${base}/sign/${token}`;
+      const body = `Hello ${(l.contact_name || "there").split(" ")[0]},\n\nYour proposal from ${w?.name || "us"} is ready to review and sign (${money(p.total)}).\n\nReview & sign: ${link}\n\nThank you,\n${w?.name || ""}`;
+      const { queueAndDeliver } = await import("./comms.ts");
+      const r: any = await queueAndDeliver(ws, { lead_id: l.id, channel, to, subject: channel === "email" ? `Your proposal from ${w?.name || "us"} — ready to sign` : undefined, body });
+      if (r?.status === "suppressed") throw new Error("the recipient is on the suppression list — the proposal was NOT sent");
+      if (!["sent", "delivered", "test_mode"].includes(r?.status)) throw new Error(`delivery failed (${r?.status || "unknown"}) — the proposal was NOT marked sent`);
+      db.prepare("UPDATE proposals SET status='sent', sent_at=?, delivery_mode=? WHERE id=?").run(now(), r.status === "test_mode" ? "test" : "live", p.id);
+      db.prepare("UPDATE proposals SET status='withdrawn' WHERE workspace_id=? AND lead_id=? AND id<>? AND status IN ('draft','sent')").run(ws, l.id, p.id);
+      try { const { enrollFollowup } = await import("./followups.ts"); enrollFollowup(ws, l.id, p.id); } catch { /* best-effort */ }
+      if (["NEW", "WORKING", "QUALIFIED", "PROPOSAL"].includes(l.state)) db.prepare("UPDATE leads SET state='SENT', updated_at=? WHERE id=?").run(now(), l.id);
+      return { summary: `Proposal ${p.number ? "PROP-" + p.number : ""} sent to ${l.contact_name || to} via ${channel} (${r.status === "test_mode" ? "test mode — no live provider" : r.status}) with its signing link. Follow-up cadence enrolled.`, refs: { proposal_id: p.id, lead_id: l.id, delivery: r.status, sign_link: link } }; } },
+  send_invoice: { name: "send_invoice", description: "Email the customer their invoice with the pay link. Customer-facing — ALWAYS requires human approval of the step. Reports the real delivery state (test mode labeled).", control: "approval",
+    parameters: { type: "object", properties: { invoice_id: { type: "string" } }, required: ["invoice_id"] },
+    async run(ws, actor, args) { const inv = db.prepare("SELECT * FROM invoices WHERE id=? AND workspace_id=?").get(args.invoice_id, ws) as any; if (!inv) throw new Error("invoice not found in this workspace");
+      if (inv.status === "void") throw new Error("a void invoice cannot be sent");
+      if (inv.status === "paid") return { summary: `Invoice ${inv.number} is already paid in full — nothing to send.`, refs: { invoice_id: inv.id, already: true } };
+      const l = leadOf(ws, inv.lead_id); const email = l.contact_email; if (!email) throw new Error("the customer has no email on file");
+      let token = inv.token; if (!token) { token = uid("invtok") + Math.random().toString(16).slice(2, 14); db.prepare("UPDATE invoices SET token=? WHERE id=?").run(token, inv.id); }
+      const base = process.env.BASE_URL || "https://workpile.claimpaid.io"; const link = `${base}/invoice/${token}`;
+      const balance = Math.round(((inv.total || 0) - (inv.paid_amount || 0)) * 100) / 100;
+      const w = db.prepare("SELECT name FROM workspaces WHERE id=?").get(ws) as any;
+      const body = `Hello ${(l.contact_name || "there").split(" ")[0]},\n\nYour invoice ${inv.number} from ${w?.name || "us"} is ready.\n\nTotal: ${money(inv.total)}${(inv.paid_amount || 0) > 0 ? `\nPaid: ${money(inv.paid_amount)}` : ""}\nBalance due: ${money(balance)}\n\nView and pay online: ${link}\n\nThank you,\n${w?.name || ""}`;
+      const { queueAndDeliver } = await import("./comms.ts");
+      const r: any = await queueAndDeliver(ws, { lead_id: inv.lead_id, channel: "email", to: email, subject: `Invoice ${inv.number} — balance ${money(balance)}`, body });
+      if (r?.status === "suppressed") throw new Error("the recipient is on the suppression list — the invoice was NOT sent");
+      if (!["sent", "delivered", "test_mode", "queued"].includes(r?.status)) throw new Error(`delivery failed (${r?.status || "unknown"})`);
+      db.prepare("UPDATE invoices SET sent_at=? WHERE id=?").run(now(), inv.id);
+      return { summary: `Invoice ${inv.number} sent to ${l.contact_name || email} (${r?.status === "test_mode" ? "test mode — no live provider" : r?.status}) — balance ${money(balance)}, pay link included.`, refs: { invoice_id: inv.id, lead_id: inv.lead_id, delivery: r?.status, pay_link: link } }; } },
+  move_job_stage: { name: "move_job_stage", description: "Move a job to a new lifecycle stage (AWAITING_SCHEDULING, SCHEDULED, IN_PROGRESS, WORK_COMPLETED, DOCUMENTATION_PENDING, READY_TO_INVOICE, INVOICED, CLOSED, CANCELLED). Completing work fires the review-playbook hook. Closing is refused while required documents are missing unless waived explicitly.", control: "execute",
+    parameters: { type: "object", properties: { job_id: { type: "string" }, to: { type: "string" }, waive_docs: { type: "boolean" } }, required: ["job_id", "to"] },
+    async run(ws, actor, args) { const STAGES = ["AWAITING_SCHEDULING", "SCHEDULED", "IN_PROGRESS", "WORK_COMPLETED", "DOCUMENTATION_PENDING", "READY_TO_INVOICE", "INVOICED", "CLOSED", "CANCELLED"]; const to = String(args.to || "").toUpperCase(); if (!STAGES.includes(to)) throw new Error("unknown stage: " + args.to);
+      const job = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(args.job_id, ws) as any; if (!job) throw new Error("job not found in this workspace");
+      if (job.stage === to) return { summary: `Job is already ${to.replaceAll("_", " ")}.`, refs: { job_id: job.id, stage: to } };
+      if (to === "CLOSED" && !args.waive_docs) { const missing = (db.prepare("SELECT COUNT(*) c FROM documents WHERE job_id=? AND required=1 AND status<>'received'").get(job.id) as any).c; if (missing > 0) throw new Error(`this job has ${missing} required document(s) still missing — receive them, or re-run with waive_docs=true to close anyway`); }
+      db.prepare("UPDATE jobs SET stage=?, updated_at=? WHERE id=?").run(to, now(), job.id);
+      if (to === "WORK_COMPLETED") { try { const { onJobCompleted } = await import("./lifecycle.ts"); onJobCompleted(ws, { ...job, stage: to }); } catch { /* best-effort */ } }
+      return { summary: `Job moved ${String(job.stage).replaceAll("_", " ")} → ${to.replaceAll("_", " ")}.${to === "WORK_COMPLETED" ? " Review-playbook enrollment checked." : ""}${to === "CLOSED" && args.waive_docs ? " (closed with documents waived)" : ""}`, refs: { job_id: job.id, lead_id: job.lead_id, stage: to } }; } },
+  create_change_order: { name: "create_change_order", description: "Draft a change order against a job (scope delta + dollar delta). Drafts never change the job value — an approved change order does, through the normal human flow.", control: "draft",
+    parameters: { type: "object", properties: { job_id: { type: "string" }, scope: { type: "string" }, amount: { type: "number" } }, required: ["job_id", "scope"] },
+    run(ws, actor, args) { const job = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(args.job_id, ws) as any; if (!job) throw new Error("job not found in this workspace");
+      const id = uid("co"); const amount = Math.round(Number(args.amount || 0) * 100) / 100;
+      db.prepare("INSERT INTO change_orders (id,workspace_id,job_id,lead_id,delta_scope,delta_total,status,created_at) VALUES (?,?,?,?,?,?,?,?)").run(id, ws, job.id, job.lead_id, String(args.scope || "").slice(0, 300), amount, "draft", now());
+      return { summary: `Change order drafted on the job: "${String(args.scope).slice(0, 80)}" (${amount >= 0 ? "+" : ""}${money(amount)}) — status draft; it changes the job value only when a human approves it.`, refs: { change_order_id: id, job_id: job.id, lead_id: job.lead_id } }; } },
+  complete_task: { name: "complete_task", description: "Mark a task complete (follow-ups, chases, callbacks the operator created or owns).", control: "execute",
+    parameters: { type: "object", properties: { task_id: { type: "string" } }, required: ["task_id"] },
+    run(ws, actor, args) { const t = db.prepare("SELECT * FROM tasks WHERE id=? AND workspace_id=?").get(args.task_id, ws) as any; if (!t) throw new Error("task not found in this workspace");
+      if (t.status === "done") return { summary: `Task "${t.title}" was already complete.`, refs: { task_id: t.id, already: true } };
+      db.prepare("UPDATE tasks SET status='done', completed_at=?, completed_by=? WHERE id=?").run(now(), actor, t.id);
+      return { summary: `Task completed: "${t.title}".`, refs: { task_id: t.id, lead_id: t.lead_id } }; } },
+  list_approvals: { name: "list_approvals", description: "Read the human approval queue: what is waiting, for how much, and how long it has waited. Read-only — deciding stays with the humans.", control: "read",
+    parameters: { type: "object", properties: {} },
+    run(ws) { const rows = db.prepare("SELECT a.*, p.total, p.number FROM approvals a LEFT JOIN proposals p ON p.id=a.proposal_id WHERE a.workspace_id=? AND a.decision IS NULL ORDER BY a.submitted_at LIMIT 10").all(ws) as any[];
+      if (!rows.length) return { summary: "Approval queue is empty — nothing waiting on a human.", refs: { count: 0 } };
+      const lines = rows.map(r => { const hrs = Math.max(0, Math.round((Date.now() - new Date(r.submitted_at).getTime()) / 3600000)); return `• ${r.number ? "PROP-" + r.number : "Proposal"} — ${money(r.total || 0)} · ${r.tier || "ops"} tier · waiting ${hrs}h`; });
+      return { summary: `${rows.length} approval(s) waiting:\n${lines.join("\n")}`, refs: { count: rows.length, approval_ids: rows.map(r => r.id) } }; } },
   remember_fact: { name: "remember_fact", description: "Record a durable fact about this business that every future operator run should know (preferences, policies, people, quirks). Use when the user teaches you something lasting — not for one-off task details.", control: "draft",
     parameters: { type: "object", properties: { fact: { type: "string" } }, required: ["fact"] },
     async run(ws, actor, args) { const { rememberFact } = await import("./agent-memory.ts"); const r = rememberFact(ws, String(args.fact || ""), "operator", actor); return { summary: r.duplicate ? "Already remembered — no duplicate stored." : `Remembered: "${String(args.fact).slice(0, 120)}" — every future run starts knowing this.`, refs: { memory_id: r.id, duplicate: r.duplicate } }; } },

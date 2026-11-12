@@ -12,7 +12,7 @@ import { getProvider, providerStatus } from "./llm.ts";
 import { agentLevel } from "./ai.ts";
 import { qualifiedLeadsMissingProposals } from "./proposals-core.ts";
 
-export interface Step { id: string; call_id?: string; policy?: string; tool: string; args: any; control: string; label: string; status: "pending" | "approved" | "rejected" | "done" | "failed" | "skipped"; needs_approval: boolean; result?: string; refs?: any; verified?: boolean }
+export interface Step { id: string; call_id?: string; policy?: string; tool: string; args: any; control: string; label: string; status: "pending" | "approved" | "running" | "rejected" | "done" | "failed" | "skipped"; needs_approval: boolean; result?: string; refs?: any; verified?: boolean }
 const J = (v: any, d: any) => { try { return JSON.parse(v); } catch { return d; } };
 
 export function needsApproval(control: string, level: number): boolean {
@@ -31,7 +31,7 @@ export function businessContext(ws: string): any {
     qualified_no_proposal: qualifiedLeadsMissingProposals(ws, 25).length,
     stale_open: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state IN ('WORKING','PROPOSAL','SENT','FOLLOWUP') AND julianday('now') - julianday(updated_at) >= 14"),
     jobs_active: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=? AND stage NOT IN ('CLOSED','CANCELLED')"),
-    approvals_pending: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision='pending'") };
+    approvals_pending: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NULL") };
 }
 
 function rulesPlan(ws: string, instruction: string, level: number): Step[] {
@@ -66,8 +66,9 @@ const SYSTEM = `You are Workpile Agent, the execution layer of a CRM for field-s
 // qualifies (read), assigns (execute), drafts (draft) and prepares the first-touch SEND as an
 // approval-class step — internal work runs immediately; every customer-facing send waits for
 // one human approval pass. Capped so one run stays reviewable.
-export function triageSteps(ws: string, level: number, cap = 25): { steps: Step[]; count: number } {
-  const leads = db.prepare(`SELECT l.*, c.name contact_name, c.email contact_email, c.phone contact_phone FROM leads l LEFT JOIN contacts c ON c.id=l.contact_id WHERE l.workspace_id=? AND l.first_touch_at IS NULL AND l.first_response_at IS NULL AND l.state='NEW' ORDER BY COALESCE(l.ai_score,0) DESC, l.est_value DESC LIMIT ?`).all(ws, cap) as any[];
+export function triageSteps(ws: string, level: number, cap = 25, opts?: { minAgeHours?: number }): { steps: Step[]; count: number } {
+  const ageClause = opts?.minAgeHours ? ` AND l.created_at < datetime('now','-${Math.max(1, Math.floor(opts.minAgeHours))} hours')` : "";
+  const leads = db.prepare(`SELECT l.*, c.name contact_name, c.email contact_email, c.phone contact_phone FROM leads l LEFT JOIN contacts c ON c.id=l.contact_id WHERE l.workspace_id=? AND l.first_touch_at IS NULL AND l.first_response_at IS NULL AND l.state='NEW'${ageClause} ORDER BY COALESCE(l.ai_score,0) DESC, l.est_value DESC LIMIT ?`).all(ws, cap) as any[];
   const steps: Step[] = [];
   for (const l of leads) {
     const who = l.contact_name || l.service_requested;
@@ -152,6 +153,13 @@ export async function runExecution(ws: string, id: string): Promise<any> {
   db.prepare("UPDATE agent_executions SET status='executing', updated_at=? WHERE id=?").run(now(), id);
   for (const s of steps) {
     if (s.status !== "approved") continue;
+    // v52 exactly-once is a DATABASE state, not a memory snapshot: re-read the
+    // stored plan and claim the step ('running', persisted) BEFORE the tool
+    // runs. A concurrent decider re-reads, sees it is no longer 'approved',
+    // and skips it — a send or payment can never execute twice.
+    const fresh = getExecution(ws, id); const fs = (fresh?.plan || []).find((x: any) => x.id === s.id);
+    if (!fs || fs.status !== "approved") { s.status = fs?.status || s.status; continue; }
+    s.status = "running"; db.prepare("UPDATE agent_executions SET plan=?, updated_at=? WHERE id=?").run(JSON.stringify(steps), now(), id);
     try { const r = await TOOLS[s.tool].run(ws, ex.user_id, s.args); s.result = r.summary; s.refs = r.refs; s.verified = true; s.status = "done"; }
     catch (e: any) { s.result = "Failed: " + String(e?.message || e); s.verified = false; s.status = "failed"; }
     db.prepare("UPDATE agent_executions SET plan=?, updated_at=? WHERE id=?").run(JSON.stringify(steps), now(), id);

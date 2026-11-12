@@ -43,7 +43,7 @@ test("executions record who created and who decided", async () => {
 test("playbook: system prompt + locked tool list visible; house rules save and apply", async () => {
   const cfg = (await J("/api/agent/config", {}, A())).j;
   assert.match(cfg.system_prompt, /Workpile Agent/);
-  assert.equal(cfg.tools.length, 28);
+  assert.equal(cfg.tools.length, 34);
   assert.ok(cfg.tools.every((t: any) => t.name && t.description && ["read", "draft", "execute", "approval"].includes(t.control)));
   assert.ok(cfg.tools.some((t: any) => t.name === "send_message" && t.control === "approval"));
   const saved = await J("/api/agent/config", { method: "PATCH", body: { custom_instructions: "Never schedule on Sundays." } }, A());

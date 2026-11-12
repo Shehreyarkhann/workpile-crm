@@ -32,7 +32,8 @@ app.use((req: any, _res, next) => { // capture raw body for Stripe signature ver
   if (req.path === "/webhooks/stripe") { let raw = ""; req.on("data", (c: any) => raw += c); req.on("end", () => { req.rawBody = raw; try { req.body = JSON.parse(raw || "{}"); } catch { req.body = {}; } next(); }); }
   else next();
 });
-app.use(express.json({ limit: "50mb" }));
+const __json = express.json({ limit: "50mb" });
+app.use((req: any, res: any, next: any) => req.path === "/webhooks/stripe" ? next() : __json(req, res, next)); // v52: the Stripe path already consumed + parsed its raw body above; a second parse 500s on the ended stream (the webhook could never actually fire)
 // Rate limits (audit S-3): per-IP token buckets for auth + public write surfaces.
 const __rl = new Map<string, { n: number; reset: number }>();
 function rateLimit(bucket: string, max: number, windowMs: number) {
@@ -481,6 +482,13 @@ app.post("/api/leads/:id/packet-check", requireAuth, (req: any, res) => {
 // proposals
 app.get("/api/price-book", requireAuth, (req: any, res) => res.json(db.prepare("SELECT * FROM price_book_items WHERE workspace_id=?").all(req.user.workspace_id)));
 app.get("/api/templates", requireAuth, (req: any, res) => res.json(db.prepare("SELECT * FROM templates WHERE workspace_id=?").all(req.user.workspace_id)));
+// v52: newest version wins — creating or sending a version withdraws every
+// older unsigned version for the lead and stops its cadence.
+function supersedePriorProposals(ws: string, leadId: string, keepId: string, allUnsigned = false) {
+  const rows = db.prepare(`SELECT id FROM proposals WHERE workspace_id=? AND lead_id=? AND id<>? AND status IN (${allUnsigned ? "'draft','sent'" : "'sent'"})`).all(ws, leadId, keepId) as any[];
+  for (const r of rows) db.prepare("UPDATE proposals SET status='withdrawn' WHERE id=?").run(r.id);
+  if (rows.length) stopFollowups(leadId, "superseded");
+}
 app.post("/api/leads/:id/proposals", requireAuth, (req: any, res) => {
   const l = db.prepare("SELECT * FROM leads WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!l) return res.status(404).json({ error: { code: "not_found" } });
@@ -519,6 +527,7 @@ app.post("/api/leads/:id/proposals", requireAuth, (req: any, res) => {
   db.prepare("INSERT INTO proposals (id,workspace_id,lead_id,template_id,version,status,line_items,total,margin_band,win_prob_band,options,expires_at,created_at,number) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
     .run(id, req.user.workspace_id, l.id, req.body.template_id || resolveDocTemplateId(req.user.workspace_id, l.service_requested), count + 1, "draft", JSON.stringify(items), total, below ? "below_floor" : "in_band", total > 25000 ? "review" : "standard", options ? JSON.stringify(options) : null, expires, now(), pnum);
   const created = db.prepare("SELECT * FROM proposals WHERE id=?").get(id) as any;
+  supersedePriorProposals(req.user.workspace_id, l.id, id);
   for (const o of __overrides) { db.prepare("INSERT INTO price_overrides (id,workspace_id,proposal_id,lead_id,item_id,item_name,prev_price,new_price,reason,user_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(uid("ovr"), req.user.workspace_id, id, l.id, o.item_id, o.item_name, o.prev_price, o.new_price, o.reason, req.user.id, now()); }
   if (__overrides.length) audit(req.user.workspace_id, req.user.id, "proposal.price_override", "proposal", id, { overrides: __overrides });
   if (["PROPOSAL", "SENT", "FOLLOWUP"].includes(l.state)) maybeRequestApproval(req.user.workspace_id, req.user.id, l, created);
@@ -535,6 +544,7 @@ app.post("/api/proposals/:id/clone", requireAuth, (req: any, res) => { // v3 §8
   const expires = req.body.valid_days ? new Date(Date.now() + Number(req.body.valid_days) * 86400000).toISOString() : (src.expires_at && new Date(src.expires_at) > new Date() ? src.expires_at : new Date(Date.now() + 30 * 86400000).toISOString());
   db.prepare("INSERT INTO proposals (id,workspace_id,lead_id,template_id,version,status,line_items,total,margin_band,win_prob_band,options,expires_at,created_at,number) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
     .run(id, req.user.workspace_id, leadId, src.template_id, count + 1, "draft", src.line_items, src.total, src.margin_band, src.win_prob_band, src.options, expires, now(), leadId === src.lead_id ? (src.number ?? null) : (db.prepare("SELECT COALESCE(MAX(number),1000) m FROM proposals WHERE workspace_id=?").get(req.user.workspace_id) as any).m + 1);
+  supersedePriorProposals(req.user.workspace_id, leadId, id);
   res.status(201).json(db.prepare("SELECT * FROM proposals WHERE id=?").get(id));
 });
 
@@ -607,13 +617,13 @@ app.patch("/api/ai/provider", requireAuth, needPerm("can_settings"), async (req:
 app.post("/api/ai/provider/test", requireAuth, needPerm("can_settings"), async (req: any, res) => { const { getProvider, providerStatus } = await import("./llm.ts"); const st = providerStatus(req.user.workspace_id); if (!st.configured) return res.json({ ok: true, mode: "rules", message: "No AI provider connected — the agent runs on the deterministic rules planner. Add a provider key to enable generative planning." }); const p = getProvider(req.user.workspace_id); const t0 = Date.now(); try { const r = await p!.chat({ system: "Reply with the single word: ready", messages: [{ role: "user", content: "ping" }], maxTokens: 16 }); res.json({ ok: true, mode: "llm", model: r.model, latency_ms: Date.now() - t0, reply: r.text.slice(0, 40) }); } catch (e: any) { res.status(502).json({ ok: false, error: String(e?.message || e).slice(0, 200) }); } });
 app.get("/api/agent/config", requireAuth, async (req: any, res) => { const { AGENT_SYSTEM_PROMPT, houseRules } = await import("./agent.ts"); const { TOOL_LIST, TOOLS } = await import("./tools.ts"); const w = db.prepare("SELECT agent_level FROM workspaces WHERE id=?").get(req.user.workspace_id) as any; const { trustReport } = await import("./autonomy.ts"); res.json({ system_prompt: AGENT_SYSTEM_PROMPT, tools: TOOL_LIST.map((t: any) => ({ name: t.name, description: t.description, control: (TOOLS as any)[t.name]?.control || "read" })), trust: trustReport(req.user.workspace_id), custom_instructions: houseRules(req.user.workspace_id), agent_level: agentLevel(w) }); });
 app.patch("/api/agent/config", requireAuth, needPerm("can_settings"), (req: any, res) => { const v = String(req.body?.custom_instructions || "").slice(0, 2000); db.prepare("UPDATE workspaces SET agent_instructions=? WHERE id=?").run(v || null, req.user.workspace_id); audit(req.user.workspace_id, req.user.id, "agent.config", "workspace", req.user.workspace_id, { len: v.length }); res.json({ ok: true, custom_instructions: v }); });
-app.post("/api/agent/triage-untouched", requireAuth, async (req: any, res) => { const { createTriageExecution } = await import("./agent.ts"); const ex = await createTriageExecution(req.user.workspace_id, req.user.id); audit(req.user.workspace_id, req.user.id, "agent.triage", "agent_execution", ex.id, { status: ex.status }); res.status(201).json(ex); });
-app.post("/api/agent/execute", requireAuth, async (req: any, res) => { const text = String(req.body?.instruction || "").trim(); if (!text) return res.status(422).json({ error: { code: "empty_instruction" } }); const { createExecution } = await import("./agent.ts"); const ex = await createExecution(req.user.workspace_id, req.user.id, text.slice(0, 1000), req.body?.parent_id || undefined); audit(req.user.workspace_id, req.user.id, "agent.execute", "agent_execution", ex.id, { status: ex.status, planner: ex.planner }); res.status(201).json(ex); });
+app.post("/api/agent/triage-untouched", requireAuth, modGate("automations", "edit"), async (req: any, res) => { const { createTriageExecution } = await import("./agent.ts"); const ex = await createTriageExecution(req.user.workspace_id, req.user.id); audit(req.user.workspace_id, req.user.id, "agent.triage", "agent_execution", ex.id, { status: ex.status }); res.status(201).json(ex); });
+app.post("/api/agent/execute", requireAuth, modGate("automations", "edit"), async (req: any, res) => { const text = String(req.body?.instruction || "").trim(); if (!text) return res.status(422).json({ error: { code: "empty_instruction" } }); const { createExecution } = await import("./agent.ts"); const ex = await createExecution(req.user.workspace_id, req.user.id, text.slice(0, 1000), req.body?.parent_id || undefined); audit(req.user.workspace_id, req.user.id, "agent.execute", "agent_execution", ex.id, { status: ex.status, planner: ex.planner }); res.status(201).json(ex); });
 app.get("/api/agent/executions", requireAuth, async (req: any, res) => { const { getExecution } = await import("./agent.ts"); const ids = db.prepare("SELECT id FROM agent_executions WHERE workspace_id=? ORDER BY created_at DESC LIMIT 30").all(req.user.workspace_id) as any[]; res.json(ids.map(r => getExecution(req.user.workspace_id, r.id))); });
 app.get("/api/agent/executions/:id", requireAuth, async (req: any, res) => { const { getExecution } = await import("./agent.ts"); const ex = getExecution(req.user.workspace_id, req.params.id); if (!ex) return res.status(404).json({ error: { code: "not_found" } }); res.json(ex); });
-app.post("/api/agent/executions/:id/decide", requireAuth, async (req: any, res) => { const { decideSteps } = await import("./agent.ts"); try { const ex = await decideSteps(req.user.workspace_id, req.params.id, (req.body?.approve || []).map(String), (req.body?.reject || []).map(String), req.user.id); if (!ex) return res.status(404).json({ error: { code: "not_found" } }); audit(req.user.workspace_id, req.user.id, "agent.decide", "agent_execution", ex.id, { status: ex.status }); res.json(ex); } catch (e: any) { res.status(e.code === "already_final" ? 409 : 500).json({ error: { code: e.code || "decide_failed", message: String(e?.message || e) } }); } });
+app.post("/api/agent/executions/:id/decide", requireAuth, async (req: any, res) => { if (!permsOf(req.user).can_approve) return res.status(403).json({ error: { code: "cannot_approve", message: "Deciding agent steps — including sends and payments — requires approval permission." } }); const { decideSteps } = await import("./agent.ts"); try { const ex = await decideSteps(req.user.workspace_id, req.params.id, (req.body?.approve || []).map(String), (req.body?.reject || []).map(String), req.user.id); if (!ex) return res.status(404).json({ error: { code: "not_found" } }); audit(req.user.workspace_id, req.user.id, "agent.decide", "agent_execution", ex.id, { status: ex.status }); res.json(ex); } catch (e: any) { res.status(e.code === "already_final" ? 409 : 500).json({ error: { code: e.code || "decide_failed", message: String(e?.message || e) } }); } });
 app.post("/api/agent/executions/:id/cancel", requireAuth, async (req: any, res) => { const { cancelExecution } = await import("./agent.ts"); const ex = cancelExecution(req.user.workspace_id, req.params.id); if (!ex) return res.status(404).json({ error: { code: "not_found" } }); res.json(ex); });
-app.post("/api/agent/command", requireAuth, async (req: any, res) => { const text = String(req.body?.text || "").trim(); if (!text) return res.status(422).json({ error: { code: "empty_command" } }); const { runCommand } = await import("./orchestrator.ts"); const out = runCommand(req.user.workspace_id, req.user.id, text.slice(0, 500)); audit(req.user.workspace_id, req.user.id, "agent.command", "agent_run", out.run_id, { intent: out.intent }); res.status(201).json(out); });
+app.post("/api/agent/command", requireAuth, modGate("automations", "edit"), async (req: any, res) => { const text = String(req.body?.text || "").trim(); if (!text) return res.status(422).json({ error: { code: "empty_command" } }); const { runCommand } = await import("./orchestrator.ts"); const out = runCommand(req.user.workspace_id, req.user.id, text.slice(0, 500)); audit(req.user.workspace_id, req.user.id, "agent.command", "agent_run", out.run_id, { intent: out.intent }); res.status(201).json(out); });
 app.get("/api/agent/runs", requireAuth, async (req: any, res) => { res.json(db.prepare("SELECT id, output, created_at FROM agent_runs WHERE workspace_id=? AND agent='orchestrator' ORDER BY created_at DESC LIMIT 20").all(req.user.workspace_id).map((r: any) => ({ id: r.id, created_at: r.created_at, ...JSON.parse(r.output || "{}") }))); });
 app.get("/api/metrics", requireAuth, (req: any, res) => res.json(metrics(req.user.workspace_id)));
 app.get("/api/brief", requireAuth, (req: any, res) => res.json(morningBrief(req.user.workspace_id)));
@@ -730,9 +740,11 @@ app.get("/api/schedule/jobs", requireAuth, (req: any, res) => {
 const ensureInvoiceToken = (i: any): string => { if (!i.token) { i.token = uid("invtok") + randomBytes(12).toString("hex"); try { db.prepare("UPDATE invoices SET token=? WHERE id=?").run(i.token, i.id); } catch { /* read-only race */ } } return i.token; };
 const invView = (i: any) => ({ ...i, token: ensureInvoiceToken(i), link: "/invoice/" + ensureInvoiceToken(i), lines: JSON.parse(i.lines || "[]"), balance: Math.round(((i.total || 0) - (i.paid_amount || 0)) * 100) / 100, overdue: i.status !== "paid" && i.status !== "void" && i.due_at && new Date(i.due_at) < new Date() });
 app.get("/api/invoices", requireAuth, (req: any, res) => { res.json((db.prepare("SELECT i.*, l.service_requested FROM invoices i LEFT JOIN leads l ON l.id=i.lead_id WHERE i.workspace_id=? ORDER BY i.created_at DESC LIMIT 200").all(req.user.workspace_id) as any[]).map(invView)); });
-app.post("/api/jobs/:id/invoice", requireAuth, (req: any, res) => {
+app.post("/api/jobs/:id/invoice", requireAuth, async (req: any, res) => {
   const ws = req.user.workspace_id; const job = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, ws) as any;
   if (!job) return res.status(404).json({ error: { code: "not_found" } });
+  const paidInv = db.prepare("SELECT id FROM invoices WHERE job_id=? AND status='paid'").get(job.id);
+  if (paidInv) return res.status(409).json({ error: { code: "already_invoiced", message: "This job already has a paid invoice — a second full invoice would double-bill the customer." } });
   const open = db.prepare("SELECT id FROM invoices WHERE job_id=? AND status IN ('sent','partially_paid')").get(job.id);
   if (open) return res.status(409).json({ error: { code: "invoice_open", message: "This job already has an open invoice — collect or void it first." } });
   const n = ((db.prepare("SELECT COUNT(*) c FROM invoices WHERE workspace_id=?").get(ws) as any).c || 0) + 1;
@@ -743,7 +755,12 @@ app.post("/api/jobs/:id/invoice", requireAuth, (req: any, res) => {
     .run(id, ws, job.lead_id, job.id, job.proposal_id || null, "INV-" + String(n).padStart(4, "0"), "sent", JSON.stringify(lines), total, 0, new Date(Date.now() + (Number(req.body?.due_days || 30)) * 86400000).toISOString(), now(), now());
   db.prepare("UPDATE jobs SET invoice_status='invoiced' WHERE id=?").run(job.id);
   audit(ws, req.user.id, "invoice.created", "invoice", id, { job_id: job.id, total });
-  res.status(201).json(invView(db.prepare("SELECT * FROM invoices WHERE id=?").get(id)));
+  // v52: a deposit already collected on this lead is CREDITED here — the
+  // customer never pays the deposit twice.
+  let depositCredit = 0;
+  try { const { applyDepositsToInvoice } = await import("./payments.ts"); depositCredit = applyDepositsToInvoice(ws, db.prepare("SELECT * FROM invoices WHERE id=?").get(id)); } catch { /* crediting is best-effort; the invoice stands */ }
+  const view = invView(db.prepare("SELECT * FROM invoices WHERE id=?").get(id)); if (depositCredit > 0) (view as any).deposit_credit_applied = depositCredit;
+  res.status(201).json(view);
 });
 app.post("/api/invoices/:id/payments", requireAuth, (req: any, res) => {
   const ws = req.user.workspace_id; const inv = db.prepare("SELECT * FROM invoices WHERE id=? AND workspace_id=?").get(req.params.id, ws) as any;
@@ -1327,21 +1344,34 @@ app.get("/api/proposals/:id/docx", requireAuth, async (req: any, res) => {
 });
 
 // ---------- slice 2: inbox ingestion + triage (§25 P0-2) ----------
+// v52: resolve a sender to the lead they belong to, so replies are LINKED —
+// classification, labels, cadence stops and opportunities all key off lead_id.
+export function leadIdForEmail(ws: string, email: string): string | null {
+  const em = String(email || "").toLowerCase().trim(); if (!em) return null;
+  const c = db.prepare("SELECT id FROM contacts WHERE workspace_id=? AND LOWER(email)=?").get(ws, em) as any;
+  if (!c) return null;
+  const l = db.prepare("SELECT id FROM leads WHERE workspace_id=? AND contact_id=? ORDER BY created_at DESC").get(ws, c.id) as any;
+  return l?.id || null;
+}
 export function ingestBatch(ws: string, actorId: string, emails: any[]): { results: any[]; by_category: Record<string, number>; leads_created: number; duplicates: number } {
   const results: any[] = []; const by_category: Record<string, number> = {}; let leads_created = 0, duplicates = 0; const important: any[] = [];
   const ops = db.prepare("SELECT id FROM users WHERE workspace_id=? AND role='OPS_ADMIN' AND active=1").get(ws) as any;
   for (const e of emails) {
     const parsed = parseEmail(e);
     by_category[parsed.category] = (by_category[parsed.category] || 0) + 1;
-    if (parsed.is_lead) {
+    const knownLeadId = leadIdForEmail(ws, e.from_email || "");
+    if (parsed.is_lead && !knownLeadId) {
       const r = createLead(ws, "inbox", { contact: { name: e.from_name || "", phone: parsed.phone, email: e.from_email || "" }, service_requested: "", message: `${e.subject || ""}\n${e.body || ""}`, source: "email-inbox", created_at: e.received_at, bulk: true });
       if (r.duplicate) duplicates++; else leads_created++;
       results.push({ category: "lead", lead_id: r.lead.id, duplicate: r.duplicate });
     } else {
+      // Known senders NEVER route to lead creation (a reply is not a new lead) —
+      // their mail lands as a lead-linked inbox item so every downstream
+      // consequence (labels, stops, opportunities) can fire.
       const id = uid("inb");
-      db.prepare("INSERT INTO inbox_items (id,workspace_id,category,from_name,from_email,subject,body,owner_id,next_action_due_at,received_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
-        .run(id, ws, parsed.category, e.from_name || "", e.from_email || "", e.subject || "", e.body || "", ops?.id || actorId, new Date(Date.now() + 86400000).toISOString(), e.received_at || now(), now());
-      results.push({ category: parsed.category, inbox_item_id: id });
+      db.prepare("INSERT INTO inbox_items (id,workspace_id,category,from_name,from_email,subject,body,owner_id,next_action_due_at,received_at,created_at,lead_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+        .run(id, ws, parsed.category, e.from_name || "", e.from_email || "", e.subject || "", e.body || "", ops?.id || actorId, new Date(Date.now() + 86400000).toISOString(), e.received_at || now(), now(), knownLeadId);
+      results.push({ category: parsed.category, inbox_item_id: id, lead_id: knownLeadId || undefined });
       if (["client_active_job", "proposal"].includes(parsed.category)) important.push({ category: parsed.category, subject: e.subject || "(no subject)", from: e.from_name || e.from_email || "unknown" });
     }
   }
@@ -1768,7 +1798,8 @@ app.get("/pay/test/:paymentId", (req, res) => {
 app.post("/pay/test/:paymentId", express.urlencoded({ extended: false }), (req, res) => { markPaid(req.params.paymentId); res.redirect(`/pay/test/${req.params.paymentId}`); });
 app.post("/webhooks/stripe", (req: any, res) => {
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
-  if (secret) { if (!verifyStripeSignature(req.rawBody || "", req.headers["stripe-signature"] || "", secret)) return res.status(400).json({ error: { code: "invalid_signature" } }); }
+  if (!secret) return res.status(503).json({ error: { code: "webhook_not_configured", message: "Stripe webhook secret is not configured — events are refused rather than trusted unsigned." } });
+  if (!verifyStripeSignature(req.rawBody || "", req.headers["stripe-signature"] || "", secret)) return res.status(400).json({ error: { code: "invalid_signature" } });
   handleStripeEvent(req.body);
   handleBillingEvent(req.body);
   res.json({ received: true });
@@ -1786,7 +1817,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-export const APP_VERSION = "v51";
+export const APP_VERSION = "v52";
 app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: APP_VERSION, jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {
@@ -2280,6 +2311,7 @@ app.post("/api/proposals/:id/send", requireAuth, async (req: any, res) => {
   if (!["sent", "delivered", "test_mode"].includes(r.status)) return res.status(502).json({ error: { code: "delivery_failed", message: `Delivery failed (status: ${r.status}) — the proposal was NOT marked sent and no follow-ups were scheduled. Fix the channel and retry.` } });
   db.prepare("UPDATE proposals SET status='sent', sent_at=? WHERE id=?").run(now(), p.id);
   db.prepare("UPDATE proposals SET delivery_mode=? WHERE id=?").run(r.status === "test_mode" ? "test" : "live", p.id);
+  supersedePriorProposals(req.user.workspace_id, l.id, p.id, true);
   emitOutbox(req.user.workspace_id, "proposal.sent", p.id, { lead_id: l.id, total: p.total, channel });
   if (["NEW", "WORKING", "QUALIFIED", "PROPOSAL"].includes(l.state)) setStage(req.user.workspace_id, req.user.id, l, "SENT");
   enrollFollowup(req.user.workspace_id, l.id, p.id);
@@ -2370,7 +2402,7 @@ app.post("/v1/leads/:id/outcome", requireApiKey(["outcomes:write"]), (req: any, 
 app.post("/v1/inbox", requireApiKey(["leads:write"]), (req: any, res) => {
   const e = req.body; const parsed = parseEmail(e);
   if (parsed.is_lead) { const r = createLead(req.workspace_id, "inbox-api", { contact: { name: e.from_name || "", phone: parsed.phone, email: e.from_email || "" }, service_requested: "", message: `${e.subject || ""}\n${e.body || ""}`, source: "email-api", created_at: e.received_at }); return res.status(201).json({ category: "lead", lead_id: r.lead.id, duplicate: r.duplicate }); }
-  const id = uid("inb"); db.prepare("INSERT INTO inbox_items (id,workspace_id,category,from_name,from_email,subject,body,owner_id,next_action_due_at,received_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(id, req.workspace_id, parsed.category, e.from_name || "", e.from_email || "", e.subject || "", e.body || "", null, new Date(Date.now() + 86400000).toISOString(), e.received_at || now(), now());
+  const id = uid("inb"); db.prepare("INSERT INTO inbox_items (id,workspace_id,category,from_name,from_email,subject,body,owner_id,next_action_due_at,received_at,created_at,lead_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)").run(id, req.workspace_id, parsed.category, e.from_name || "", e.from_email || "", e.subject || "", e.body || "", null, new Date(Date.now() + 86400000).toISOString(), e.received_at || now(), now(), leadIdForEmail(req.workspace_id, e.from_email || ""));
   res.status(201).json({ category: parsed.category, inbox_item_id: id });
 });
 app.get("/openapi.json", (_req: any, res) => res.json(OPENAPI_SPEC));
@@ -2549,13 +2581,22 @@ app.post("/v1/missed-call", requireApiKey(["leads:write"]), async (req: any, res
   const digits = phone.replace(/\D/g, "").slice(-10);
   const existing = db.prepare(`SELECT l.* FROM leads l JOIN contacts c ON c.id=l.contact_id WHERE l.workspace_id=? AND REPLACE(REPLACE(REPLACE(c.phone,'-',''),' ',''),'(','') LIKE ? AND l.state NOT IN ('WON','LOST','NO_RESPONSE','UNSERVICEABLE','JUNK','DUPLICATE') ORDER BY l.created_at DESC LIMIT 1`).get(ws, "%" + digits) as any;
   let lead = existing, created = false;
-  if (!lead) { const r = createLead(ws, "missed-call", { contact: { name: req.body.name || "", phone, email: req.body.email || "" }, service_requested: req.body.service || "", message: "Missed call — auto text-back sent", source: "missed-call", consent: { contact_ok: true } }); lead = r.lead; created = true; }
-  if (lead && !lead.consent_contact_ok) { db.prepare("UPDATE leads SET consent_contact_ok=1, consent_source='inbound_call' WHERE id=?").run(lead.id); lead.consent_contact_ok = 1; }
-  const wsRow = db.prepare("SELECT name FROM workspaces WHERE id=?").get(ws) as any;
-  const msg = await queueAndDeliver(ws, { lead_id: lead.id, channel: "sms", to: phone, body: `Hi, this is ${wsRow.name} — sorry we missed your call. How can we help? Reply here and a real person picks it up.` });
-  logEvent(ws, lead.id, "missed-call", "speed_to_lead", null, null, { created, status: (msg as any).status });
+  // v52: a missed call justifies ONE transactional text-back — never a
+  // manufactured marketing consent. New leads are created WITHOUT consent;
+  // existing leads' consent is never rewritten by an API call.
+  if (!lead) { const r = createLead(ws, "missed-call", { contact: { name: req.body.name || "", phone, email: req.body.email || "" }, service_requested: req.body.service || "", message: "Missed call — auto text-back sent", source: "missed-call" }); lead = r.lead; created = true; }
+  if (!lead) return res.status(422).json({ error: { code: "lead_failed" } });
+  const recent = db.prepare("SELECT id FROM lead_events WHERE workspace_id=? AND lead_id=? AND type='missed_call_textback' AND created_at>?").get(ws, lead.id, new Date(Date.now() - 86400000).toISOString()) as any;
+  if (recent) return res.json({ lead_id: lead.id, created, text_back_status: "skipped_recent" });
+  const wsRow = db.prepare("SELECT * FROM workspaces WHERE id=?").get(ws) as any;
+  const first = String(req.body.name || lead.contact_name || "").split(/\s+/)[0];
+  const tpl = wsRow.missed_call_text || "Hi{first}, this is {business} — sorry we missed your call! Tell us what you need and we'll get right back to you.";
+  const body = tpl.replaceAll("{business}", wsRow.name || "").replaceAll("{first}", first ? " " + first : "");
+  const msg: any = await queueAndDeliver(ws, { lead_id: lead.id, channel: "sms", to: phone, body, transactional: true });
+  logEvent(ws, lead.id, "missed-call", "missed_call_textback", null, (msg as any)?.status || "queued", { phone });
+  db.prepare("INSERT INTO tasks (id,workspace_id,lead_id,assignee_id,type,title,due_at,status,created_at) VALUES (?,?,?,?,'call',?,?,'open',?)").run(uid("tsk"), ws, lead.id, lead.owner_id || null, `📞 Call back ${req.body.name || phone} — missed call`, new Date(Date.now() + 3600000).toISOString(), now());
   notifyOwners(ws, "call.missed", "Missed call — text-back sent ⚡", `${phone} called; an instant text-back went out and the lead is in the pile.`, lead.id);
-  res.status(created ? 201 : 200).json({ lead_id: lead.id, created, text_back_status: (msg as any).status });
+  res.status(created ? 201 : 200).json({ lead_id: lead.id, created, text_back_status: (msg as any)?.status || "queued" });
 });
 // ---------- slice 16: AI v2 — suggestions, actions, automations, activity ----------
 app.get("/api/ai/insights", requireAuth, (req: any, res) => res.json(insightsV2(req.user.workspace_id)));
