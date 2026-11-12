@@ -26,7 +26,9 @@ export function initSchema() {
   db.exec(`
   PRAGMA journal_mode = WAL;
   CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, name TEXT, vertical TEXT, timezone TEXT DEFAULT 'America/New_York', plan TEXT DEFAULT 'growth', autonomy_level INTEGER DEFAULT 1, created_at TEXT);
-  CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, workspace_id TEXT, name TEXT, email TEXT UNIQUE, password_hash TEXT, role TEXT, approval_limit REAL DEFAULT 0, active INTEGER DEFAULT 1);
+  CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, workspace_id TEXT, name TEXT, email TEXT UNIQUE, password_hash TEXT, role TEXT, approval_limit REAL DEFAULT 0, active INTEGER DEFAULT 1, password_set INTEGER DEFAULT 1);
+  CREATE TABLE IF NOT EXISTS user_identities (id TEXT PRIMARY KEY, user_id TEXT, provider TEXT, subject TEXT, email TEXT, created_at TEXT, UNIQUE(provider, subject));
+  CREATE TABLE IF NOT EXISTS auth_states (state_hash TEXT PRIMARY KEY, provider TEXT, code_verifier TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, user_id TEXT, created_at TEXT, expires_at TEXT);
   CREATE TABLE IF NOT EXISTS contacts (id TEXT PRIMARY KEY, workspace_id TEXT, name TEXT, phone TEXT, email TEXT, address TEXT, is_customer INTEGER DEFAULT 0, merged_into_id TEXT);
   CREATE TABLE IF NOT EXISTS sources (id TEXT PRIMARY KEY, workspace_id TEXT, type TEXT, name TEXT);
@@ -197,6 +199,7 @@ export function initSchema() {
     "ALTER TABLE contacts ADD COLUMN title TEXT",
     "ALTER TABLE jobs ADD COLUMN custom TEXT DEFAULT '{}'",
     "ALTER TABLE users ADD COLUMN permissions TEXT",
+    "ALTER TABLE users ADD COLUMN password_set INTEGER DEFAULT 1",
     "ALTER TABLE workspaces ADD COLUMN auto_assign INTEGER DEFAULT 0",
     "ALTER TABLE workspaces ADD COLUMN auto_dedupe INTEGER DEFAULT 0",
     "ALTER TABLE workspaces ADD COLUMN auto_reactivate INTEGER DEFAULT 0",

@@ -1910,6 +1910,9 @@ function Landing({ onAuth }: any) {
   const [mode, setMode] = useState<"home" | "login" | "register" | "forgot" | "reset">(qs.get("reset") ? "reset" : "home");
   const [resetToken] = useState(qs.get("reset") || ""); const [authNote, setAuthNote] = useState("");
   useEffect(() => { const v = qs.get("verify"); if (v) { api("/api/auth/verify", { method: "POST", body: { token: v } }).then(() => { setAuthNote("Email verified \u2713 \u2014 sign in to continue."); setMode("login"); }).catch(() => { setAuthNote("That verification link is invalid or expired."); setMode("login"); }); } }, []);
+  const [social, setSocial] = useState<any>(null);
+  useEffect(() => { api("/api/auth/social/status").then(setSocial).catch(() => {}); }, []);
+  useEffect(() => { const ae = qs.get("auth_error"); if (ae) { setMode("login"); setErr(({ state_mismatch: "That sign-in attempt expired or didn't match — please try again.", email_unverified: "Your provider didn't verify that email address, so it can't be used to sign in.", cancelled: "Sign-in was cancelled.", account_disabled: "This account has been disabled.", not_configured: "That sign-in option isn't set up yet — use your email and password.", unknown_provider: "Unknown sign-in option." } as any)[ae] || "Social sign-in didn't complete — use your email and password."); history.replaceState({}, "", "/app"); } }, []);
   const [f, setF] = useState<any>({ name: "", email: "", password: "", business_name: "" });
   const [err, setErr] = useState("");
   const submit = async () => { try { setErr(""); const r = mode === "register" ? await api("/api/auth/register", { method: "POST", body: f }) : await api("/api/auth/login", { method: "POST", body: { email: f.email, password: f.password } }); onAuth(r.user); } catch (e: any) { setErr(e.message); } };
@@ -1920,7 +1923,12 @@ function Landing({ onAuth }: any) {
     <div className="authForm"><div className="authCard">
       <button className="btn ghost small" onClick={() => setMode("home")}>← Back</button>
       {mode === "forgot" && <><h3 style={{ marginTop: 16 }}>Reset your password</h3><p className="muted">We'll email you a one-hour reset link.</p>{authNote && <div className="ok" style={{ marginBottom: 8 }}>{authNote}</div>}
-        <label className="f">Work email</label><input value={f.email} onChange={e => setF({ ...f, email: e.target.value })} placeholder="you@company.com" />
+        {social && (social.google || social.microsoft) && <div style={{ margin: "6px 0 2px" }}>
+        {social.google && <a className="btn ghost" style={{ width: "100%", padding: 12, display: "block", textAlign: "center", marginBottom: 8, boxSizing: "border-box" }} href="/api/auth/social/google/start">Continue with Google</a>}
+        {social.microsoft && <a className="btn ghost" style={{ width: "100%", padding: 12, display: "block", textAlign: "center", boxSizing: "border-box" }} href="/api/auth/social/microsoft/start">Continue with Microsoft</a>}
+        <div className="muted" style={{ textAlign: "center", fontSize: 12, margin: "10px 0 0" }}>or with your email</div>
+      </div>}
+      <label className="f">Work email</label><input value={f.email} onChange={e => setF({ ...f, email: e.target.value })} placeholder="you@company.com" />
         <button className="btn" style={{ width: "100%", marginTop: 12, padding: 12 }} onClick={async () => { const r = await api("/api/auth/forgot", { method: "POST", body: { email: f.email } }).catch((e: any) => ({ error: e.message })); if (r.reset_url) setAuthNote("Test mode (no email provider configured): use this link \u2014 " + r.reset_url); else setAuthNote(r.error ? r.error : "If that email has an account, a reset link is on its way."); }}>Send reset link \u2192</button>
         <p className="muted" style={{ fontSize: 13, marginTop: 12 }}><a href="#" onClick={e => { e.preventDefault(); setMode("login"); }}>Back to sign in</a></p></>}
       {mode === "reset" && <><h3 style={{ marginTop: 16 }}>Choose a new password</h3>{authNote && <div className="ok" style={{ marginBottom: 8 }}>{authNote}</div>}{err && <div className="err">{err}</div>}
@@ -1934,7 +1942,7 @@ function Landing({ onAuth }: any) {
       <label className="f">Password</label><input type="password" value={f.password} onChange={e => setF({ ...f, password: e.target.value })} placeholder={mode === "register" ? "8+ characters" : "Your password"} />
       <button className="btn" style={{ width: "100%", marginTop: 12, padding: 12 }} onClick={submit}>{mode === "register" ? "Create my workspace →" : "Sign in →"}</button>
       <p className="muted" style={{ fontSize: 13, marginTop: 12 }}>{mode === "register" ? <>Already have an account? <a href="#" onClick={e => { e.preventDefault(); setMode("login"); }}>Sign in</a></> : <>New to Workpile? <a href="#" onClick={e => { e.preventDefault(); setMode("register"); }}>Start free trial</a> · <a href="#" onClick={e => { e.preventDefault(); setMode("forgot"); }}>Forgot password?</a></>}</p>
-      <p className="muted" style={{ fontSize: 12.5 }}>Demo workspace: owner@demo.test / demo1234</p></>}
+</>}
     </div></div></div>);
   const FEATS: [string, string, string][] = [
     ["🧹", "Backlog Clear", "Import or sync years of piled-up leads. AI triages, dedupes, scores, and buckets them hot / warm / stale with a projected clear date."],

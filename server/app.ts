@@ -363,6 +363,12 @@ export function agendaMine(user: any, kind: string, row: any, lead: any): boolea
   if (kind === "schedule") { if (row.user_id === user.id) return true; if (row.worker_id) { const w = db.prepare("SELECT linked_user_id FROM workers WHERE id=?").get(row.worker_id) as any; if (w?.linked_user_id === user.id) return true; } return !!lead && leadVisible(user, lead); }
   return !!lead && leadVisible(user, lead);
 }
+import { SOCIAL_PROVIDERS, socialConfigured, beginSocial, consumeSocialState, exchangeSocial, resolveSocialUser } from "./social-auth.ts";
+// Absolute base for provider-facing URLs: BASE_URL wins (prod sits behind a
+// TLS proxy, so req.protocol can read http and providers would reject the
+// redirect URI). Falls back to the request for local dev.
+export const publicBase = (req: any) => (process.env.BASE_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
+const sessionCookie = (req: any, sid: string, maxAge = 604800) => `lf_session=${sid}; HttpOnly; Path=/; Max-Age=${maxAge}; SameSite=Lax${publicBase(req).startsWith("https") ? "; Secure" : ""}`;
 const scopeOwn = (user: any) => permsOf(user).leads_scope === "own";
 const mine = (user: any, l: any) => l.owner_id === user.id || l.pm_id === user.id;
 function needPerm(key: keyof Perms) { return (req: any, res: any, next: any) => { if (!permsOf(req.user)[key]) return res.status(403).json({ error: { code: "permission_denied", permission: key } }); next(); }; }
@@ -374,7 +380,7 @@ app.post("/api/auth/login", (req, res) => {
   syncPlatformAdmin();
   const sid = uid("ses") + randomBytes(16).toString("hex");
   db.prepare("INSERT INTO sessions (id,user_id,created_at,expires_at) VALUES (?,?,?,?)").run(sid, u.id, now(), new Date(Date.now() + 7 * 86400000).toISOString());
-  res.setHeader("Set-Cookie", `lf_session=${sid}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax`);
+  res.setHeader("Set-Cookie", sessionCookie(req, sid));
   res.json({ user: { id: u.id, name: u.name, email: u.email, role: u.role, workspace_id: u.workspace_id, is_platform_admin: !!u.is_platform_admin , email_verified: u.email_verified ?? 0, permissions: permsOf(u) }, session: sid });
 });
 app.get("/api/auth/me", requireAuth, (req: any, res) => { ensureMembership(req.user); const ws = db.prepare("SELECT name FROM workspaces WHERE id=?").get(req.user.workspace_id) as any; const __imp = (req as any).session?.impersonated_by ? { by_name: (db.prepare("SELECT name FROM users WHERE id=?").get((req as any).session.impersonated_by) as any)?.name || "platform admin", expires_at: (req as any).session.impersonation_expires_at } : null; res.json({ user: { id: req.user.id, name: req.user.name, email: req.user.email, role: req.user.role, avatar_url: req.user.avatar_url || null, approval_limit: req.user.approval_limit || 0, workspace_id: req.user.workspace_id, workspace_name: ws?.name, workspace_suspended: !!(db.prepare("SELECT suspended FROM workspaces WHERE id=?").get(req.user.workspace_id) as any)?.suspended, email_verified: req.user.email_verified ?? 0, is_platform_admin: !!req.user.is_platform_admin, impersonation: __imp, permissions: permsOf(req.user) }, workspaces: membershipsOf(req.user.id) }); });
@@ -1822,7 +1828,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-export const APP_VERSION = "v54";
+export const APP_VERSION = "v55";
 app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: APP_VERSION, jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {
@@ -1833,7 +1839,7 @@ app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any,
   db.prepare("INSERT INTO sessions (id,user_id,created_at,expires_at,impersonated_by,impersonation_expires_at) VALUES (?,?,?,?,?,?)").run(sid, target.id, now(), exp, req.user.id, exp);
   audit(target.workspace_id, req.user.id, "impersonation.start", "user", target.id, { admin_email: req.user.email, target_email: target.email, expires_at: exp });
   emitOutbox(target.workspace_id, "admin.impersonation_started", target.id, { admin: req.user.id });
-  res.setHeader("Set-Cookie", `lf_session=${sid}; HttpOnly; Path=/; Max-Age=3600; SameSite=Lax`);
+  res.setHeader("Set-Cookie", sessionCookie(req, sid, 3600));
   res.json({ ok: true, impersonating: { user_id: target.id, name: target.name, email: target.email, workspace_id: target.workspace_id, expires_at: exp } });
 });
 app.post("/api/auth/impersonation/exit", requireAuth, (req: any, res) => {
@@ -1845,7 +1851,7 @@ app.post("/api/auth/impersonation/exit", requireAuth, (req: any, res) => {
   db.prepare("DELETE FROM sessions WHERE id=?").run(sess.id);
   const sid = uid("ses"); const exp = new Date(Date.now() + 7 * 86400000).toISOString();
   db.prepare("INSERT INTO sessions (id,user_id,created_at,expires_at) VALUES (?,?,?,?)").run(sid, admin.id, now(), exp);
-  res.setHeader("Set-Cookie", `lf_session=${sid}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax`);
+  res.setHeader("Set-Cookie", sessionCookie(req, sid));
   res.json({ ok: true, restored: { user_id: admin.id, name: admin.name } });
 });
 app.get("/api/admin/workspaces", requireAuth, requirePlatformAdmin, (_req: any, res) => res.json(workspaceHealth()));
@@ -2125,7 +2131,7 @@ const oauthCallback = async (req: any, res: any) => {
   const prov = String(req.params.provider || req.query.provider || "");
   if (!code || !wsId || !prov) return res.redirect("/app?mail=error");
   try {
-    const base = `${req.protocol}://${req.get("host")}`;
+    const base = publicBase(req);
     const { exchangeCode, profileEmail } = await import("./mail-sync.ts");
     const tokens = await exchangeCode(prov, code, oauthRedirect(base, prov));
     if (!tokens.refresh_token) return res.redirect("/app?mail=no_refresh");
@@ -2138,10 +2144,10 @@ const oauthCallback = async (req: any, res: any) => {
 app.get("/api/oauth/callback", oauthCallback);
 app.get("/api/oauth/callback/:provider", oauthCallback);
 app.get("/api/quickbooks/status", requireAuth, async (req: any, res: any) => { const { qbConfigured, qbConnection } = await import("./quickbooks.ts"); res.json({ configured: qbConfigured(), connection: qbConnection(req.user.workspace_id) || null }); });
-app.get("/api/quickbooks/start", requireAuth, async (req: any, res: any) => { const { qbConfigured, qbAuthUrl } = await import("./quickbooks.ts"); if (!qbConfigured()) return res.status(409).json({ error: { code: "provider_not_configured", message: "Register the Intuit app (INTUIT_CLIENT_ID/SECRET) on this deployment to enable QuickBooks." } }); const base = `${req.protocol}://${req.get("host")}`; res.json({ url: qbAuthUrl(req.user.workspace_id, `${base}/api/quickbooks/callback`) }); });
+app.get("/api/quickbooks/start", requireAuth, async (req: any, res: any) => { const { qbConfigured, qbAuthUrl } = await import("./quickbooks.ts"); if (!qbConfigured()) return res.status(409).json({ error: { code: "provider_not_configured", message: "Register the Intuit app (INTUIT_CLIENT_ID/SECRET) on this deployment to enable QuickBooks." } }); const base = publicBase(req); res.json({ url: qbAuthUrl(req.user.workspace_id, `${base}/api/quickbooks/callback`) }); });
 app.get("/api/quickbooks/callback", async (req: any, res: any) => { const code = String(req.query.code || ""); const state = String(req.query.state || ""); const realmId = String(req.query.realmId || "");
   const wsId = state.includes(".") ? state.split(".").slice(1).join(".") : ""; if (!code || !wsId || !realmId) return res.redirect("/app?qb=error");
-  try { const { qbExchange } = await import("./quickbooks.ts"); const base = `${req.protocol}://${req.get("host")}`; const tokens = await qbExchange(code, `${base}/api/quickbooks/callback`);
+  try { const { qbExchange } = await import("./quickbooks.ts"); const base = publicBase(req); const tokens = await qbExchange(code, `${base}/api/quickbooks/callback`);
     db.prepare("INSERT INTO quickbooks_connections (workspace_id, realm_id, refresh_token, status, created_at, updated_at) VALUES (?,?,?,'connected',?,?) ON CONFLICT(workspace_id) DO UPDATE SET realm_id=excluded.realm_id, refresh_token=excluded.refresh_token, status='connected', updated_at=excluded.updated_at").run(wsId, realmId, tokens.refresh_token, now(), now());
     res.redirect("/app?qb=connected"); } catch { res.redirect("/app?qb=error"); } });
 app.delete("/api/quickbooks", requireAuth, (req: any, res: any) => { db.prepare("UPDATE quickbooks_connections SET status='disconnected', refresh_token=NULL, updated_at=? WHERE workspace_id=?").run(now(), req.user.workspace_id); res.json({ ok: true }); });
@@ -2162,7 +2168,7 @@ app.get("/api/onboarding/status", requireAuth, (req: any, res: any) => { const w
   res.json({ steps, done, total: steps.length, complete: done === steps.length, pct: Math.round((done / steps.length) * 100) }); });
 app.delete("/api/oauth/connections/:id", requireAuth, (req: any, res: any) => { const c = db.prepare("SELECT * FROM oauth_connections WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any; if (!c) return res.status(404).json({ error: { code: "not_found" } }); db.prepare("UPDATE oauth_connections SET status='disconnected', token_ref=NULL WHERE id=?").run(c.id); res.json({ ok: true }); });
 app.get("/api/oauth/:provider/start", requireAuth, (req: any, res) => {
-  const base = `${req.protocol}://${req.get("host")}`;
+  const base = publicBase(req);
   const r = authUrl(req.params.provider, req.user.workspace_id, oauthRedirect(base, req.params.provider));
   if (!r.configured) return res.status(409).json({ error: { code: "provider_not_configured", message: "Register the provider app (client ID/secret) on this deployment to enable this connection." } });
   res.json({ url: r.url });
@@ -2203,10 +2209,46 @@ app.post("/api/auth/register", (req: any, res) => {
   const userId = uid("usr"); db.prepare("INSERT INTO users (id,workspace_id,name,email,password_hash,role,approval_limit) VALUES (?,?,?,?,?,?,?)").run(userId, wsId, name, email, hashPassword(password), "OWNER", 0);
   db.prepare("INSERT INTO memberships (user_id,workspace_id,role,created_at) VALUES (?,?,?,?)").run(userId, wsId, "OWNER", now());
   const sid = uid("ses"); db.prepare("INSERT INTO sessions (id,user_id,created_at,expires_at) VALUES (?,?,?,?)").run(sid, userId, now(), new Date(Date.now() + 7 * 86400000).toISOString());
-  res.setHeader("Set-Cookie", `lf_session=${sid}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax`);
+  res.setHeader("Set-Cookie", sessionCookie(req, sid));
   const vraw = issueAuthToken(userId, "verify", 24);
   queueAndDeliver(wsId, { channel: "email", to: email, subject: "Verify your Workpile email", body: `Welcome to Workpile, ${name}!\n\nConfirm your email: ${req.protocol}://${req.get("host")}/app?verify=${vraw}` }).catch(() => {});
   res.status(201).json({ user: { id: userId, name, email, role: "OWNER", workspace_id: wsId }, workspaces: membershipsOf(userId) });
+});
+// ---------- social sign-in (v55): Continue with Google / Microsoft ----------
+app.get("/api/auth/social/status", (_req: any, res) => res.json({ google: socialConfigured("google"), microsoft: socialConfigured("microsoft"), apple: false }));
+const socialFail = (res: any, code: string) => res.redirect(`/app?auth_error=${code}`);
+app.get("/api/auth/social/:provider/start", (req: any, res: any) => {
+  const prov = String(req.params.provider || "");
+  if (!SOCIAL_PROVIDERS[prov]) return socialFail(res, "unknown_provider");
+  const b = beginSocial(prov, `${publicBase(req)}/api/auth/social/${prov}/callback`);
+  if (!b) return socialFail(res, "not_configured");
+  res.setHeader("Set-Cookie", `wp_social_state=${b.state}; HttpOnly; Path=/api/auth/social; Max-Age=600; SameSite=Lax${publicBase(req).startsWith("https") ? "; Secure" : ""}`);
+  res.redirect(b.url);
+});
+app.get("/api/auth/social/:provider/callback", async (req: any, res: any) => {
+  const prov = String(req.params.provider || "");
+  const clearState = "wp_social_state=; HttpOnly; Path=/api/auth/social; Max-Age=0";
+  try {
+    if (!SOCIAL_PROVIDERS[prov] || !socialConfigured(prov)) { res.setHeader("Set-Cookie", clearState); return socialFail(res, "not_configured"); }
+    if (req.query.error) { res.setHeader("Set-Cookie", clearState); return socialFail(res, "cancelled"); }
+    const cookieState = (req.headers.cookie || "").split(";").map((s: string) => s.trim()).find((s: string) => s.startsWith("wp_social_state="))?.split("=").slice(1).join("=") || "";
+    const qState = String(req.query.state || "");
+    const match = !!cookieState && !!qState && cookieState.length === qState.length && timingSafeEqual(Buffer.from(cookieState), Buffer.from(qState));
+    if (!match) { res.setHeader("Set-Cookie", clearState); return socialFail(res, "state_mismatch"); }
+    const verifier = consumeSocialState(prov, qState);
+    res.setHeader("Set-Cookie", clearState);
+    if (!verifier) return socialFail(res, "state_mismatch");
+    const code = String(req.query.code || ""); if (!code) return socialFail(res, "cancelled");
+    const profile = await exchangeSocial(prov, code, verifier, `${publicBase(req)}/api/auth/social/${prov}/callback`);
+    if (!profile.emailVerified) return socialFail(res, "email_unverified");
+    const { user } = resolveSocialUser(prov, profile, { workspaceDefaults, ensureSubscription });
+    if ((user as any).disabled && !(user as any).is_platform_admin) return socialFail(res, "account_disabled");
+    syncPlatformAdmin();
+    const sid = uid("ses") + randomBytes(16).toString("hex");
+    db.prepare("INSERT INTO sessions (id,user_id,created_at,expires_at) VALUES (?,?,?,?)").run(sid, user.id, now(), new Date(Date.now() + 7 * 86400000).toISOString());
+    res.setHeader("Set-Cookie", sessionCookie(req, sid));
+    res.redirect("/app");
+  } catch { if (!res.headersSent) res.setHeader("Set-Cookie", clearState); return socialFail(res, "failed"); }
 });
 app.get("/api/workspaces", requireAuth, (req: any, res) => { ensureMembership(req.user); res.json({ current: req.user.workspace_id, workspaces: membershipsOf(req.user.id) }); });
 app.post("/api/workspaces", requireAuth, (req: any, res) => {
