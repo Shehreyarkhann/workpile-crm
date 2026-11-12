@@ -6,7 +6,8 @@
 // honest delivery states apply exactly as everywhere else. A campaign only sends
 // after a human launches it — the launch IS the approval for its reviewed steps.
 import { db, uid, now } from "./db.ts";
-import { queueAndDeliver } from "./comms.ts";
+import { queueAndDeliver, notifyOwners } from "./comms.ts";
+import { pickSender } from "./deliverability.ts";
 import { addBusinessDays } from "./followups.ts";
 
 const FINALS = ["WON", "LOST", "NO_RESPONSE", "UNSERVICEABLE", "JUNK", "DUPLICATE"];
@@ -114,6 +115,14 @@ function leadRepliedSince(lead: any, sinceIso: string): boolean {
 export async function processCampaigns(_baseUrl = ""): Promise<{ sent: number; stopped: number; deferred: number }> {
   // OOO Smart Pause expiry: paused-by-OOO enrollments whose hold has passed resume
   db.prepare("UPDATE campaign_enrollments SET status='active', stop_reason=NULL, updated_at=? WHERE status='paused' AND stop_reason='ooo' AND next_due_at<=?").run(now(), now());
+  // Deliverability guardrail (v44): a campaign whose 7-day delivery-failure rate
+  // exceeds 5% on real volume auto-pauses before it burns the sending domain.
+  const actives = db.prepare("SELECT * FROM campaigns WHERE kind='outreach' AND status='active'").all() as any[];
+  for (const ac of actives) {
+    const s = db.prepare("SELECT SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) sent, SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) failed FROM campaign_sends WHERE campaign_id=? AND created_at>=?").get(ac.id, new Date(Date.now() - 7 * 86400000).toISOString()) as any;
+    const attempts = (s?.sent || 0) + (s?.failed || 0);
+    if (attempts >= 20 && (s.failed || 0) / attempts > 0.05) { db.prepare("UPDATE campaigns SET status='paused', updated_at=? WHERE id=?").run(now(), ac.id); notifyOwners(ac.workspace_id, "campaign.autopaused", `⏸ Campaign auto-paused: ${ac.name}`, `Delivery failures hit ${Math.round(((s.failed || 0) / attempts) * 100)}% over the last 7 days (${s.failed} of ${attempts}). Check the sending domain under Settings → Deliverability before resuming.`, undefined); }
+  }
   const due = db.prepare("SELECT e.* FROM campaign_enrollments e JOIN campaigns c ON c.id=e.campaign_id WHERE e.status='active' AND e.next_due_at<=? AND c.kind='outreach' AND c.status='active' ORDER BY e.next_due_at LIMIT 25").all(now()) as any[];
   let sent = 0, stopped = 0, deferred = 0;
   const capChecked = new Map<string, number>();
@@ -147,15 +156,23 @@ export async function processCampaigns(_baseUrl = ""): Promise<{ sent: number; s
       const seed = e.id + "::step" + e.step_idx + "::v" + vIdx;
       const body = renderOutreach(all[vIdx].body, vars, seed);
       const subject = step.channel === "email" ? renderOutreach(all[vIdx].subject || "", vars, seed) : undefined;
-      const delivered = await queueAndDeliver(e.workspace_id, { lead_id: lead.id, channel: step.channel, to, subject, body });
+      let sender: any = null;
+      if (step.channel === "email") {
+        const rot = (db.prepare("SELECT COUNT(*) n FROM campaign_sends WHERE campaign_id=? AND status='sent'").get(c.id) as any).n || 0;
+        const picked = pickSender(c, e.workspace_id, at, rot);
+        if (picked.exhausted) { db.prepare("UPDATE campaign_enrollments SET next_due_at=?, updated_at=? WHERE id=?").run(nextWindowSlot(c, new Date(at.getTime() + 86400000), tz).toISOString(), now(), e.id); deferred++; continue; }
+        sender = picked.identity;
+      }
+      const delivered = await queueAndDeliver(e.workspace_id, { lead_id: lead.id, channel: step.channel, to, subject, body, from_email: sender?.email || undefined });
       if (delivered && delivered.status === "suppressed") { db.prepare("UPDATE campaign_enrollments SET status='stopped', stop_reason='suppressed', updated_at=? WHERE id=?").run(now(), e.id); stopped++; continue; }
       if (!delivered || !["sent", "delivered", "test_mode"].includes(delivered.status)) {
+        if (delivered && delivered.status === "failed") db.prepare("INSERT INTO campaign_sends (id,workspace_id,campaign_id,enrollment_id,lead_id,step_idx,variant,message_id,sender_id,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,'failed',?)").run(uid("csnd"), e.workspace_id, c.id, e.id, lead.id, e.step_idx, vIdx, (delivered as any).id || null, sender?.id || null, now());
         const fails = (e.fail_count || 0) + 1;
         if (fails >= 3) { db.prepare("UPDATE campaign_enrollments SET status='stopped', stop_reason='delivery_failed', fail_count=?, updated_at=? WHERE id=?").run(fails, now(), e.id); stopped++; }
         else db.prepare("UPDATE campaign_enrollments SET fail_count=?, next_due_at=?, updated_at=? WHERE id=?").run(fails, new Date(Date.now() + 6 * 3600000).toISOString(), now(), e.id);
         continue;
       }
-      db.prepare("INSERT INTO campaign_sends (id,workspace_id,campaign_id,enrollment_id,lead_id,step_idx,variant,message_id,created_at) VALUES (?,?,?,?,?,?,?,?,?)").run(uid("csnd"), e.workspace_id, c.id, e.id, lead.id, e.step_idx, vIdx, (delivered as any).id || null, now());
+      db.prepare("INSERT INTO campaign_sends (id,workspace_id,campaign_id,enrollment_id,lead_id,step_idx,variant,message_id,sender_id,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,'sent',?)").run(uid("csnd"), e.workspace_id, c.id, e.id, lead.id, e.step_idx, vIdx, (delivered as any).id || null, sender?.id || null, now());
       capChecked.set(c.id, (capChecked.get(c.id) || 0) + 1);
       sent++;
     }
@@ -169,7 +186,8 @@ export async function processCampaigns(_baseUrl = ""): Promise<{ sent: number; s
 // ---------- stats ----------
 export function campaignOutreachStats(campaignId: string) {
   const steps = db.prepare("SELECT * FROM campaign_steps WHERE campaign_id=? ORDER BY position").all(campaignId) as any[];
-  const sends = db.prepare("SELECT step_idx, variant, COUNT(*) n FROM campaign_sends WHERE campaign_id=? GROUP BY step_idx, variant").all(campaignId) as any[];
+  const sends = db.prepare("SELECT step_idx, variant, COUNT(*) n FROM campaign_sends WHERE campaign_id=? AND status='sent' GROUP BY step_idx, variant").all(campaignId) as any[];
+  const failed = (db.prepare("SELECT COUNT(*) n FROM campaign_sends WHERE campaign_id=? AND status='failed'").get(campaignId) as any).n || 0;
   const replies = db.prepare("SELECT COUNT(*) n FROM campaign_enrollments WHERE campaign_id=? AND status='replied'").get(campaignId) as any;
   const byStatus = db.prepare("SELECT status, COUNT(*) n FROM campaign_enrollments WHERE campaign_id=? GROUP BY status").all(campaignId) as any[];
   const perStep = steps.map((s, i) => {
@@ -179,5 +197,5 @@ export function campaignOutreachStats(campaignId: string) {
     return { step_idx: i, channel: s.channel, subject: s.subject, sent: total, variants: [{ variant: 0, sent: rows.find(r => r.variant === 0)?.n || 0 }, ...variants.map((_v: any, vi: number) => ({ variant: vi + 1, sent: rows.find(r => r.variant === vi + 1)?.n || 0 }))] };
   });
   const totalSent = sends.reduce((a, r) => a + r.n, 0);
-  return { steps: perStep, total_sent: totalSent, replies: replies.n || 0, reply_rate: totalSent ? Math.round(((replies.n || 0) / totalSent) * 1000) / 10 : null, enrollments: Object.fromEntries(byStatus.map(r => [r.status, r.n])) };
+  return { steps: perStep, total_sent: totalSent, failed, failure_rate: totalSent + failed ? Math.round((failed / (totalSent + failed)) * 1000) / 10 : null, replies: replies.n || 0, reply_rate: totalSent ? Math.round(((replies.n || 0) / totalSent) * 1000) / 10 : null, enrollments: Object.fromEntries(byStatus.map(r => [r.status, r.n])) };
 }

@@ -41,6 +41,7 @@ import { stepsFor, addBusinessDays } from "./followups.ts";
 import { notify } from "./comms.ts";
 import { enrollLead, campaignOutreachStats, renderOutreach, outreachVars, unresolvedVars, nextWindowSlot } from "./outreach.ts";
 import { ensureLabels, applyLabel } from "./labels.ts";
+import { ensureIdentities, identityView, domainChecks, failureStats } from "./deliverability.ts";
 
 const J = (s: any, fb: any = null) => { try { return JSON.parse(s ?? ""); } catch { return fb; } };
 const alter = (sql: string) => { try { db.exec(sql); } catch { /* column exists */ } };
@@ -86,6 +87,13 @@ export function initCrmSchema() {
   CREATE TABLE IF NOT EXISTS lead_labels (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, label_id TEXT, source TEXT DEFAULT 'human', created_at TEXT, UNIQUE(lead_id, label_id));
   CREATE TABLE IF NOT EXISTS label_rules (id TEXT PRIMARY KEY, workspace_id TEXT, label_id TEXT, action TEXT, campaign_id TEXT, active INTEGER DEFAULT 1, created_at TEXT);
   CREATE TABLE IF NOT EXISTS opportunities (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, account_id TEXT, title TEXT, value REAL DEFAULT 0, stage TEXT DEFAULT 'interested', source_label TEXT, campaign_id TEXT, owner_id TEXT, close_date TEXT, created_at TEXT, updated_at TEXT);
+  `);
+  alter("ALTER TABLE campaigns ADD COLUMN sender_mode TEXT DEFAULT 'default'");
+  alter("ALTER TABLE campaigns ADD COLUMN sender_id TEXT");
+  alter("ALTER TABLE campaign_sends ADD COLUMN sender_id TEXT");
+  alter("ALTER TABLE campaign_sends ADD COLUMN status TEXT DEFAULT 'sent'");
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS sender_identities (id TEXT PRIMARY KEY, workspace_id TEXT, name TEXT, email TEXT, daily_limit INTEGER DEFAULT 30, active INTEGER DEFAULT 1, is_default INTEGER DEFAULT 0, warmup_override INTEGER DEFAULT 0, created_at TEXT);
   `);
 }
 
@@ -323,7 +331,7 @@ export function registerCrm(app: any, requireAuth: any, needPerm: any = null) {
     const members = db.prepare(`SELECT m.*, l.service_requested, l.state, l.est_value, ct.name contact_name FROM campaign_members m JOIN leads l ON l.id=m.lead_id LEFT JOIN contacts ct ON ct.id=l.contact_id WHERE m.campaign_id=? ORDER BY m.created_at DESC`).all(c.id);
     const steps = db.prepare("SELECT * FROM campaign_steps WHERE campaign_id=? ORDER BY position").all(c.id);
     res.json({ campaign: c, stats: campaignStats(c), members, steps, outreach: c.kind === "outreach" ? campaignOutreachStats(c.id) : null }); });
-  app.patch("/api/campaigns/:id", requireAuth, (req: any, res: any) => { const b = req.body || {}; const F = ["name", "type", "status", "starts_on", "ends_on", "cost", "notes", "kind", "send_days"]; const N = ["daily_cap", "ramp_step", "window_start", "window_end", "stop_on_reply"]; const sets = [...F.filter(f => b[f] !== undefined), ...N.filter(f => b[f] !== undefined)]; if (b.ramp_start !== undefined) sets.push("ramp_start"); if (!sets.length) return err(res, 422, "nothing to update");
+  app.patch("/api/campaigns/:id", requireAuth, (req: any, res: any) => { const b = req.body || {}; const F = ["name", "type", "status", "starts_on", "ends_on", "cost", "notes", "kind", "send_days", "sender_mode", "sender_id"]; const N = ["daily_cap", "ramp_step", "window_start", "window_end", "stop_on_reply"]; const sets = [...F.filter(f => b[f] !== undefined), ...N.filter(f => b[f] !== undefined)]; if (b.ramp_start !== undefined) sets.push("ramp_start"); if (!sets.length) return err(res, 422, "nothing to update");
     const val = (f: string) => f === "cost" ? Number(b[f]) || 0 : N.includes(f) ? Number(b[f]) || 0 : f === "ramp_start" ? (b[f] === null || b[f] === "" ? null : Number(b[f])) : b[f];
     db.prepare(`UPDATE campaigns SET ${sets.map(f => f + "=?").join(",")}, updated_at=? WHERE id=? AND workspace_id=?`).run(...sets.map(val), now(), req.params.id, ws(req)); res.json({ ok: true }); });
   app.post("/api/campaigns/:id/members", requireAuth, (req: any, res: any) => { const ids: string[] = req.body?.lead_ids || []; let added = 0;
@@ -379,6 +387,22 @@ export function registerCrm(app: any, requireAuth: any, needPerm: any = null) {
     db.prepare("INSERT INTO label_rules (id,workspace_id,label_id,action,campaign_id,active,created_at) VALUES (?,?,?,?,?,1,?)").run(id, ws(req), b.label_id, b.action, b.campaign_id || null, now()); res.status(201).json(db.prepare("SELECT * FROM label_rules WHERE id=?").get(id)); });
   app.patch("/api/label-rules/:id", requireAuth, ruleGate, (req: any, res: any) => { db.prepare("UPDATE label_rules SET active=? WHERE id=? AND workspace_id=?").run(req.body?.active ? 1 : 0, req.params.id, ws(req)); res.json({ ok: true }); });
   app.delete("/api/label-rules/:id", requireAuth, ruleGate, (req: any, res: any) => { db.prepare("DELETE FROM label_rules WHERE id=? AND workspace_id=?").run(req.params.id, ws(req)); res.json({ ok: true }); });
+  // ----- v44: sender identities + deliverability -----
+  app.get("/api/sender-identities", requireAuth, (req: any, res: any) => { res.json(ensureIdentities(ws(req)).map(i => identityView(i, new Date()))); });
+  app.post("/api/sender-identities", requireAuth, settingsGuard, (req: any, res: any) => { const b = req.body || {}; const email = String(b.email || "").trim().toLowerCase(); if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return err(res, 422, "a valid email is required"); const existing = db.prepare("SELECT id FROM sender_identities WHERE workspace_id=? AND lower(email)=?").get(ws(req), email) as any; if (existing) return res.status(422).json({ error: { code: "duplicate", message: "That sender already exists." } });
+    const anyDefault = db.prepare("SELECT id FROM sender_identities WHERE workspace_id=? AND is_default=1").get(ws(req)) as any; const id = uid("snd");
+    db.prepare("INSERT INTO sender_identities (id,workspace_id,name,email,daily_limit,active,is_default,warmup_override,created_at) VALUES (?,?,?,?,?,1,?,0,?)").run(id, ws(req), String(b.name || email).slice(0, 80), email, Math.max(1, Number(b.daily_limit) || 30), anyDefault ? 0 : 1, now());
+    res.status(201).json(identityView(db.prepare("SELECT * FROM sender_identities WHERE id=?").get(id), new Date())); });
+  app.patch("/api/sender-identities/:id", requireAuth, settingsGuard, (req: any, res: any) => { const b = req.body || {}; const row = db.prepare("SELECT * FROM sender_identities WHERE id=? AND workspace_id=?").get(req.params.id, ws(req)) as any; if (!row) return err(res, 404, "not found");
+    if (b.is_default) db.prepare("UPDATE sender_identities SET is_default=0 WHERE workspace_id=?").run(ws(req));
+    const F = ["name", "daily_limit", "active", "warmup_override", "is_default"]; const sets = F.filter(f => b[f] !== undefined); if (!sets.length) return err(res, 422, "nothing to update");
+    const val = (f: string) => f === "name" ? String(b[f]).slice(0, 80) : f === "daily_limit" ? Math.max(1, Number(b[f]) || 30) : b[f] ? 1 : 0;
+    db.prepare(`UPDATE sender_identities SET ${sets.map(f => f + "=?").join(",")} WHERE id=?`).run(...sets.map(val), row.id); res.json(identityView(db.prepare("SELECT * FROM sender_identities WHERE id=?").get(row.id), new Date())); });
+  app.delete("/api/sender-identities/:id", requireAuth, settingsGuard, (req: any, res: any) => { const row = db.prepare("SELECT * FROM sender_identities WHERE id=? AND workspace_id=?").get(req.params.id, ws(req)) as any; if (!row) return err(res, 404, "not found"); db.prepare("DELETE FROM sender_identities WHERE id=?").run(row.id); if (row.is_default) { const nxt = db.prepare("SELECT id FROM sender_identities WHERE workspace_id=? ORDER BY created_at LIMIT 1").get(ws(req)) as any; if (nxt) db.prepare("UPDATE sender_identities SET is_default=1 WHERE id=?").run(nxt.id); } res.json({ ok: true }); });
+  app.get("/api/deliverability", requireAuth, async (req: any, res: any) => { const wsr = db.prepare("SELECT * FROM workspaces WHERE id=?").get(ws(req)) as any; const from = wsr?.from_email || ""; const domain = from.includes("@") ? from.split("@")[1] : "";
+    const checks = domain ? await domainChecks(domain) : [];
+    res.json({ domain, from_email: from, checks, failures_30d: failureStats(ws(req), 30), identities: ensureIdentities(ws(req)).map(i => identityView(i, new Date())) }); });
+
   const OPP_STAGES = ["interested", "meeting_booked", "proposal", "won", "lost"];
   app.get("/api/opportunities", requireAuth, modGate("opportunities"), (req: any, res: any) => { const rows = db.prepare(`SELECT o.*, ct.name contact_name, l.service_requested, l.state lead_state, a.name account_name, u.name owner_name FROM opportunities o JOIN leads l ON l.id=o.lead_id LEFT JOIN contacts ct ON ct.id=l.contact_id LEFT JOIN accounts a ON a.id=o.account_id LEFT JOIN users u ON u.id=o.owner_id WHERE o.workspace_id=? ORDER BY o.updated_at DESC LIMIT 300`).all(ws(req));
     const totals: any = {}; for (const s of OPP_STAGES) { const t = rows.filter((r: any) => r.stage === s); totals[s] = { count: t.length, value: t.reduce((a: number, r: any) => a + (r.value || 0), 0) }; }

@@ -1113,6 +1113,36 @@ function AccessRoles({ me }: any) {
     </div>}
   </div>);
 }
+function DeliverabilityPanel() {
+  const [d, setD] = useState<any>(null); const [form, setForm] = useState({ name: "", email: "", daily_limit: 30 }); const [msg, setMsg] = useState("");
+  const load = () => { api("/api/deliverability").then(setD).catch(() => {}); };
+  useEffect(load, []);
+  if (!d) return <div className="card"><h3 style={{ marginTop: 0 }}>📬 Deliverability & senders</h3><p className="muted">Loading…</p></div>;
+  const icon = (s: string) => s === "pass" ? "✅" : s === "warn" ? "⚠️" : s === "fail" ? "❌" : "❔";
+  const f = d.failures_30d || { sent: 0, failed: 0, failure_rate: null };
+  return (<div className="card"><h3 style={{ marginTop: 0 }}>📬 Deliverability & senders</h3>
+    <p className="muted" style={{ fontSize: 12.5 }}>Campaigns send from your sender identities — add more addresses on your verified sending domain and campaigns can rotate across them, each with its own daily limit. New senders warm up gradually (guidance based on sender age; Workpile has no warmup pool — limits and pacing do the work). Campaigns auto-pause if delivery failures pass 5% over 7 days.</p>
+    {msg && <div className="ok">{msg}</div>}
+    <div className="finGrid" style={{ margin: "8px 0" }}>
+      <div className="finCard"><div className="finLab">✉️ Campaign sends · 30d</div><div className="finVal">{f.sent}</div><div className="finDef">delivered or test-mode</div></div>
+      <div className={"finCard" + (f.failure_rate !== null && f.failure_rate > 5 ? " hot" : "")}><div className="finLab">⚠ Failure rate · 30d</div><div className="finVal">{f.failure_rate === null ? "—" : f.failure_rate + "%"}</div><div className="finDef">{f.failed} failed of {f.sent + f.failed} attempts</div></div>
+      <div className="finCard"><div className="finLab">👥 Sender identities</div><div className="finVal">{(d.identities || []).filter((i: any) => i.active).length}</div><div className="finDef">active of {(d.identities || []).length}</div></div>
+      <div className="finCard"><div className="finLab">🌐 Sending domain</div><div className="finVal" style={{ fontSize: 17 }}>{d.domain || "not set"}</div><div className="finDef">{d.from_email || "set your From email in Workspace settings"}</div></div>
+    </div>
+    {d.domain && <div style={{ margin: "8px 0" }}><b style={{ fontSize: 13.5 }}>Domain authentication — live DNS checks</b>{d.checks.map((c: any) => <div key={c.key} className="rowflex" style={{ padding: "4px 0", borderBottom: "1px solid #eef2f7", fontSize: 13 }}><span>{icon(c.status)}</span><span style={{ minWidth: 300 }}><b>{c.label}</b></span><span className="muted" style={{ flex: 1 }}>{c.detail}</span></div>)}</div>}
+    <div style={{ marginTop: 10 }}><b style={{ fontSize: 13.5 }}>Sender identities</b>
+      {(d.identities || []).map((i: any) => <div key={i.id} className="rowflex" style={{ padding: "6px 0", borderBottom: "1px solid #eef2f7" }}><span style={{ flex: 1, minWidth: 0 }}><b>{i.name}</b> <span className="muted">{i.email}</span> {i.is_default ? <span className="tinyBadge">default</span> : null} {!i.active ? <span className="tinyBadge">inactive</span> : null}<br /><span className="muted" style={{ fontSize: 12 }}>{i.sent_today}/{i.effective_limit} sent today{i.warmup_recommended ? ` · 🌱 warming up (recommended ≤${i.warmup_recommended}/day)` : " · warmed up"}{i.warmup_override ? " · warmup overridden" : ""}</span></span>
+        <label className="muted" style={{ fontSize: 12 }}>limit <input type="number" min={1} style={{ width: 62 }} defaultValue={i.daily_limit} onBlur={async e => { await api("/api/sender-identities/" + i.id, { method: "PATCH", body: { daily_limit: Number(e.target.value) || 30 } }); load(); }} /></label>
+        <button className="btn ghost small" onClick={async () => { await api("/api/sender-identities/" + i.id, { method: "PATCH", body: { warmup_override: i.warmup_override ? 0 : 1 } }); load(); }}>{i.warmup_override ? "Respect warmup" : "Skip warmup"}</button>
+        {!i.is_default && <button className="btn ghost small" onClick={async () => { await api("/api/sender-identities/" + i.id, { method: "PATCH", body: { is_default: 1 } }); load(); }}>Make default</button>}
+        <button className="btn ghost small" onClick={async () => { await api("/api/sender-identities/" + i.id, { method: "PATCH", body: { active: i.active ? 0 : 1 } }); load(); }}>{i.active ? "Deactivate" : "Activate"}</button>
+        <button className="btn ghost small" onClick={async () => { await api("/api/sender-identities/" + i.id, { method: "DELETE" }); load(); }}>Delete</button></div>)}
+      <div className="rowflex" style={{ marginTop: 8 }}><input placeholder="Sender name (e.g. Outreach)" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} style={{ width: 190 }} /><input placeholder="name@your-sending-domain.com" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} style={{ flex: 1 }} /><input type="number" min={1} style={{ width: 80 }} value={form.daily_limit} onChange={e => setForm({ ...form, daily_limit: Number(e.target.value) })} /><button className="btn small" disabled={!form.email.includes("@")} onClick={async () => { const r: any = await api("/api/sender-identities", { method: "POST", body: form }); if (r?.error) setMsg("⚠ " + (r.error.message || "could not add")); else { setMsg("Sender added ✓ — it starts in warmup (10/day) unless you skip it."); setForm({ name: "", email: "", daily_limit: 30 }); load(); } }}>Add sender</button></div>
+      <p className="muted" style={{ fontSize: 12 }}>Senders must be addresses at a domain verified with your email provider (Resend) — sends from unverified domains are rejected by the provider and counted as failures here.</p>
+    </div>
+  </div>);
+}
+
 function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any) {
   const myPerms = me?.permissions; const canSettings = !myPerms || myPerms.can_settings; const canTeam = !myPerms || myPerms.can_manage_team;
   const [accessFor, setAccessFor] = useState<any>(null);
@@ -1172,6 +1202,7 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any)
     {tab === "cfields" && canSettings && <CustomFieldsTab />}
     {tab === "assign" && canSettings && <AssignmentRulesTab users={users} />}
     {tab === "integrations" && canSettings && <div>
+      <DeliverabilityPanel />
       <div className="card"><h3 style={{ marginTop: 0 }}>Integration catalog — every way data moves in and out</h3>
       <div className="featGrid">{catalog.map((c: any) => <div className="feat clickable" key={c.id} onClick={() => { setCfg(c.id); setCfgMsg(""); }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><b>{c.name}</b><span className="tinyBadge" style={c.status === "connected" ? { background: "#dcfce7", color: "#166534" } : c.status === "test_mode" || c.status === "demo_source" ? { background: "#fef9c3", color: "#854d0e" } : {}}>{c.status.replaceAll("_", " ")}</span></div><p>{c.detail}</p><span className="cfgHint">Configure →</span></div>)}</div></div>
       <div className="card"><h3>API keys</h3>{keys.map(k => <p key={k.id} className="muted" style={{ margin: "6px 0" }}>{k.label} · scopes {k.scopes} · {k.revoked_at ? "revoked" : "active"} {k.revoked_at ? "" : <button className="btn ghost small" onClick={async () => { await api(`/api/api-keys/${k.id}`, { method: "DELETE" }); loadAll(); }}>Revoke</button>}</p>)}
@@ -2759,6 +2790,7 @@ function People({ embedded }: any) {
   </div>);
 }
 
+const SPAM_WORDS = ["free", "guarantee", "guaranteed", "act now", "limited time", "urgent", "winner", "cash", "prize", "risk-free", "no obligation", "buy now", "order now", "click here", "dear friend", "make money", "earn money", "100%", "amazing", "incredible deal", "cheap", "discount", "offer expires", "call now", "apply now", "credit", "loan", "casino", "viagra", "crypto", "bitcoin", "investment opportunity", "work from home", "congratulations"];
 function StepEditor({ step, idx, campId, onSaved, onDeleted }: any) {
   const initVariants = (() => { try { return JSON.parse(step.variants || "[]"); } catch { return []; } })();
   const [channel, setChannel] = useState(step.channel || "email");
@@ -2786,6 +2818,7 @@ function StepEditor({ step, idx, campId, onSaved, onDeleted }: any) {
     <div className="rowflex" style={{ marginTop: 8 }}>
       <button className="btn small" onClick={async () => { await api("/api/campaign-steps/" + step.id, { method: "PATCH", body: { channel, delay_days: delay, subject: base.subject, body: base.body, variants } }); setSaved(true); onSaved(); }}>{saved ? "Saved ✓" : "Save step"}</button>
       <button className="btn ghost small" onClick={async () => { const r = await api(`/api/campaigns/${campId}/preview`, { method: "POST", body: { step_idx: idx, variant: vtab } }).catch(() => null); setPv(r); }}>👁 Preview</button>
+      {(() => { const text = ((cur.subject || "") + " " + (cur.body || "")).toLowerCase(); const hits = SPAM_WORDS.filter(w => text.includes(w)); return hits.length ? <span className="tinyBadge" style={{ background: "#fef3c7", color: "#92400e" }} title="Common spam-trigger words — they don't block sending, but consider softening them">⚠ spam-check: {hits.join(", ")}</span> : null; })()}
       <span className="muted" style={{ fontSize: 12 }}>Each lead is assigned one variant per step and keeps it — replies are measured per variant.</span></div>
     {pv && <div style={{ background: "#f4f8f5", border: "1px solid #dcebe2", borderRadius: 10, padding: "10px 12px", marginTop: 8 }}><div className="muted" style={{ fontSize: 12 }}>{pv.sample ? "Rendered with sample data" : "Rendered with a real audience member"} · Variant {["A", "B", "C", "D", "E", "F"][pv.variant]}{pv.unresolved?.length ? ` · ⚠ unresolved: ${pv.unresolved.join(", ")}` : ""}</div>{pv.subject ? <div><b>{pv.subject}</b></div> : null}<div style={{ whiteSpace: "pre-wrap" }}>{pv.body}</div></div>}
   </div>);
@@ -2796,6 +2829,8 @@ function OutreachBuilder({ detail, reloadDetail, openLead }: any) {
   const [enr, setEnr] = useState<any[]>([]);
   const [msg, setMsg] = useState("");
   const [st, setSt] = useState<any>({ daily_cap: camp.daily_cap ?? 50, ramp_start: camp.ramp_start ?? "", ramp_step: camp.ramp_step ?? 10, window_start: camp.window_start ?? 9, window_end: camp.window_end ?? 17, stop_on_reply: camp.stop_on_reply !== 0, send_days: String(camp.send_days || "1,2,3,4,5") });
+  const [idents, setIdents] = useState<any[]>([]);
+  useEffect(() => { api("/api/sender-identities").then(setIdents).catch(() => {}); }, []);
   const loadEnr = () => { api("/api/campaigns/" + camp.id + "/enrollments").then(setEnr).catch(() => {}); };
   useEffect(() => { loadEnr(); }, [camp.id, detail]);
   const o = detail.outreach || { total_sent: 0, replies: 0, reply_rate: null, enrollments: {}, steps: [] };
@@ -2824,7 +2859,10 @@ function OutreachBuilder({ detail, reloadDetail, openLead }: any) {
         <label className="muted" style={{ fontSize: 12.5 }}>Window <input type="number" min={0} max={23} style={{ width: 56 }} value={st.window_start} onChange={e => setSt({ ...st, window_start: e.target.value })} /> – <input type="number" min={1} max={24} style={{ width: 56 }} value={st.window_end} onChange={e => setSt({ ...st, window_end: e.target.value })} /></label>
         <label className="muted" style={{ fontSize: 12.5 }}><input type="checkbox" style={{ width: "auto" }} checked={st.stop_on_reply} onChange={e => setSt({ ...st, stop_on_reply: e.target.checked })} /> Stop on reply</label></div>
       <div className="rowflex" style={{ marginTop: 8 }}><span className="muted" style={{ fontSize: 12.5 }}>Send days:</span>{DAYS.map(([d, L]) => <button key={d} className={`chip ${daySet.has(d) ? "on" : ""}`} onClick={() => { const s = new Set(daySet); if (s.has(d)) s.delete(d); else s.add(d); setSt({ ...st, send_days: [...s].join(",") }); }}>{L}</button>)}
-        <button className="btn small" onClick={async () => { await api("/api/campaigns/" + camp.id, { method: "PATCH", body: { daily_cap: Number(st.daily_cap) || 50, ramp_start: st.ramp_start === "" ? null : Number(st.ramp_start), ramp_step: Number(st.ramp_step) || 10, window_start: Number(st.window_start), window_end: Number(st.window_end), stop_on_reply: st.stop_on_reply ? 1 : 0, send_days: st.send_days } }); setMsg("Settings saved ✓"); reloadDetail(); }}>Save settings</button></div>
+        <button className="btn small" onClick={async () => { await api("/api/campaigns/" + camp.id, { method: "PATCH", body: { daily_cap: Number(st.daily_cap) || 50, ramp_start: st.ramp_start === "" ? null : Number(st.ramp_start), ramp_step: Number(st.ramp_step) || 10, window_start: Number(st.window_start), window_end: Number(st.window_end), stop_on_reply: st.stop_on_reply ? 1 : 0, send_days: st.send_days, sender_mode: st.sender_mode || camp.sender_mode || "default", sender_id: st.sender_id ?? camp.sender_id ?? null } }); setMsg("Settings saved ✓"); reloadDetail(); }}>Save settings</button></div>
+      <div className="rowflex" style={{ marginTop: 8 }}><span className="muted" style={{ fontSize: 12.5 }}>Send from:</span><select style={{ width: 210 }} value={st.sender_mode || camp.sender_mode || "default"} onChange={e => setSt({ ...st, sender_mode: e.target.value })}><option value="default">Workspace default sender</option><option value="rotate">🔁 Rotate across all senders</option><option value="specific">One specific sender</option></select>
+        {(st.sender_mode || camp.sender_mode) === "specific" && <select style={{ flex: 1 }} value={st.sender_id || camp.sender_id || ""} onChange={e => setSt({ ...st, sender_id: e.target.value })}><option value="">Pick a sender…</option>{idents.filter((i: any) => i.active).map((i: any) => <option key={i.id} value={i.id}>{i.name} — {i.email} ({i.sent_today}/{i.effective_limit} today)</option>)}</select>}
+        <span className="muted" style={{ fontSize: 12 }}>{idents.length > 1 ? `${idents.filter((i: any) => i.active).length} active senders — rotation spreads volume so no single address burns out.` : "Add more senders under Settings → Integrations → Deliverability to rotate volume."}</span></div>
     </div>
     {(detail.steps || []).map((s: any, i: number) => <StepEditor key={s.id} step={s} idx={i} campId={camp.id} onSaved={reloadDetail} onDeleted={reloadDetail} />)}
     <button className="btn ghost" onClick={async () => { await api(`/api/campaigns/${camp.id}/steps`, { method: "POST", body: { channel: "email", delay_days: (detail.steps || []).length ? 3 : 0, subject: "", body: "" } }); reloadDetail(); }}>+ Add step</button>
