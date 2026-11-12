@@ -1923,11 +1923,6 @@ function Landing({ onAuth }: any) {
     <div className="authForm"><div className="authCard">
       <button className="btn ghost small" onClick={() => setMode("home")}>← Back</button>
       {mode === "forgot" && <><h3 style={{ marginTop: 16 }}>Reset your password</h3><p className="muted">We'll email you a one-hour reset link.</p>{authNote && <div className="ok" style={{ marginBottom: 8 }}>{authNote}</div>}
-        {social && (social.google || social.microsoft) && <div style={{ margin: "6px 0 2px" }}>
-        {social.google && <a className="btn ghost" style={{ width: "100%", padding: 12, display: "block", textAlign: "center", marginBottom: 8, boxSizing: "border-box" }} href="/api/auth/social/google/start">Continue with Google</a>}
-        {social.microsoft && <a className="btn ghost" style={{ width: "100%", padding: 12, display: "block", textAlign: "center", boxSizing: "border-box" }} href="/api/auth/social/microsoft/start">Continue with Microsoft</a>}
-        <div className="muted" style={{ textAlign: "center", fontSize: 12, margin: "10px 0 0" }}>or with your email</div>
-      </div>}
       <label className="f">Work email</label><input value={f.email} onChange={e => setF({ ...f, email: e.target.value })} placeholder="you@company.com" />
         <button className="btn" style={{ width: "100%", marginTop: 12, padding: 12 }} onClick={async () => { const r = await api("/api/auth/forgot", { method: "POST", body: { email: f.email } }).catch((e: any) => ({ error: e.message })); if (r.reset_url) setAuthNote("Test mode (no email provider configured): use this link \u2014 " + r.reset_url); else setAuthNote(r.error ? r.error : "If that email has an account, a reset link is on its way."); }}>Send reset link \u2192</button>
         <p className="muted" style={{ fontSize: 13, marginTop: 12 }}><a href="#" onClick={e => { e.preventDefault(); setMode("login"); }}>Back to sign in</a></p></>}
@@ -1938,6 +1933,11 @@ function Landing({ onAuth }: any) {
       <p className="muted">{mode === "register" ? "No card required. Your workspace, price book, and templates are created for you." : "Sign in to your workspace."}</p>{authNote && mode === "login" && <div className="ok" style={{ marginBottom: 8 }}>{authNote}</div>}
       {err && <div className="err">{err}</div>}
       {mode === "register" && <><label className="f">Your name</label><input value={f.name} onChange={e => setF({ ...f, name: e.target.value })} placeholder="Jordan Ellis" /><label className="f">Business name</label><input value={f.business_name} onChange={e => setF({ ...f, business_name: e.target.value })} placeholder="Ellis Restoration Group" /></>}
+        {social && (social.google || social.microsoft) && <div style={{ margin: "6px 0 2px" }}>
+        {social.google && <a className="btn ghost" style={{ width: "100%", padding: 12, display: "block", textAlign: "center", marginBottom: 8, boxSizing: "border-box" }} href="/api/auth/social/google/start">Continue with Google</a>}
+        {social.microsoft && <a className="btn ghost" style={{ width: "100%", padding: 12, display: "block", textAlign: "center", boxSizing: "border-box" }} href="/api/auth/social/microsoft/start">Continue with Microsoft</a>}
+        <div className="muted" style={{ textAlign: "center", fontSize: 12, margin: "10px 0 0" }}>or with your email</div>
+      </div>}
       <label className="f">Work email</label><input value={f.email} onChange={e => setF({ ...f, email: e.target.value })} placeholder="you@company.com" />
       <label className="f">Password</label><input type="password" value={f.password} onChange={e => setF({ ...f, password: e.target.value })} placeholder={mode === "register" ? "8+ characters" : "Your password"} />
       <button className="btn" style={{ width: "100%", marginTop: 12, padding: 12 }} onClick={submit}>{mode === "register" ? "Create my workspace →" : "Sign in →"}</button>
