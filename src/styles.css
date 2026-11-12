@@ -735,3 +735,9 @@ aside.rail button.on .nshort { background:#ffffff22; }
 .clockW.dark .clockDig{color:#fff}
 .clockW.dark .clockD{color:#9DBFA9}
 @media (max-width:1020px){.dashGrid{grid-template-columns:repeat(6,1fr)}.dashGrid>*{grid-column:span 6 !important}}
+.wRow{display:flex;gap:10px;align-items:center;padding:7px 2px;border-top:1px solid #EEF2EE;cursor:pointer}
+.wRow:hover{background:#F4F8F4}
+.wScore{font-size:11px;font-weight:800;background:#FEF3C7;color:#92400E;border-radius:6px;padding:2px 6px;min-width:30px;text-align:center}
+.wBar2{flex:1;height:8px;background:#E7EFE9;border-radius:5px;overflow:hidden}
+.wBar2 span{display:block;height:8px;background:#0E5C3A;border-radius:5px}
+.galGroupH{font-size:12px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:#0E5C3A;margin:18px 0 4px}
