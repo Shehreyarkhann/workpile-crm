@@ -205,6 +205,9 @@ export const TOOLS: Record<string, ToolDef> = {
       const { enrollLead } = await import("./outreach.ts");
       const ok = enrollLead(camp, l.id, new Date());
       return { summary: ok ? `Enrolled ${l.contact_name || l.service_requested} in "${camp.name}" — step 1 sends inside the campaign's window and caps.` : `${l.contact_name || l.service_requested} was already enrolled in "${camp.name}" — no duplicate.`, refs: { lead_id: l.id, campaign_id: camp.id, enrolled: ok } }; } },
+  remember_fact: { name: "remember_fact", description: "Record a durable fact about this business that every future operator run should know (preferences, policies, people, quirks). Use when the user teaches you something lasting — not for one-off task details.", control: "draft",
+    parameters: { type: "object", properties: { fact: { type: "string" } }, required: ["fact"] },
+    async run(ws, actor, args) { const { rememberFact } = await import("./agent-memory.ts"); const r = rememberFact(ws, String(args.fact || ""), "operator", actor); return { summary: r.duplicate ? "Already remembered — no duplicate stored." : `Remembered: "${String(args.fact).slice(0, 120)}" — every future run starts knowing this.`, refs: { memory_id: r.id, duplicate: r.duplicate } }; } },
   get_revenue_report: { name: "get_revenue_report", description: "The five separated money figures with definitions.", control: "read",
     parameters: { type: "object", properties: {} },
     async run(ws) { const { financialSummary } = await import("./metrics.ts"); const f: any = financialSummary(ws);

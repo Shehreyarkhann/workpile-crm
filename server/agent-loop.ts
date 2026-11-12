@@ -32,7 +32,8 @@ async function drive(ws: string, exId: string): Promise<any> {
   const w = db.prepare("SELECT * FROM workspaces WHERE id=?").get(ws) as any;
   const level = agentLevel(w);
   const planner = `loop:${provider.kind}:${provider.model}`;
-  const state: LoopState = J(ex.loop_state, null) || { messages: [{ role: "user", content: `Instruction: ${ex.instruction}\nBusiness context: ${JSON.stringify(ex.context || {})}\nWorkspace autonomy level: L${level}.` }], turns: 0, turn_results: {} };
+  let brief = ""; try { const { operatorBrief } = await import("./agent-memory.ts"); brief = operatorBrief(ws); } catch { brief = ""; }
+  const state: LoopState = J(ex.loop_state, null) || { messages: [{ role: "user", content: `Instruction: ${ex.instruction}\n${brief ? "\n" + brief + "\n" : ""}Counts: ${JSON.stringify(ex.context || {})}\nWorkspace autonomy level: L${level}.` }], turns: 0, turn_results: {} };
   const steps: Step[] = ex.plan || [];
   const tokens = { in: ex.tokens_in || 0, out: ex.tokens_out || 0 };
   const hr = houseRules(ws);
