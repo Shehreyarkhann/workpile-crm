@@ -60,6 +60,15 @@ function useCountUp(target: number, dur = 750) {
 }
 
 export function absInvLink(inv: any): string { if (!inv?.link) return ""; return inv.link.startsWith("http") ? inv.link : location.origin + inv.link; }
+let __qbStatus: Promise<any> | null = null;
+function qbStatusOnce() { if (!__qbStatus) __qbStatus = api("/api/quickbooks/status").catch(() => null); return __qbStatus; }
+function QbPush({ inv, onDone }: any) {
+  const [conn, setConn] = useState(false);
+  useEffect(() => { qbStatusOnce().then((s: any) => setConn(!!s?.connection)); }, []);
+  if (!conn) return null;
+  if (inv.qb_id) return <span className="tinyBadge" title={"Synced " + (inv.qb_synced_at || "")}>📗 QBO #{inv.qb_id}</span>;
+  return <button className="btn ghost small" onClick={async () => { const r: any = await api(`/api/invoices/${inv.id}/quickbooks`, { method: "POST", body: {} }); if (r?.qb_id) { toast("Pushed to QuickBooks ✓ (#" + r.qb_id + ")"); onDone && onDone(); } else toast("⚠ " + (r?.error?.message || "QuickBooks push failed")); }}>📗 Push to QuickBooks</button>;
+}
 function InvoiceActions({ inv, onDone }: any) {
   const [msg, setMsg] = useState("");
   if (!inv || inv.status === "void") return null;
@@ -69,6 +78,7 @@ function InvoiceActions({ inv, onDone }: any) {
     {url && <button className="btn ghost small" onClick={async () => { try { await navigator.clipboard.writeText(url); toast("Pay link copied ✓"); } catch { toast(url); } }}>🔗 Copy link</button>}
     <a className="btn ghost small" href={`/api/invoices/${inv.id}/document`}>⬇ DOCX</a>
     <button className="btn ghost small" onClick={async () => { try { const r = await api(`/api/invoices/${inv.id}/send`, { method: "POST", body: {} }); toast(r.test_mode ? "Invoice sent (test mode — recorded, not delivered) ✓" : "Invoice sent ✓"); onDone && onDone(); } catch (e: any) { setMsg(e.message); toast(e.message); } }}>✉ Send to customer</button>
+    <QbPush inv={inv} onDone={onDone} />
     {inv.sent_at && <span className="muted">sent {new Date(inv.sent_at).toLocaleDateString()}</span>}
     {msg && <span className="err">{msg}</span>}
   </span>);
@@ -185,6 +195,7 @@ function HomeDash({ go, openLead, m, d }: any) {
           <div className="statCard animIn" style={{ animationDelay: "180ms", ["--glow" as any]: "#e879f9" }} onClick={() => go({ view: "leads", leads: { bucket: "won" } })}><div className="ic" style={{ background: "#fce7f3" }}>🏆</div><div className="v">${num(wonM)}</div><div className="l">Won value — {num(m.won)} deals all time</div></div>
         </div>
 
+        <SetupCard go={go} />
         <FinancesStrip f={home.finances} openLead={openLead} />
     <PeriodsStrip />
 
@@ -1116,6 +1127,45 @@ function AccessRoles({ me }: any) {
     </div>}
   </div>);
 }
+function MailSyncCard() {
+  const [st, setSt] = useState<any>(null); const [msg, setMsg] = useState("");
+  const load = () => { api("/api/oauth/status").then(setSt).catch(() => {}); };
+  useEffect(load, []);
+  if (!st) return null;
+  const connect = async (p: string) => { const r: any = await api(`/api/oauth/${p}/start`); if (r?.url) { location.href = r.url; } else setMsg("⚠ " + (r?.error?.message || "That provider's app isn't registered on this deployment yet — the setup guide lists the two env keys it needs.")); };
+  return (<div className="card"><h3 style={{ marginTop: 0 }}>📥 Mailbox sync — Gmail & Outlook</h3>
+    <p className="muted" style={{ fontSize: 12.5 }}>Connect the mailbox your customers already write to. New mail lands in the Workpile Inbox within a minute — triaged, prioritized and linked to leads, same as the email-in API. Read-only access; Workpile never sends as your mailbox.</p>
+    {msg && <p style={{ fontSize: 13 }}>{msg}</p>}
+    {(st.connections || []).map((c: any) => <div key={c.id} className="rowflex" style={{ padding: "5px 0", borderBottom: "1px solid #eef2f7" }}><span style={{ flex: 1 }}><b>{c.provider === "google" ? "Gmail" : "Outlook"}</b> · {c.account_email} <span className="tinyBadge" style={c.status === "connected" ? { background: "#dcfce7", color: "#166534" } : {}}>{c.status}</span>{c.last_poll_at ? <span className="muted"> · last sync {new Date(c.last_poll_at).toLocaleString()}</span> : null}{c.last_error ? <span style={{ color: "#B91C1C" }}> · {c.last_error}</span> : null}</span>{c.status === "connected" && <button className="btn ghost small" onClick={async () => { await api("/api/oauth/connections/" + c.id, { method: "DELETE" }); load(); }}>Disconnect</button>}</div>)}
+    <div className="rowflex" style={{ marginTop: 8 }}>
+      <button className="btn" onClick={() => connect("google")}>Connect Gmail{st.google?.configured ? "" : " (setup needed)"}</button>
+      <button className="btn" onClick={() => connect("microsoft")}>Connect Outlook{st.microsoft?.configured ? "" : " (setup needed)"}</button>
+      <span className="muted" style={{ fontSize: 12 }}>{st.google?.configured || st.microsoft?.configured ? "You'll approve read-only access on the provider's own screen." : "Not live yet on this deployment: it needs the provider apps registered (GOOGLE_CLIENT_ID/SECRET, MS_CLIENT_ID/SECRET) — a one-time founder setup, guided in the Integrations catalog."}</span>
+    </div></div>);
+}
+function QuickBooksCard() {
+  const [st, setSt] = useState<any>(null); const [msg, setMsg] = useState("");
+  const load = () => { api("/api/quickbooks/status").then(setSt).catch(() => {}); };
+  useEffect(load, []);
+  if (!st) return null;
+  return (<div className="card"><h3 style={{ marginTop: 0 }}>📗 QuickBooks Online</h3>
+    <p className="muted" style={{ fontSize: 12.5 }}>Push any Workpile invoice into QuickBooks with one click (the customer is created there if needed) — no more double entry at 9pm. The QBO invoice id is stamped back onto the Workpile invoice.</p>
+    {msg && <p style={{ fontSize: 13 }}>{msg}</p>}
+    {st.connection ? <div className="rowflex"><span style={{ flex: 1 }}>Connected · company <b>{st.connection.realm_id}</b> since {new Date(st.connection.created_at).toLocaleDateString()}</span><button className="btn ghost small" onClick={async () => { await api("/api/quickbooks", { method: "DELETE" }); load(); }}>Disconnect</button></div>
+      : <div className="rowflex"><button className="btn" onClick={async () => { const r: any = await api("/api/quickbooks/start"); if (r?.url) location.href = r.url; else setMsg("⚠ " + (r?.error?.message || "The Intuit app isn't registered on this deployment yet (INTUIT_CLIENT_ID/SECRET).")); }}>Connect QuickBooks{st.configured ? "" : " (setup needed)"}</button><span className="muted" style={{ fontSize: 12 }}>{st.configured ? "You'll approve access on Intuit's own screen." : "Needs the Intuit app registered on this deployment first — a one-time founder setup."}</span></div>}
+  </div>);
+}
+function SetupCard({ go }: any) {
+  const [st, setSt] = useState<any>(null); const [hide, setHide] = useState(() => { try { return localStorage.getItem("wp_setup_hide") === "1"; } catch { return false; } });
+  useEffect(() => { api("/api/onboarding/status").then(setSt).catch(() => {}); }, []);
+  if (!st || st.complete || hide) return null;
+  const next = st.steps.find((s: any) => !s.done);
+  return (<div className="card" style={{ borderLeft: "4px solid #0E5C3A", marginBottom: 12 }}><div className="rowflex" style={{ justifyContent: "space-between" }}><b>🚀 Finish setting up Workpile — {st.done} of {st.total} done</b><button className="btn ghost small" onClick={() => { setHide(true); try { localStorage.setItem("wp_setup_hide", "1"); } catch {} }}>Dismiss</button></div>
+    <div style={{ height: 8, background: "#e7efe9", borderRadius: 6, margin: "8px 0" }}><div style={{ height: 8, width: st.pct + "%", background: "#22C55E", borderRadius: 6 }} /></div>
+    {st.steps.map((s: any) => <div key={s.key} className="rowflex" style={{ padding: "3px 0", fontSize: 13.5 }}><span style={{ flex: 1 }}>{s.done ? "✅" : "⬜"} {s.label}{!s.done && next?.key === s.key ? <span className="tinyBadge" style={{ marginLeft: 6 }}>next</span> : null}</span>{!s.done && <button className="btn ghost small" onClick={() => go({ view: s.view })}>Do it →</button>}</div>)}
+    <p className="muted" style={{ fontSize: 12, marginTop: 6 }}>Each step unlocks a piece of the machine: priced services make proposals instant, the review link powers the playbooks, a connected mailbox feeds the Inbox.</p></div>);
+}
+
 function DeliverabilityPanel() {
   const [d, setD] = useState<any>(null); const [form, setForm] = useState({ name: "", email: "", daily_limit: 30 }); const [msg, setMsg] = useState("");
   const load = () => { api("/api/deliverability").then(setD).catch(() => {}); };
@@ -1206,6 +1256,8 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any)
     {tab === "assign" && canSettings && <AssignmentRulesTab users={users} />}
     {tab === "integrations" && canSettings && <div>
       <DeliverabilityPanel />
+      <MailSyncCard />
+      <QuickBooksCard />
       <div className="card"><h3 style={{ marginTop: 0 }}>Integration catalog — every way data moves in and out</h3>
       <div className="featGrid">{catalog.map((c: any) => <div className="feat clickable" key={c.id} onClick={() => { setCfg(c.id); setCfgMsg(""); }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><b>{c.name}</b><span className="tinyBadge" style={c.status === "connected" ? { background: "#dcfce7", color: "#166534" } : c.status === "test_mode" || c.status === "demo_source" ? { background: "#fef9c3", color: "#854d0e" } : {}}>{c.status.replaceAll("_", " ")}</span></div><p>{c.detail}</p><span className="cfgHint">Configure →</span></div>)}</div></div>
       <div className="card"><h3>API keys</h3>{keys.map(k => <p key={k.id} className="muted" style={{ margin: "6px 0" }}>{k.label} · scopes {k.scopes} · {k.revoked_at ? "revoked" : "active"} {k.revoked_at ? "" : <button className="btn ghost small" onClick={async () => { await api(`/api/api-keys/${k.id}`, { method: "DELETE" }); loadAll(); }}>Revoke</button>}</p>)}

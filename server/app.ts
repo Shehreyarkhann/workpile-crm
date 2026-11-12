@@ -1327,7 +1327,7 @@ app.get("/api/proposals/:id/docx", requireAuth, async (req: any, res) => {
 });
 
 // ---------- slice 2: inbox ingestion + triage (§25 P0-2) ----------
-function ingestBatch(ws: string, actorId: string, emails: any[]): { results: any[]; by_category: Record<string, number>; leads_created: number; duplicates: number } {
+export function ingestBatch(ws: string, actorId: string, emails: any[]): { results: any[]; by_category: Record<string, number>; leads_created: number; duplicates: number } {
   const results: any[] = []; const by_category: Record<string, number> = {}; let leads_created = 0, duplicates = 0; const important: any[] = [];
   const ops = db.prepare("SELECT id FROM users WHERE workspace_id=? AND role='OPS_ADMIN' AND active=1").get(ws) as any;
   for (const e of emails) {
@@ -1786,7 +1786,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-export const APP_VERSION = "v45";
+export const APP_VERSION = "v46";
 app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: APP_VERSION, jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {
@@ -2078,9 +2078,49 @@ app.post("/api/billing/change-plan", requireAuth, needPerm("can_billing"), (req:
 
 // ---------- slice 4: OAuth connections (Gmail / Outlook) ----------
 app.get("/api/oauth/status", requireAuth, (req: any, res) => res.json({ google: providerStatus("google"), microsoft: providerStatus("microsoft"), connections: listConnections(req.user.workspace_id) }));
+app.get("/api/oauth/callback", async (req: any, res: any) => {
+  const code = String(req.query.code || ""); const state = String(req.query.state || "");
+  const wsId = state.includes(".") ? state.split(".").slice(1).join(".") : "";
+  const prov = String(req.query.provider || "");
+  if (!code || !wsId || !prov) return res.redirect("/app?mail=error");
+  try {
+    const base = `${req.protocol}://${req.get("host")}`;
+    const { exchangeCode, profileEmail } = await import("./mail-sync.ts");
+    const tokens = await exchangeCode(prov, code, `${base}/api/oauth/callback?provider=${prov}`);
+    if (!tokens.refresh_token) return res.redirect("/app?mail=no_refresh");
+    const email = (await profileEmail(prov, tokens.access_token)) || "mailbox";
+    const { recordConnection } = await import("./oauth.ts");
+    recordConnection(wsId, prov, email, tokens.refresh_token);
+    res.redirect("/app?mail=connected");
+  } catch { res.redirect("/app?mail=error"); }
+});
+app.get("/api/quickbooks/status", requireAuth, async (req: any, res: any) => { const { qbConfigured, qbConnection } = await import("./quickbooks.ts"); res.json({ configured: qbConfigured(), connection: qbConnection(req.user.workspace_id) || null }); });
+app.get("/api/quickbooks/start", requireAuth, async (req: any, res: any) => { const { qbConfigured, qbAuthUrl } = await import("./quickbooks.ts"); if (!qbConfigured()) return res.status(409).json({ error: { code: "provider_not_configured", message: "Register the Intuit app (INTUIT_CLIENT_ID/SECRET) on this deployment to enable QuickBooks." } }); const base = `${req.protocol}://${req.get("host")}`; res.json({ url: qbAuthUrl(req.user.workspace_id, `${base}/api/quickbooks/callback`) }); });
+app.get("/api/quickbooks/callback", async (req: any, res: any) => { const code = String(req.query.code || ""); const state = String(req.query.state || ""); const realmId = String(req.query.realmId || "");
+  const wsId = state.includes(".") ? state.split(".").slice(1).join(".") : ""; if (!code || !wsId || !realmId) return res.redirect("/app?qb=error");
+  try { const { qbExchange } = await import("./quickbooks.ts"); const base = `${req.protocol}://${req.get("host")}`; const tokens = await qbExchange(code, `${base}/api/quickbooks/callback`);
+    db.prepare("INSERT INTO quickbooks_connections (workspace_id, realm_id, refresh_token, status, created_at, updated_at) VALUES (?,?,?,'connected',?,?) ON CONFLICT(workspace_id) DO UPDATE SET realm_id=excluded.realm_id, refresh_token=excluded.refresh_token, status='connected', updated_at=excluded.updated_at").run(wsId, realmId, tokens.refresh_token, now(), now());
+    res.redirect("/app?qb=connected"); } catch { res.redirect("/app?qb=error"); } });
+app.delete("/api/quickbooks", requireAuth, (req: any, res: any) => { db.prepare("UPDATE quickbooks_connections SET status='disconnected', refresh_token=NULL, updated_at=? WHERE workspace_id=?").run(now(), req.user.workspace_id); res.json({ ok: true }); });
+app.post("/api/invoices/:id/quickbooks", requireAuth, async (req: any, res: any) => { try { const { pushInvoiceToQb } = await import("./quickbooks.ts"); const r = await pushInvoiceToQb(req.user.workspace_id, req.params.id); res.json({ ok: true, ...r }); } catch (e: any) { res.status(e?.code === "qb_not_connected" ? 409 : e?.code === "not_found" ? 404 : 502).json({ error: { code: e?.code || "qb_push_failed", message: String(e?.message || e) } }); } });
+app.get("/api/onboarding/status", requireAuth, (req: any, res: any) => { const w = req.user.workspace_id; const wsr = db.prepare("SELECT * FROM workspaces WHERE id=?").get(w) as any;
+  const n = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.n || 0;
+  const steps = [
+    { key: "profile", label: "Business profile & sender email", done: !!wsr?.from_email, view: "settings" },
+    { key: "services", label: "Your services catalog", done: n("SELECT COUNT(*) n FROM services WHERE workspace_id=? AND active=1", w) > 0, view: "settings" },
+    { key: "pricebook", label: "At least one priced price-book item", done: n("SELECT COUNT(*) n FROM price_book_items WHERE workspace_id=? AND standard_price>0", w) > 0, view: "settings" },
+    { key: "team", label: "Invite your team", done: n("SELECT COUNT(*) n FROM memberships WHERE workspace_id=?", w) > 1, view: "settings" },
+    { key: "review", label: "Google review link", done: !!wsr?.review_url, view: "settings" },
+    { key: "lead", label: "Your first lead in the pipeline", done: n("SELECT COUNT(*) n FROM leads WHERE workspace_id=?", w) > 0, view: "leads" },
+    { key: "playbook", label: "A retention playbook (reviews / referrals)", done: n("SELECT COUNT(*) n FROM campaigns WHERE workspace_id=? AND auto_trigger<>'none'", w) > 0, view: "campaigns" },
+    { key: "mailbox", label: "Connect Gmail or Outlook", done: n("SELECT COUNT(*) n FROM oauth_connections WHERE workspace_id=? AND status='connected'", w) > 0, view: "settings" },
+  ];
+  const done = steps.filter(s => s.done).length;
+  res.json({ steps, done, total: steps.length, complete: done === steps.length, pct: Math.round((done / steps.length) * 100) }); });
+app.delete("/api/oauth/connections/:id", requireAuth, (req: any, res: any) => { const c = db.prepare("SELECT * FROM oauth_connections WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any; if (!c) return res.status(404).json({ error: { code: "not_found" } }); db.prepare("UPDATE oauth_connections SET status='disconnected', token_ref=NULL WHERE id=?").run(c.id); res.json({ ok: true }); });
 app.get("/api/oauth/:provider/start", requireAuth, (req: any, res) => {
   const base = `${req.protocol}://${req.get("host")}`;
-  const r = authUrl(req.params.provider, req.user.workspace_id, `${base}/api/oauth/callback`);
+  const r = authUrl(req.params.provider, req.user.workspace_id, `${base}/api/oauth/callback?provider=${req.params.provider}`);
   if (!r.configured) return res.status(409).json({ error: { code: "provider_not_configured", message: "Register the provider app (client ID/secret) on this deployment to enable this connection." } });
   res.json({ url: r.url });
 });

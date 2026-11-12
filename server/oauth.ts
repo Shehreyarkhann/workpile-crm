@@ -28,6 +28,8 @@ export function authUrl(provider: string, workspaceId: string, redirectUri: stri
 }
 
 export function recordConnection(workspaceId: string, provider: string, accountEmail: string, tokenRef: string) {
+  const existing = db.prepare("SELECT * FROM oauth_connections WHERE workspace_id=? AND provider=? AND account_email=?").get(workspaceId, provider, accountEmail) as any;
+  if (existing) { db.prepare("UPDATE oauth_connections SET status='connected', token_ref=?, last_error=NULL WHERE id=?").run(tokenRef, existing.id); return db.prepare("SELECT * FROM oauth_connections WHERE id=?").get(existing.id); }
   const id = uid("oau");
   db.prepare("INSERT INTO oauth_connections (id,workspace_id,provider,account_email,status,token_ref,created_at) VALUES (?,?,?,?,?,?,?)")
     .run(id, workspaceId, provider, accountEmail, "connected", tokenRef, now());
