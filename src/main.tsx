@@ -190,7 +190,9 @@ function OnboardingCard({ go }: any) {
 // ================= Custom Home (v59) =================
 // Widget registry: every Home component declares its sizes once. New components
 // register here and appear in every user's gallery without touching saved layouts.
-type WDef = { id: string; icon: string; title: string; blurb: string; defW: number; minW: number; maxW: number; group: string };
+type WSet = { key: string; label: string; options: { v: string; label: string }[]; def: string };
+type WDef = { id: string; icon: string; title: string; blurb: string; defW: number; minW: number; maxW: number; group: string; multi?: boolean; settings?: WSet[] };
+const ZONES: { v: string; label: string }[] = [{ v: "workspace", label: "Workspace" }, { v: "America/New_York", label: "New York" }, { v: "America/Chicago", label: "Chicago" }, { v: "America/Denver", label: "Denver" }, { v: "America/Los_Angeles", label: "Los Angeles" }, { v: "UTC", label: "UTC" }, { v: "Europe/London", label: "London" }, { v: "Asia/Karachi", label: "Karachi" }];
 const GROUP_ORDER = ["Home", "Work Queue", "Leads", "Proposals", "Jobs", "Schedule & Ops", "Finances", "Inbox", "Campaigns", "Reports"];
 const WIDGET_DEFS: WDef[] = [
   { id: "onboarding", icon: "🚀", title: "Get set up", blurb: "Your go-live checklist with the next step. Hides itself when you're done.", defW: 12, minW: 6, maxW: 12, group: "Home" },
@@ -207,20 +209,20 @@ const WIDGET_DEFS: WDef[] = [
   { id: "quicklinks", icon: "⚡", title: "Quick links", blurb: "Today's plan, follow-ups, the backlog, approvals and reports.", defW: 4, minW: 3, maxW: 8, group: "Home" },
   { id: "recent", icon: "👥", title: "Recently assigned", blurb: "The newest leads, their owners and AI scores.", defW: 8, minW: 4, maxW: 12, group: "Home" },
   { id: "periods", icon: "📊", title: "This week vs last week", blurb: "Leads, proposals, wins, jobs and signed value — this week against last.", defW: 4, minW: 3, maxW: 12, group: "Home" },
-  { id: "clock", icon: "🕐", title: "Clock", blurb: "Your workspace time in three styles — Analog Pine, Digital Paper, Digital Midnight. Switch style with ⚙ while editing.", defW: 3, minW: 3, maxW: 6, group: "Home" },
-  { id: "wq_queue", icon: "⚡", title: "Queue — worst first", blurb: "The Work Queue's top items right here: failed handoffs, expiring docs, approvals, callbacks — worst first.", defW: 8, minW: 4, maxW: 12, group: "Work Queue" },
+  { id: "clock", icon: "🕐", title: "Clock", blurb: "Time in three styles — Analog Pine, Digital Paper, Digital Midnight. Add several: one per timezone your team works in.", defW: 3, minW: 3, maxW: 6, group: "Home", multi: true, settings: [{ key: "style", label: "Style", def: "analog", options: [{ v: "analog", label: "Analog" }, { v: "paper", label: "Paper" }, { v: "midnight", label: "Midnight" }] }, { key: "zone", label: "Zone", def: "workspace", options: ZONES }] },
+  { id: "wq_queue", icon: "⚡", title: "Queue — worst first", blurb: "The Work Queue's top items right here: failed handoffs, expiring docs, approvals, callbacks — worst first.", defW: 8, minW: 4, maxW: 12, group: "Work Queue", multi: true, settings: [{ key: "contains", label: "Show", def: "all", options: [{ v: "all", label: "Everything" }, { v: "approval", label: "Approvals" }, { v: "handoff_failed", label: "Failed handoffs" }, { v: "lead_untouched", label: "Untouched leads" }, { v: "paperwork", label: "Paperwork & docs" }] }] },
   { id: "wq_approvals", icon: "✅", title: "Approvals inbox", blurb: "Proposals waiting on a decision — approve them from Home, exactly like the Approvals page.", defW: 8, minW: 4, maxW: 12, group: "Work Queue" },
   { id: "leads_pipeline", icon: "📊", title: "Pipeline by stage", blurb: "Lead counts and value at every stage, live from the same metrics as Reports.", defW: 4, minW: 3, maxW: 8, group: "Leads" },
-  { id: "leads_recent", icon: "👥", title: "Recent leads", blurb: "The newest leads across the whole pipeline — tap one to open it.", defW: 8, minW: 4, maxW: 12, group: "Leads" },
+  { id: "leads_recent", icon: "👥", title: "Recent leads", blurb: "The newest leads across the whole pipeline — tap one to open it.", defW: 8, minW: 4, maxW: 12, group: "Leads", multi: true, settings: [{ key: "bucket", label: "Bucket", def: "all", options: [{ v: "all", label: "All leads" }, { v: "new", label: "New" }, { v: "working", label: "Working" }, { v: "proposal", label: "Proposal" }, { v: "won", label: "Won" }, { v: "closed", label: "Closed" }] }] },
   { id: "leads_dupes", icon: "🧬", title: "Duplicates waiting", blurb: "Possible duplicate leads the de-dupe found, waiting for a merge decision.", defW: 4, minW: 3, maxW: 6, group: "Leads" },
   { id: "prop_awaiting", icon: "📨", title: "Awaiting signature", blurb: "Proposals sent and waiting on the customer's signature, oldest first.", defW: 8, minW: 4, maxW: 12, group: "Proposals" },
-  { id: "jobs_active", icon: "🔧", title: "Active jobs", blurb: "Jobs in flight with their stage and value — tap to open the job.", defW: 8, minW: 4, maxW: 12, group: "Jobs" },
-  { id: "sched_agenda", icon: "📅", title: "Today's agenda", blurb: "Everything scheduled for today — visits, crew, tasks, callbacks, due dates.", defW: 4, minW: 3, maxW: 8, group: "Schedule & Ops" },
+  { id: "jobs_active", icon: "🔧", title: "Active jobs", blurb: "Jobs in flight with their stage and value — tap to open the job.", defW: 8, minW: 4, maxW: 12, group: "Jobs", multi: true, settings: [{ key: "stage", label: "Stage", def: "all", options: [{ v: "all", label: "All active" }, { v: "scheduled", label: "Scheduled" }, { v: "active", label: "In progress" }, { v: "finishing", label: "Finishing" }] }] },
+  { id: "sched_agenda", icon: "📅", title: "Today's agenda", blurb: "Everything scheduled for today — visits, crew, tasks, callbacks, due dates.", defW: 4, minW: 3, maxW: 8, group: "Schedule & Ops", multi: true, settings: [{ key: "day", label: "Day", def: "today", options: [{ v: "today", label: "Today" }, { v: "tomorrow", label: "Tomorrow" }] }] },
   { id: "ops_visits", icon: "📍", title: "Site visits — upcoming", blurb: "The next scheduled site visits, straight from the one shared visit record.", defW: 4, minW: 3, maxW: 8, group: "Schedule & Ops" },
   { id: "fin_overdue", icon: "⚠️", title: "Overdue receivables", blurb: "Invoices past due with the exact open balance — the same figures as Money.", defW: 8, minW: 4, maxW: 12, group: "Finances" },
   { id: "fin_ar", icon: "💰", title: "Receivables open", blurb: "Every open invoice balance, oldest due first.", defW: 8, minW: 4, maxW: 12, group: "Finances" },
   { id: "fin_payments", icon: "🏦", title: "Recent payments", blurb: "The latest money in — deposits, invoice payments and refunds, netted honestly.", defW: 8, minW: 4, maxW: 12, group: "Finances" },
-  { id: "inbox_recent", icon: "✉️", title: "Inbox — needs attention", blurb: "The Inbox's priority order: urgent and overdue first, replies already labeled.", defW: 8, minW: 4, maxW: 12, group: "Inbox" },
+  { id: "inbox_recent", icon: "✉️", title: "Inbox — needs attention", blurb: "The Inbox's priority order: urgent and overdue first, replies already labeled.", defW: 8, minW: 4, maxW: 12, group: "Inbox", multi: true, settings: [{ key: "show", label: "Show", def: "all", options: [{ v: "all", label: "Everything" }, { v: "overdue", label: "Overdue only" }] }] },
   { id: "camp_perf", icon: "📣", title: "Campaign performance", blurb: "Campaigns with their leads, wins, pipeline and revenue.", defW: 8, minW: 4, maxW: 12, group: "Campaigns" },
   { id: "demand_gap", icon: "🔍", title: "Demand gap", blurb: "Services customers ask for that you don't sell yet — and what they're worth.", defW: 4, minW: 3, maxW: 8, group: "Reports" },
 ];
@@ -230,17 +232,23 @@ const DEFAULT_LAYOUT: any[] = [
   { wid: "onboarding", w: 12 }, { wid: "stat_pipeline", w: 3 }, { wid: "stat_proposals", w: 3 }, { wid: "stat_fpar", w: 3 }, { wid: "stat_won", w: 3 },
   { wid: "setup", w: 8 }, { wid: "goal", w: 4 }, { wid: "finances", w: 8 }, { wid: "calendar", w: 4 },
   { wid: "agent", w: 8 }, { wid: "quicklinks", w: 4 }, { wid: "activity", w: 8 }, { wid: "periods", w: 4 }, { wid: "recent", w: 8 },
-];
+].map(x => ({ ...x, iid: x.wid }));
 const healLayout = (raw: any): any[] => {
   if (!Array.isArray(raw)) return DEFAULT_LAYOUT.map(x => ({ ...x }));
-  const out: any[] = []; const seen = new Set<string>();
+  const out: any[] = []; const widCount = new Map<string, number>(); const seenIid = new Set<string>();
   for (const it of raw) {
     if (!it || typeof it !== "object") continue;
     const def = DEF_BY_ID.get(String(it.wid || ""));
-    if (!def || seen.has(def.id)) continue;
-    seen.add(def.id);
+    if (!def) continue;
+    const n = (widCount.get(def.id) || 0) + 1;
+    if (!def.multi && n > 1) continue; // singletons: first instance wins, as v59/v60
+    widCount.set(def.id, n);
+    let iid = typeof it.iid === "string" && /^[A-Za-z0-9_#-]{1,80}$/.test(it.iid) ? it.iid : "";
+    if (!iid || seenIid.has(iid)) iid = n === 1 ? def.id : `${def.id}#${n}`;
+    while (seenIid.has(iid)) iid = iid + "x";
+    seenIid.add(iid);
     const w = Math.max(def.minW, Math.min(def.maxW, Math.round(Number(it.w) || def.defW)));
-    out.push({ wid: def.id, w, ...(it.settings && typeof it.settings === "object" ? { settings: it.settings } : {}) });
+    out.push({ iid, wid: def.id, w, ...(it.settings && typeof it.settings === "object" ? { settings: it.settings } : {}) });
   }
   return out;
 };
@@ -249,7 +257,7 @@ function ClockWidget({ settings, tz }: any) {
   const style = (settings && settings.style) || "analog";
   const [nowT, setNowT] = useState(() => new Date());
   useEffect(() => { const iv = setInterval(() => { setNowT(new Date()); }, 1000); return () => clearInterval(iv); }, []);
-  const zone = tz || (typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().timeZone : "UTC") || "UTC";
+  const zone = (settings && settings.zone && settings.zone !== "workspace") ? settings.zone : (tz || (typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().timeZone : "UTC") || "UTC");
   const parts: Record<string, string> = {};
   try { for (const p of new Intl.DateTimeFormat("en-US", { timeZone: zone, hour12: false, hour: "numeric", minute: "numeric", second: "numeric" }).formatToParts(nowT)) parts[p.type] = p.value; } catch { /* bad tz falls back below */ }
   const hh = Number(parts.hour || nowT.getHours()) % 24, mm = Number(parts.minute || nowT.getMinutes()), ss = Number(parts.second || nowT.getSeconds());
@@ -276,7 +284,7 @@ function useWData(path: string, onForbidden?: () => void) {
   const [data, setData] = useState<any>(null); const [err, setErr] = useState("");
   const fbRef = useRef(onForbidden); fbRef.current = onForbidden;
   const load = () => { api(path).then((r: any) => { setData(r); setErr(""); }).catch((e: any) => { const msg = String(e?.message || e); if (msg === "money_denied" || msg === "forbidden" || msg === "module_denied" || msg === "HTTP 403") fbRef.current?.(); setErr(msg); }); };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [path]);
   useLive(load);
   return { data, err, load };
 }
@@ -285,14 +293,18 @@ const WLoad = () => <p className="muted" style={{ fontSize: 13 }}>Loading…</p>
 const WErr = () => <p className="muted" style={{ fontSize: 13 }}>Couldn't load just now — it retries automatically on the next refresh.</p>;
 const asArr = (r: any): any[] => Array.isArray(r) ? r : (r?.items || r?.rows || []);
 
-function WQueue({ go, openLead, onForbidden }: any) {
+function WQueue({ go, openLead, onForbidden, settings }: any) {
   const { data, err } = useWData("/api/queue", onForbidden);
-  const items = asArr(data).slice(0, 6);
-  return (<WShell icon="⚡" title="Queue — worst first" onAll={() => go({ view: "queue" })}>
+  const contains = (settings && settings.contains) || "all";
+  const matchQ = (q: any) => contains === "all" ? true : contains === "paperwork" ? ["paperwork", "doc_expiring"].includes(q.type) : q.type === contains;
+  const matched = asArr(data).filter(matchQ);
+  const items = matched.slice(0, 6);
+  return (<WShell icon="⚡" title="Queue — worst first" sub={contains !== "all" ? "Showing: " + contains.replaceAll("_", " ") : undefined} onAll={() => go({ view: "queue" })}>
     {!data && !err && <WLoad />}{err && <WErr />}
-    {data && items.length === 0 && <p className="muted" style={{ fontSize: 13 }}>Queue is clear — nothing needs attention. 🎉</p>}
+    {data && items.length === 0 && <p className="muted" style={{ fontSize: 13 }}>{contains === "all" ? "Queue is clear — nothing needs attention. 🎉" : "Nothing of this kind in the queue right now."}</p>}
     {items.map((q: any) => <div className="wRow" key={q.id} onClick={() => q.type === "approval" ? go({ view: "approvals" }) : q.lead_id ? openLead(q.lead_id) : go({ view: "queue" })}><span className="wScore">{Math.round(q.score || 0)}</span><span style={{ flex: 1, minWidth: 0 }}><b style={{ fontSize: 13.5 }}>{q.title}</b><div className="muted" style={{ fontSize: 12 }}>{q.subtitle}</div></span><span className="muted" style={{ fontSize: 12 }}>{q.age_hours ? q.age_hours + "h" : ""}</span></div>)}
-    {data && (data.total || 0) > 6 && <p className="muted" style={{ fontSize: 12, marginTop: 6 }}>+{data.total - 6} more in the Queue →</p>}
+    {data && contains === "all" && (data.total || 0) > 6 && <p className="muted" style={{ fontSize: 12, marginTop: 6 }}>+{data.total - 6} more in the Queue →</p>}
+    {data && contains !== "all" && matched.length > 6 && <p className="muted" style={{ fontSize: 12, marginTop: 6 }}>+{matched.length - 6} more like this in the Queue →</p>}
   </WShell>);
 }
 function WApprovals({ go, openLead, toast, onForbidden }: any) {
@@ -313,12 +325,14 @@ function WLeadsPipeline({ d, go }: any) {
     {funnel.map((f: any) => <div className="wRow" key={f.state} onClick={() => go({ view: "leads" })}><span style={{ width: 86, fontSize: 12.5, fontWeight: 600 }}>{String(f.state).replaceAll("_", " ")}</span><span className="wBar2"><span style={{ width: Math.max(3, Math.round(100 * (f.value || 0) / maxV)) + "%" }} /></span><span style={{ fontSize: 12.5 }}><b>{f.count}</b> · {money(f.value)}</span></div>)}
   </WShell>);
 }
-function WLeadsRecent({ go, openLead, onForbidden }: any) {
+function WLeadsRecent({ go, openLead, onForbidden, settings }: any) {
   const { data, err } = useWData("/api/leads", onForbidden);
-  const rows = asArr(data).slice(0, 6);
-  return (<WShell icon="👥" title="Recent leads" onAll={() => go({ view: "leads" })}>
+  const bucket = (settings && settings.bucket) || "all";
+  const BST: Record<string, string[]> = { new: ["NEW"], working: ["WORKING", "QUALIFIED"], proposal: ["PROPOSAL", "SENT", "FOLLOWUP"], won: ["WON"], closed: ["LOST", "NO_RESPONSE", "UNSERVICEABLE", "JUNK", "DUPLICATE"] };
+  const rows = asArr(data).filter((l: any) => bucket === "all" || (BST[bucket] || []).includes(l.state)).slice(0, 6);
+  return (<WShell icon="👥" title="Recent leads" sub={bucket !== "all" ? "Bucket: " + bucket : undefined} onAll={() => go({ view: "leads" })}>
     {!data && !err && <WLoad />}{err && <WErr />}
-    {data && rows.length === 0 && <p className="muted" style={{ fontSize: 13 }}>No leads yet.</p>}
+    {data && rows.length === 0 && <p className="muted" style={{ fontSize: 13 }}>{bucket === "all" ? "No leads yet." : "No " + bucket + " leads right now."}</p>}
     {rows.map((l: any) => <div className="wRow" key={l.id} onClick={() => openLead(l.id)}><span style={{ flex: 1, minWidth: 0 }}><b style={{ fontSize: 13.5 }}>{l.contact_name || "—"}</b><div className="muted" style={{ fontSize: 12 }}>{l.service_requested} · {money(l.est_value)}</div></span><span className="st info">{String(l.state || "").replaceAll("_", " ")}</span></div>)}
   </WShell>);
 }
@@ -339,23 +353,27 @@ function WPropAwaiting({ go, openLead, onForbidden }: any) {
     {rows.map((p: any) => <div className="wRow" key={p.id} onClick={() => p.lead_id && openLead(p.lead_id)}><span style={{ flex: 1, minWidth: 0 }}><b style={{ fontSize: 13.5 }}>{p.contact_name || "Customer"}</b><div className="muted" style={{ fontSize: 12 }}>{p.number ? "PROP-" + p.number + " · " : ""}{p.service_requested} · sent {String(p.sent_at || p.created_at || "").slice(0, 10)}</div></span><b style={{ fontSize: 13.5 }}>{money(p.total)}</b></div>)}
   </WShell>);
 }
-function WJobsActive({ go, onForbidden }: any) {
+function WJobsActive({ go, onForbidden, settings }: any) {
   const { data, err } = useWData("/api/jobs", onForbidden);
-  const rows = asArr(data).filter((j: any) => !["CLOSED", "CANCELLED"].includes(j.stage)).slice(0, 6);
+  const stage = (settings && settings.stage) || "all";
+  const SG: Record<string, string[]> = { scheduled: ["AWAITING_SCHEDULING", "SCHEDULED"], active: ["IN_PROGRESS", "ON_HOLD"], finishing: ["WORK_COMPLETED", "DOCUMENTATION_PENDING", "READY_TO_INVOICE", "INVOICED"] };
+  const rows = asArr(data).filter((j: any) => !["CLOSED", "CANCELLED"].includes(j.stage)).filter((j: any) => stage === "all" || (SG[stage] || []).includes(j.stage)).slice(0, 6);
   const open = (j: any) => { const w = window as any; if (w.wpOpenJob) w.wpOpenJob(j.id); else go({ view: "jobs" }); };
-  return (<WShell icon="🔧" title="Active jobs" onAll={() => go({ view: "jobs" })}>
+  return (<WShell icon="🔧" title="Active jobs" sub={stage !== "all" ? "Stage: " + stage : undefined} onAll={() => go({ view: "jobs" })}>
     {!data && !err && <WLoad />}{err && <WErr />}
-    {data && rows.length === 0 && <p className="muted" style={{ fontSize: 13 }}>No active jobs — won proposals become jobs automatically.</p>}
+    {data && rows.length === 0 && <p className="muted" style={{ fontSize: 13 }}>{stage === "all" ? "No active jobs — won proposals become jobs automatically." : "No jobs at this stage right now."}</p>}
     {rows.map((j: any) => <div className="wRow" key={j.id} onClick={() => open(j)}><span style={{ flex: 1, minWidth: 0 }}><b style={{ fontSize: 13.5 }}>{j.contact_name || j.service_requested || "Job"}</b><div className="muted" style={{ fontSize: 12 }}>{j.service_requested || ""}</div></span><span className="st info">{String(j.stage || "").replaceAll("_", " ")}</span><b style={{ fontSize: 13 }}>{money(j.value)}</b></div>)}
   </WShell>);
 }
-function WSchedAgenda({ go, openLead, onForbidden }: any) {
-  const today = new Date().toISOString().slice(0, 10);
-  const { data, err } = useWData(`/api/calendar?from=${today}&to=${today}`, onForbidden);
-  const evs = asArr(data?.events || data).filter((e: any) => e.date === today).slice(0, 7);
-  return (<WShell icon="📅" title="Today's agenda" onAll={() => (window as any).wpGoTab?.("planner", "calendar")}>
+function WSchedAgenda({ go, openLead, onForbidden, settings }: any) {
+  const day = (settings && settings.day) || "today";
+  const d0 = new Date(); if (day === "tomorrow") d0.setDate(d0.getDate() + 1);
+  const dstr = d0.toISOString().slice(0, 10);
+  const { data, err } = useWData(`/api/calendar?from=${dstr}&to=${dstr}`, onForbidden);
+  const evs = asArr(data?.events || data).filter((e: any) => e.date === dstr).slice(0, 7);
+  return (<WShell icon="📅" title={day === "tomorrow" ? "Tomorrow's agenda" : "Today's agenda"} onAll={() => (window as any).wpGoTab?.("planner", "calendar")}>
     {!data && !err && <WLoad />}{err && <WErr />}
-    {data && evs.length === 0 && <p className="muted" style={{ fontSize: 13 }}>Nothing scheduled today.</p>}
+    {data && evs.length === 0 && <p className="muted" style={{ fontSize: 13 }}>{day === "tomorrow" ? "Nothing scheduled tomorrow." : "Nothing scheduled today."}</p>}
     {evs.map((e: any, i: number) => <div className="wRow" key={i} onClick={() => e.lead_id && openLead(e.lead_id)}><span className="muted" style={{ fontSize: 12, width: 42 }}>{e.time && e.time !== "00:00" ? e.time : "—"}</span><span style={{ flex: 1, minWidth: 0 }}><b style={{ fontSize: 13.5 }}>{e.title}</b><div className="muted" style={{ fontSize: 12 }}>{e.sub}</div></span></div>)}
   </WShell>);
 }
@@ -380,12 +398,13 @@ function WFinDrill({ dkey, icon, title, go, openLead, onForbidden }: any) {
     </>)}
   </WShell>);
 }
-function WInboxRecent({ go, openLead, onForbidden }: any) {
+function WInboxRecent({ go, openLead, onForbidden, settings }: any) {
   const { data, err } = useWData("/api/inbox", onForbidden);
-  const rows = asArr(data).filter((r: any) => (r.status || "open") === "open").slice(0, 6);
-  return (<WShell icon="✉️" title="Inbox — needs attention" onAll={() => go({ view: "inbox" })}>
+  const show = (settings && settings.show) || "all";
+  const rows = asArr(data).filter((r: any) => (r.status || "open") === "open").filter((r: any) => show === "all" || r.overdue).slice(0, 6);
+  return (<WShell icon="✉️" title="Inbox — needs attention" sub={show === "overdue" ? "Overdue only" : undefined} onAll={() => go({ view: "inbox" })}>
     {!data && !err && <WLoad />}{err && <WErr />}
-    {data && rows.length === 0 && <p className="muted" style={{ fontSize: 13 }}>Inbox zero. 🎉</p>}
+    {data && rows.length === 0 && <p className="muted" style={{ fontSize: 13 }}>{show === "overdue" ? "Nothing overdue — inbox is healthy." : "Inbox zero. 🎉"}</p>}
     {rows.map((r: any) => <div className="wRow" key={r.id} onClick={() => r.lead_id ? openLead(r.lead_id) : go({ view: "inbox" })}><span style={{ flex: 1, minWidth: 0 }}><b style={{ fontSize: 13.5 }}>{r.subject || r.from_name || r.from_email || "Message"}</b><div className="muted" style={{ fontSize: 12 }}>{r.from_name || r.from_email || ""}{r.snippet ? " · " + String(r.snippet).slice(0, 60) : ""}</div></span>{r.reply_label && <span className="tinyBadge" style={{ background: "#e7f6ec", color: "#0E5C3A" }}>{String(r.reply_label).replaceAll("_", " ")}</span>}{r.overdue && <span className="tinyBadge" style={{ background: "#fde8e8", color: "#b3261e" }}>overdue</span>}</div>)}
   </WShell>);
 }
@@ -501,36 +520,37 @@ function HomeDash({ go, openLead, m, d }: any) {
         </div>),
   };
   const moveItem = (arr: any[], from: number, to: number) => { const a = [...arr]; const [x] = a.splice(from, 1); a.splice(Math.max(0, Math.min(a.length, to)), 0, x); return a; };
-  const setItemW = (wid: string, w: number) => { const def = DEF_BY_ID.get(wid); if (!def) return; const cw = Math.max(def.minW, Math.min(def.maxW, w)); const next = items.map(it => it.wid === wid ? { ...it, w: cw } : it); persist(next); };
-  const removeItem = (it: any) => { const idx = items.findIndex(x => x.wid === it.wid); setRemoved({ item: it, idx }); persist(items.filter(x => x.wid !== it.wid)); };
+  const setItemW = (iid: string, w: number) => { const cur = items.find(x => x.iid === iid); const def = cur && DEF_BY_ID.get(cur.wid); if (!def || !cur) return; const cw = Math.max(def.minW, Math.min(def.maxW, w)); persist(items.map(it => it.iid === iid ? { ...it, w: cw } : it)); };
+  const removeItem = (it: any) => { const idx = items.findIndex(x => x.iid === it.iid); setRemoved({ item: it, idx }); persist(items.filter(x => x.iid !== it.iid)); };
   const undoRemove = () => { if (!removed) return; const next = [...items]; next.splice(Math.max(0, Math.min(next.length, removed.idx)), 0, removed.item); setRemoved(null); persist(next); };
-  const cycleClock = (it: any) => { const styles = ["analog", "paper", "midnight"]; const cur = (it.settings && it.settings.style) || "analog"; const nx = styles[(styles.indexOf(cur) + 1) % styles.length]; persist(items.map(x => x.wid === "clock" ? { ...x, settings: { ...(x.settings || {}), style: nx } } : x)); };
-  const dragStart = (e: any, wid: string) => { if ((e.target as any).closest(".wBtn")) return; e.preventDefault(); try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* noop */ } dragRef.current = { wid }; setDragId(wid); };
-  const dragMove = (e: any) => { const dr = dragRef.current; if (!dr || !gridRef.current) return; const cells = [...gridRef.current.querySelectorAll("[data-wid]")]; let target = visItems.length - 1;
+  const updateSetting = (it: any, skey: string, val: string) => { persist(items.map(x => x.iid === it.iid ? { ...x, settings: { ...(x.settings || {}), [skey]: val } } : x)); };
+  const settingsSummary = (it: any): string => { const def = DEF_BY_ID.get(it.wid); if (!def || !def.settings) return ""; return def.settings.map(sd => { const cur = (it.settings && it.settings[sd.key]) || sd.def; return (sd.options.find(o => o.v === cur) || sd.options[0]).label; }).join(" · "); };
+  const dragStart = (e: any, iid: string) => { if ((e.target as any).closest(".wBtn")) return; e.preventDefault(); try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* noop */ } dragRef.current = { iid }; setDragId(iid); };
+  const dragMove = (e: any) => { const dr = dragRef.current; if (!dr || !gridRef.current) return; const cells = [...gridRef.current.querySelectorAll("[data-iid]")]; let target = visItems.length - 1;
     for (let i = 0; i < cells.length; i++) { const r = cells[i].getBoundingClientRect(); const cx = r.left + r.width / 2, cy = r.top + r.height / 2; if (e.clientY < cy - 4 || (Math.abs(e.clientY - cy) <= Math.max(30, r.height / 2) && e.clientX < cx)) { target = i; break; } }
-    const from = visItems.findIndex(x => x.wid === dr.wid); if (from === -1 || target === from) return;
-    const order = moveItem(visItems, from, target); const byWid = new Map(order.map((x: any) => [x.wid, x])); persist(items.map(x => byWid.get(x.wid) || x).sort((a: any, b: any) => order.findIndex((o: any) => o.wid === a.wid) - order.findIndex((o: any) => o.wid === b.wid))); };
+    const from = visItems.findIndex(x => x.iid === dr.iid); if (from === -1 || target === from) return;
+    const order = moveItem(visItems, from, target); const byIid = new Map(order.map((x: any) => [x.iid, x])); persist(items.map(x => byIid.get(x.iid) || x).sort((a: any, b: any) => order.findIndex((o: any) => o.iid === a.iid) - order.findIndex((o: any) => o.iid === b.iid))); };
   const dragEnd = () => { dragRef.current = null; setDragId(null); };
-  const resizeStart = (e: any, it: any) => { e.preventDefault(); e.stopPropagation(); try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* noop */ } const grid = gridRef.current; const colW = grid ? (grid.clientWidth - 11 * 16) / 12 : 90; rszRef.current = { wid: it.wid, startX: e.clientX, startW: it.w, colW }; };
-  const resizeMove = (e: any) => { const rz = rszRef.current; if (!rz) return; const dw = Math.round((e.clientX - rz.startX) / rz.colW); if (dw !== 0) { const def = DEF_BY_ID.get(rz.wid); const cur = items.find(x => x.wid === rz.wid); if (def && cur && cur.w !== Math.max(def.minW, Math.min(def.maxW, rz.startW + dw))) setItemW(rz.wid, rz.startW + dw); } };
+  const resizeStart = (e: any, it: any) => { e.preventDefault(); e.stopPropagation(); try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* noop */ } const grid = gridRef.current; const colW = grid ? (grid.clientWidth - 11 * 16) / 12 : 90; rszRef.current = { iid: it.iid, startX: e.clientX, startW: it.w, colW }; };
+  const resizeMove = (e: any) => { const rz = rszRef.current; if (!rz) return; const dw = Math.round((e.clientX - rz.startX) / rz.colW); if (dw !== 0) { const cur = items.find(x => x.iid === rz.iid); const def = cur && DEF_BY_ID.get(cur.wid); if (def && cur && cur.w !== Math.max(def.minW, Math.min(def.maxW, rz.startW + dw))) setItemW(rz.iid, rz.startW + dw); } };
   const resizeEnd = () => { rszRef.current = null; };
-  const cellKeys = (e: any, idx: number) => { if (!editing) return; const it = visItems[idx]; if (!it) return; if (e.key === "ArrowRight" || e.key === "ArrowDown") { e.preventDefault(); persist(moveItem(items, items.findIndex(x => x.wid === it.wid), items.findIndex(x => x.wid === it.wid) + 1)); } if (e.key === "ArrowLeft" || e.key === "ArrowUp") { e.preventDefault(); persist(moveItem(items, items.findIndex(x => x.wid === it.wid), items.findIndex(x => x.wid === it.wid) - 1)); } if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); removeItem(it); } };
+  const cellKeys = (e: any, idx: number) => { if (!editing) return; const it = visItems[idx]; if (!it) return; if (e.key === "ArrowRight" || e.key === "ArrowDown") { e.preventDefault(); persist(moveItem(items, items.findIndex(x => x.iid === it.iid), items.findIndex(x => x.iid === it.iid) + 1)); } if (e.key === "ArrowLeft" || e.key === "ArrowUp") { e.preventDefault(); persist(moveItem(items, items.findIndex(x => x.iid === it.iid), items.findIndex(x => x.iid === it.iid) - 1)); } if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); removeItem(it); } };
   const renderBody = (it: any) => {
     if (hiddenNow(it.wid) || forbidden.has(it.wid)) return <div className="card" style={{ padding: 16, height: "100%" }}><b>{DEF_BY_ID.get(it.wid)?.icon} {DEF_BY_ID.get(it.wid)?.title}</b><p className="muted" style={{ fontSize: 12.5, marginTop: 4 }}>Not shown on your Home right now — it's complete, dismissed, or not part of your role's access. It stays in your layout; remove it if you never want it back.</p></div>;
     const FB = () => forbid(it.wid);
-    if (it.wid === "wq_queue") return <WQueue go={go} openLead={openLead} onForbidden={FB} />;
+    if (it.wid === "wq_queue") return <WQueue go={go} openLead={openLead} onForbidden={FB} settings={it.settings} />;
     if (it.wid === "wq_approvals") return <WApprovals go={go} openLead={openLead} toast={toast} onForbidden={FB} />;
     if (it.wid === "leads_pipeline") return <WLeadsPipeline d={d} go={go} />;
-    if (it.wid === "leads_recent") return <WLeadsRecent go={go} openLead={openLead} onForbidden={FB} />;
+    if (it.wid === "leads_recent") return <WLeadsRecent go={go} openLead={openLead} onForbidden={FB} settings={it.settings} />;
     if (it.wid === "leads_dupes") return <WLeadsDupes go={go} onForbidden={FB} />;
     if (it.wid === "prop_awaiting") return <WPropAwaiting go={go} openLead={openLead} onForbidden={FB} />;
-    if (it.wid === "jobs_active") return <WJobsActive go={go} onForbidden={FB} />;
-    if (it.wid === "sched_agenda") return <WSchedAgenda go={go} openLead={openLead} onForbidden={FB} />;
+    if (it.wid === "jobs_active") return <WJobsActive go={go} onForbidden={FB} settings={it.settings} />;
+    if (it.wid === "sched_agenda") return <WSchedAgenda go={go} openLead={openLead} onForbidden={FB} settings={it.settings} />;
     if (it.wid === "ops_visits") return <WOpsVisits go={go} openLead={openLead} onForbidden={FB} />;
     if (it.wid === "fin_overdue") return <WFinDrill dkey="overdue_receivables" icon="⚠️" title="Overdue receivables" go={go} openLead={openLead} onForbidden={FB} />;
     if (it.wid === "fin_ar") return <WFinDrill dkey="outstanding_receivables" icon="💰" title="Receivables open" go={go} openLead={openLead} onForbidden={FB} />;
     if (it.wid === "fin_payments") return <WFinDrill dkey="collected_cash" icon="🏦" title="Recent payments" go={go} openLead={openLead} onForbidden={FB} />;
-    if (it.wid === "inbox_recent") return <WInboxRecent go={go} openLead={openLead} onForbidden={FB} />;
+    if (it.wid === "inbox_recent") return <WInboxRecent go={go} openLead={openLead} onForbidden={FB} settings={it.settings} />;
     if (it.wid === "camp_perf") return <WCampaigns go={go} onForbidden={FB} />;
     if (it.wid === "demand_gap") return <WDemandGap go={go} onForbidden={FB} />;
     if (it.wid === "clock") return <ClockWidget settings={it.settings} tz={home.tz} />;
@@ -538,12 +558,13 @@ function HomeDash({ go, openLead, m, d }: any) {
   };
   const cell = (it: any, idx: number) => {
     const def = DEF_BY_ID.get(it.wid) as any;
-    if (!editing) return <div key={it.wid} style={{ gridColumn: `span ${it.w}`, minWidth: 0 }}>{renderBody(it)}</div>;
-    return (<div key={it.wid} data-wid={it.wid} tabIndex={0} onKeyDown={e => cellKeys(e, idx)} className={"wCell" + (dragId === it.wid ? " dragging" : "")} style={{ gridColumn: `span ${it.w}`, minWidth: 0 }}>
-      <div className="wBar" onPointerDown={e => dragStart(e, it.wid)} onPointerMove={dragMove} onPointerUp={dragEnd} title="Drag to move">
-        <span className="wGrip">⠿</span><span className="wTitle">{def.icon} {def.title}</span>
+    if (!editing) return <div key={it.iid} style={{ gridColumn: `span ${it.w}`, minWidth: 0 }}>{renderBody(it)}</div>;
+    const summary = settingsSummary(it);
+    return (<div key={it.iid} data-iid={it.iid} tabIndex={0} onKeyDown={e => cellKeys(e, idx)} className={"wCell" + (dragId === it.iid ? " dragging" : "")} style={{ gridColumn: `span ${it.w}`, minWidth: 0 }}>
+      <div className="wBar" onPointerDown={e => dragStart(e, it.iid)} onPointerMove={dragMove} onPointerUp={dragEnd} title="Drag to move">
+        <span className="wGrip">⠿</span><span className="wTitle">{def.icon} {def.title}{summary ? " · " + summary : ""}</span>
         <span className="wBtns">
-          {it.wid === "clock" && <button className="wBtn" onPointerDown={e => e.stopPropagation()} onClick={() => cycleClock(it)}>⚙ {((it.settings && it.settings.style) || "analog")}</button>}
+          {(def.settings || []).map((sd: any) => { const cur = (it.settings && it.settings[sd.key]) || sd.def; const opt = sd.options.find((o: any) => o.v === cur) || sd.options[0]; const nxt = sd.options[(sd.options.indexOf(opt) + 1) % sd.options.length]; return <button key={sd.key} className="wBtn" onPointerDown={e => e.stopPropagation()} onClick={() => updateSetting(it, sd.key, nxt.v)} title={sd.label + " — tap to change"}>{sd.label}: {opt.label}</button>; })}
           <button className="wBtn danger" onPointerDown={e => e.stopPropagation()} onClick={() => removeItem(it)} title="Remove from Home">✕</button>
         </span>
       </div>
@@ -552,6 +573,7 @@ function HomeDash({ go, openLead, m, d }: any) {
     </div>);
   };
   const placedIds = new Set(items.map(x => x.wid));
+  const addWidget = (d: any) => { const used = new Set(items.map(x => x.iid)); let iid = d.id; if (used.has(iid)) { let n = 2; while (used.has(`${d.id}#${n}`)) n++; iid = `${d.id}#${n}`; } const settings = d.settings ? Object.fromEntries(d.settings.map((sd: any) => [sd.key, sd.def])) : undefined; persist([...items, { iid, wid: d.id, w: d.defW, ...(settings ? { settings } : {}) }]); toast(d.title + " added to your Home ✓"); };
   return (<div>
 {!editing && <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginBottom: 10 }}>{savedFlash && <span style={{ fontSize: 12.5, color: "#157347", fontWeight: 600 }}>{savedFlash}</span>}<button className="btn ghost small" onClick={() => setEditing(true)}>✎ Customize</button></div>}
     {editing && <div className="editBar"><b>Editing your Home</b><span style={{ opacity: .75 }}>Drag the top bar to move · drag ◢ to resize · changes save automatically</span><span style={{ flex: 1 }} />{savedFlash && <span style={{ color: "#7ED492", fontWeight: 600 }}>{savedFlash}</span>}<button className="btn ghost small" onClick={() => setGallery(true)}>+ Add components</button><button className="btn ghost small" onClick={async () => { await api("/api/home/layout", { method: "DELETE" }).catch(() => {}); setLayout(DEFAULT_LAYOUT.map(x => ({ ...x }))); toast("Default layout restored"); }}>Reset</button><button className="btn small" onClick={() => setEditing(false)}>Done</button></div>}
@@ -562,7 +584,7 @@ function HomeDash({ go, openLead, m, d }: any) {
     {gallery && <div className="galOverlay" onClick={() => setGallery(false)}><div className="galPanel" onClick={e => e.stopPropagation()}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}><h3 style={{ margin: 0 }}>Add components</h3><button className="btn ghost small" onClick={() => setGallery(false)}>Close</button></div>
       <p className="muted" style={{ fontSize: 13 }}>Every component from across the app, grouped by module. Anything you pin here is the module's real component — live data, same actions, same permissions. Approve it here and it's approved everywhere.</p>
-      {GROUP_ORDER.map(g => { const ds = WIDGET_DEFS.filter(d => d.group === g && !forbidden.has(d.id) && (d.id !== "onboarding" || !obDone) && (d.id !== "setup" || !setupDone)); if (!ds.length) return null; return (<div key={g}><h4 className="galGroupH">{g}</h4><div className="galGrid">{ds.map(d => (<div className="galCard" key={d.id}><div style={{ fontSize: 22 }}>{d.icon}</div><b style={{ display: "block", marginTop: 4 }}>{d.title}</b><p className="muted" style={{ fontSize: 12.5, margin: "4px 0 10px", lineHeight: 1.5 }}>{d.blurb}</p>{placedIds.has(d.id) ? <span className="tinyBadge" style={{ background: "#e7f6ec", color: "#0E5C3A" }}>On your Home ✓</span> : <button className="btn small" onClick={() => { persist([...items, { wid: d.id, w: d.defW, ...(d.id === "clock" ? { settings: { style: "analog" } } : {}) }]); toast(d.title + " added to your Home ✓"); }}>+ Add</button>}</div>))}</div></div>); })}
+      {GROUP_ORDER.map(g => { const ds = WIDGET_DEFS.filter(d => d.group === g && !forbidden.has(d.id) && (d.id !== "onboarding" || !obDone) && (d.id !== "setup" || !setupDone)); if (!ds.length) return null; return (<div key={g}><h4 className="galGroupH">{g}</h4><div className="galGrid">{ds.map(d => (<div className="galCard" key={d.id}><div style={{ fontSize: 22 }}>{d.icon}</div><b style={{ display: "block", marginTop: 4 }}>{d.title}</b><p className="muted" style={{ fontSize: 12.5, margin: "4px 0 10px", lineHeight: 1.5 }}>{d.blurb}</p>{placedIds.has(d.id) && !d.multi ? <span className="tinyBadge" style={{ background: "#e7f6ec", color: "#0E5C3A" }}>On your Home ✓</span> : <button className="btn small" onClick={() => addWidget(d)}>{placedIds.has(d.id) ? "+ Add another" : "+ Add"}</button>}</div>))}</div></div>); })}
       <p className="muted" style={{ fontSize: 12.5, marginTop: 14 }}>Excluded on purpose: platform-admin console, API keys, role editors and billing internals — security-sensitive surfaces don't belong on a glanceable wall.</p>
     </div></div>}
     {removed && <div className="undoBar"><span>{DEF_BY_ID.get(removed.item.wid)?.icon} {DEF_BY_ID.get(removed.item.wid)?.title} removed</span><button className="btn small" onClick={undoRemove}>Undo</button><button className="wBtn" onClick={() => setRemoved(null)}>✕</button></div>}
@@ -602,7 +624,12 @@ function AgentRunModal({ close, done }: any) {
 
 function Dashboard({ go, openLead }: any) {
   const [d, setD] = useState<any>(null); const [ins, setIns] = useState<any[]>([]); const [brief, setBrief] = useState<any>(null);
-  useEffect(() => { api("/api/dashboard").then(setD).catch(() => {}); api("/api/ai/insights").then(setIns).catch(() => {}); api("/api/brief").then(setBrief).catch(() => {}); }, []);
+  const loadDash = () => { api("/api/dashboard").then(setD).catch(() => {}); api("/api/ai/insights").then(setIns).catch(() => {}); api("/api/brief").then(setBrief).catch(() => {}); };
+  useEffect(() => { loadDash(); }, []);
+  // The brief, the KPIs and everything HomeDash renders from these props stay
+  // live on the same bus as the widgets (v61): a mutation anywhere — including
+  // approving from a Home widget — refreshes them in the same tick.
+  useLive(loadDash);
   if (!d) return <p className="muted">Loading dashboard…</p>;
   const m = d.metrics;
   const maxF = Math.max(1, ...d.funnel.map((f: any) => f.count));

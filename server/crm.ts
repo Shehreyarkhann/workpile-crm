@@ -671,12 +671,19 @@ export function registerHome(app: any, requireAuth: any) {
     for (const it of raw.slice(0, 40)) {
       if (!it || typeof it !== "object") continue;
       const wid = String(it.wid || "");
-      if (!/^[a-z0-9_]{1,64}$/.test(wid) || seen.has(wid)) continue;
-      seen.add(wid);
+      if (!/^[a-z0-9_]{1,64}$/.test(wid)) continue;
+      // Instance identity (v62, Phase 3): items may repeat a wid when each
+      // carries a distinct iid. Legacy items without an iid dedupe by wid,
+      // exactly as v59/v60 behaved.
+      const iidRaw = String(it.iid || "");
+      const iid = /^[A-Za-z0-9_#-]{1,80}$/.test(iidRaw) ? iidRaw : "";
+      const key = iid || wid;
+      if (seen.has(key)) continue;
+      seen.add(key);
       const w = Math.max(2, Math.min(12, Math.round(Number(it.w) || 12)));
       let settings: any = undefined;
       if (it.settings && typeof it.settings === "object" && !Array.isArray(it.settings)) { try { const sj = JSON.stringify(it.settings); if (sj.length <= 2048) settings = JSON.parse(sj); } catch { /* drop bad settings */ } }
-      out.push({ wid, w, ...(settings ? { settings } : {}) });
+      out.push({ ...(iid ? { iid } : {}), wid, w, ...(settings ? { settings } : {}) });
     }
     return out;
   };
