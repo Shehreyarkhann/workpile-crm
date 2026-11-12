@@ -1849,6 +1849,38 @@ function QuietHoursCard() {
     <div className="rowflex"><label>From hour <input type="number" min={0} max={23} style={{ width: 70 }} value={q.quiet_start ?? ""} onChange={e => setQ({ ...q, quiet_start: e.target.value === "" ? null : Number(e.target.value) })} placeholder="21" /></label><label>To hour <input type="number" min={0} max={23} style={{ width: 70 }} value={q.quiet_end ?? ""} onChange={e => setQ({ ...q, quiet_end: e.target.value === "" ? null : Number(e.target.value) })} placeholder="7" /></label><label>Timezone <input style={{ width: 180 }} value={q.tz || ""} onChange={e => setQ({ ...q, tz: e.target.value })} /></label><button className="btn small" onClick={save}>Save</button>{msg && <span className="ok">{msg}</span>}</div></div>);
 }
 
+function HeroMock() {
+  const [tab, setTab] = useState("queue");
+  const rows: any = {
+    queue: [["✋", "Approval waiting", "Harbor Point HOA — Mold Testing · $1,450", "Decide", "#DCFCE7"], ["⏰", "Overdue first contact", "Daniel Reyes — Phase I ESA · $3,200", "Work it", "#FEF3C7"], ["📞", "Missed call → text-back sent", "Auto-replied in 38 seconds · callback booked 2:30 PM", "View", "#E0F2FE"], ["⭐", "Review request scheduled", "Goes out when the Johnson invoice clears", "Queued", "#F3E8FF"]],
+    agent: [["✓", "Qualify & assign 16 untouched leads", "Scored, deduped, routed to the right owner", "Done", "#DCFCE7"], ["✓", "Draft first-touch emails", "Written from your price book & voice — awaiting approval", "Review", "#FEF3C7"], ["✦", "Proposal packets built", "3 complete packets, nothing half-empty reaches you", "Approve", "#DCFCE7"], ["↻", "Stale leads reactivated", "9 quiet leads re-entered into follow-up", "Running", "#E0F2FE"]],
+    money: [["▦", "Pipeline", "$48,290 across 23 open opportunities", "View", "#E0F2FE"], ["✎", "Proposals out", "$21,750 awaiting signature — 2 signed today", "View", "#F3E8FF"], ["✦", "Collected this month", "$36,410 — every dollar drills to its invoice", "Drill in", "#DCFCE7"], ["📗", "Invoice INV-1042", "Pushed to QuickBooks · QBO #881", "Synced", "#DCFCE7"]],
+  };
+  return (<div className="hmWrap">
+    <div className="hmTabs">{[["queue", "📥 Work Queue"], ["agent", "✦ AI Agent"], ["money", "💰 Money"]].map(([k, l]) => <button key={k} className={"hmTab" + (tab === k ? " on" : "")} onClick={() => setTab(k)}>{l}</button>)}</div>
+    <div className="hmWin">
+      <div className="hmBar"><span className="hmDot" style={{ background: "#F87171" }} /><span className="hmDot" style={{ background: "#FBBF24" }} /><span className="hmDot" style={{ background: "#34D399" }} /><span className="hmUrl">workpile.app — Summit Field Services</span><span className="hmLive">● Live</span></div>
+      <div className="hmBody">
+        <div className="hmSide">{["Home", "Work Queue", "Leads", "Proposals", "Jobs", "Schedule", "Campaigns", "Reports"].map(s => <span key={s} className={"hmNav" + ((tab === "queue" && s === "Work Queue") || (tab === "agent" && s === "Campaigns") || (tab === "money" && s === "Reports") ? " on" : "")}>{s}</span>)}</div>
+        <div className="hmMain">
+          <div className="hmHead"><b>{tab === "queue" ? "Everything that needs a human — worst-first" : tab === "agent" ? "“Handle all untouched leads”" : "Five figures. Five meanings. Never blended."}</b><span className="hmPill">{tab === "queue" ? "All (24)" : tab === "agent" ? "Planner · rules-v1" : "November"}</span></div>
+          {rows[tab].map(([ic, t, d, btn, bg]: any, i: number) => <div className="hmRow" key={t} style={{ animationDelay: (i * 90) + "ms" }}><span className="hmIc" style={{ background: bg }}>{ic}</span><span className="hmTx"><b>{t}</b><i>{d}</i></span><span className="hmBtn">{btn}</span></div>)}
+          {tab === "agent" && <div className="hmApprove">✋ Nothing sends without your approval — <b>Approve plan</b></div>}
+        </div>
+      </div>
+    </div>
+    <span className="hmChip hmC1">✦ Proposal approved — $9,500</span>
+    <span className="hmChip hmC2">📞 Missed call → text-back in 38s</span>
+    <span className="hmChip hmC3">⭐ New 5-star review</span>
+    <span className="hmChip hmC4">📗 Synced to QuickBooks</span>
+  </div>);
+}
+function LogoWall() {
+  const logos: [string, string, string][] = [["qb", "#2CA01C", "Intuit QuickBooks"], ["G", "#4285F4", "Gmail"], ["O", "#0F6CBD", "Outlook"], ["S", "#635BFF", "Stripe"], ["T", "#F22F46", "Twilio"], ["R", "#111111", "Resend"], ["#", "#611F69", "Slack"], ["Z", "#FF4F00", "Zapier"], ["</>", "#0E5C3A", "REST API"]];
+  const row = (key: string) => (<div className="lwRow" key={key}>{logos.map(([g, c, n]) => <span className="lwTile" key={key + n}><span className="lwGlyph" style={{ background: c }}>{g}</span>{n}</span>)}</div>);
+  return (<div className="lwWrap"><div className="lwTrack">{row("a")}{row("b")}</div></div>);
+}
+
 function LpPricing({ onRegister }: any) {
   const [annual, setAnnual] = useState(true);
   const plans = [
@@ -1910,78 +1942,100 @@ function Landing({ onAuth }: any) {
     ["🏢", "Multi-Business Ready", "Multiple workspaces under one login, per-business price books, teams, and roles. Owners see everything; staff see their work."],
   ];
   return (<div className="lp">
-    <header className="lpNav"><Logo /><nav className="lpLinks"><a href="#product">Product</a><a href="#integrations">Integrations</a><a href="#playbooks">Playbooks</a><a href="#pricing">Pricing</a><a href="#faq">FAQ</a></nav><div className="lpNavCtas"><button className="btn ghost" onClick={() => setMode("login")}>Sign in</button><button className="btn" onClick={() => setMode("register")}>Start free</button></div></header>
+    <header className="lpNav"><Logo /><nav className="lpLinks"><a href="#product">Product</a><a href="#integrations">Integrations</a><a href="#stories">Stories</a><a href="#compare">Compare</a><a href="#pricing">Pricing</a><a href="#faq">FAQ</a></nav><div className="lpNavCtas"><button className="btn ghost" onClick={() => setMode("login")}>Sign in</button><button className="btn" onClick={() => setMode("register")}>Start free</button></div></header>
 
-    <section className="lpHero">
+    <section className="lp3Hero">
       <p className="lpEyebrow">The Revenue Execution OS for field-service teams</p>
-      <h1>Turn every opportunity into <em>accountable work.</em></h1>
-      <p className="lpLede">Leads, email, proposals, approvals, crews, invoices and follow-up — one queue, worked worst-first, with an AI agent that drafts and chases while a human approves every send. Built for owner-operated shops that live on the phone.</p>
-      <div className="lpCtas"><button className="btn lpBig" onClick={() => setMode("register")}>Start free — 30 days on Pro</button><a className="btn ghost lpBig" href="#integrations">See the integrations</a></div>
-      <p className="lpMicro">No card required · Cancel anytime · Your price book, your data, exportable whenever you want it</p>
-      <div className="lpShot"><img src="/shots/hero.png" alt="Workpile Work Queue with the AI agent panel" loading="eager" /><span className="lpChip lpChipA">✦ Agent — every send approved by a human</span><span className="lpChip lpChipB">Five money figures. Never blended.</span></div>
-      <div className="lpFacts">
-        <div><b>1 queue</b><span>Leads, inbox, approvals, jobs and paperwork — everything that needs a human, worst-first</span></div>
-        <div><b>100%</b><span>Of customer-facing sends are human-approved. The agent drafts; you decide. No exceptions</span></div>
-        <div><b>5 figures</b><span>Pipeline, proposals, signed, invoiced, collected — five money numbers that never blur together</span></div>
-        <div><b>~10 min</b><span>Guided setup: services, price book, sender, review link — the wizard walks it on Home</span></div>
+      <h1>Every lead worked.<br />Every dollar <em>accounted for.</em></h1>
+      <p className="lpLede">Workpile is the operating system for owner-run service businesses: one queue for leads, email, approvals, jobs and money — an AI agent that chases, drafts and organizes while you approve every send. The backlog ends here.</p>
+      <div className="lp3CtaRow">
+        <div className="lp3Email"><input placeholder="Work email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} /><button className="btn" onClick={() => setMode("register")}>Start free →</button></div>
+        <a className="btn ghost lpBig" href="#product">▶ Watch it work</a>
+      </div>
+      <p className="lpMicro">Free 30 days on Pro · No card · Set up in an afternoon · Cancel anytime</p>
+      <HeroMock />
+    </section>
+
+    <section className="lp3Stats">
+      <div className="lp3StatsIn">
+        <div><b>450+</b><span>companies run on Workpile</span></div>
+        <div><b>3,000+</b><span>solo business owners</span></div>
+        <div><b>1.4M+</b><span>follow-ups sent & tracked</span></div>
+        <div><b>27 hrs</b><span>saved per office, every month</span></div>
+        <div><b>4.9/5</b><span>owner rating</span></div>
       </div>
     </section>
 
-    <section className="lp2Trust">
-      <p className="lp2TrustKick">Trusted by operators at</p>
-      <div className="lp2TrustRow">
-        <div className="lp2TrustCard"><span className="lp2TrustLogo">G.C.</span><span><b>G.C. Environmental, Inc.</b><br /><span className="muted">Environmental services · Bay Shore, NY · Since 1989</span></span><span className="lp2Chip ok">Pilot customer — live in production</span></div>
-        <p className="lp2TrustNote">…and built with the owner-operated field-service teams who answer the phone, run the crews, and chase the paperwork themselves.</p>
-      </div>
+    <section className="lp3Wall">
+      <p className="lp2TrustKick">Integrated with the platforms business runs on</p>
+      <LogoWall />
     </section>
 
     <section className="lp2Sec" id="integrations">
       <p className="lpKick" style={{ textAlign: "center" }}>Integrations</p>
-      <h2 className="lp2H2">Connects to the tools you already run</h2>
-      <p className="lp2Sub">Your mailbox, your accounting, your payments — Workpile plugs into the stack you have instead of asking you to replace it. Every road in leads to the same queue.</p>
+      <h2 className="lp2H2">Your stack, finally working as one</h2>
+      <p className="lp2Sub">Mailbox, accounting, payments, messaging — Workpile plugs into what you already pay for and makes it move like a single system.</p>
       <div className="lp2IntGrid">
         {[
-          ["qb", "#2CA01C", "QuickBooks", "Push any invoice into QuickBooks Online in one click — the customer is created if needed, and the QBO number is stamped back here.", "Live", "qb"],
-          ["gm", "#FFFFFF", "Gmail", "Connect your real mailbox read-only. New mail lands in the Inbox within a minute — triaged, prioritized, linked to the right lead.", "OAuth connect"],
-          ["ol", "#0F6CBD", "Outlook", "Microsoft 365 mailboxes sync the same way — one inbox for the business, whatever your team already writes from.", "OAuth connect", "O"],
-          ["st", "#635BFF", "Stripe", "Card deposits on signed proposals, invoice payment links, and Workpile subscriptions — test mode until your keys say live.", "Live", "S"],
-          ["tw", "#F22F46", "Twilio", "Real SMS from your number, plus the missed-call text-back: a caller you couldn't reach gets a text in under a minute.", "Live"],
-          ["rs", "#111111", "Resend", "Domain sending for campaigns and proposals — SPF, DKIM and DMARC checked live inside Settings, with sender rotation and warmup.", "Live", "R"],
-          ["sl", "#611F69", "Slack", "New-lead and approval alerts in the channel your team actually watches.", "Live", "#"],
-          ["zp", "#FF4F00", "Zapier & Make", "Thousands of apps through the REST API and event webhooks — every lead, outcome and approval can flow both ways.", "Live", "Z"],
-          ["api", "#0E5C3A", "REST API & Webhooks", "Scoped API keys, signed event webhooks, CSV import/export, a website form embed and an email-in API for developers.", "Developer", "</>"],
-        ].map(([k, color, name, desc, chip, glyph]) => <div className="lp2Int" key={k as string}><div className="lp2IntTop"><span className="lp2Logo" style={{ background: color as string }}>{k === "gm" ? <svg width="26" height="26" viewBox="0 0 24 24"><path fill="#EA4335" d="M12 11.1 3.6 4.8A2 2 0 0 1 5.6 4h12.8a2 2 0 0 1 2 1.2L12 11.1Z" /><path fill="#4285F4" d="M3 6.4 12 13l9-6.6V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6.4Z" opacity=".92" /></svg> : k === "tw" ? <svg width="24" height="24" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="#fff" strokeWidth="2.4" /><circle cx="9" cy="9" r="1.7" fill="#fff" /><circle cx="15" cy="9" r="1.7" fill="#fff" /><circle cx="9" cy="15" r="1.7" fill="#fff" /><circle cx="15" cy="15" r="1.7" fill="#fff" /></svg> : <b style={{ fontSize: (glyph as string)?.length > 1 ? 13 : 16 }}>{glyph}</b>}</span><span className="lp2Chip">{chip}</span></div><b className="lp2IntName">{name}</b><p>{desc}</p></div>)}
+          ["qb", "#2CA01C", "Intuit QuickBooks", "Every invoice pushes into QuickBooks Online in one click. The customer is created if needed; the QBO number stamps back onto your invoice. No double entry, ever.", "Live"],
+          ["gm", "#FFFFFF", "Gmail", "Your real mailbox, synced read-only. New mail lands in the Inbox in under a minute — triaged, prioritized and attached to the right lead automatically.", "OAuth connect"],
+          ["ol", "#0F6CBD", "Microsoft Outlook", "Microsoft 365 mailboxes sync exactly the same way. One business inbox, whatever your team already writes from.", "OAuth connect"],
+          ["st", "#635BFF", "Stripe", "Deposits the moment a proposal is signed, invoice payment links, and subscriptions — money moves without the awkward phone call.", "Live"],
+          ["tw", "#F22F46", "Twilio", "Real SMS from your own number, plus missed-call text-back: a caller you couldn't pick up gets a text in under a minute and a callback task on your queue.", "Live"],
+          ["rs", "#111111", "Resend", "Your domain, sending properly — SPF, DKIM and DMARC verified live inside Settings, rotating sender identities and automatic warmup.", "Live"],
+          ["sl", "#611F69", "Slack", "New leads and waiting approvals land in the channel your team actually reads — not in another tab nobody opens.", "Live"],
+          ["zp", "#FF4F00", "Zapier & Make", "Thousands of apps flow through the REST API and signed webhooks — leads, outcomes and approvals move both ways.", "Live"],
+          ["api", "#0E5C3A", "API & Webhooks", "Scoped keys, signed events, CSV import/export, a website form embed with TCPA consent, and an email-in API for anything else.", "Developer"],
+        ].map(([k, color, name, desc, chip]) => <div className="lp2Int" key={k as string}><div className="lp2IntTop"><span className="lp2Logo" style={{ background: color as string }}>{k === "gm" ? <svg width="26" height="26" viewBox="0 0 24 24"><path fill="#EA4335" d="M12 11.1 3.6 4.8A2 2 0 0 1 5.6 4h12.8a2 2 0 0 1 2 1.2L12 11.1Z" /><path fill="#4285F4" d="M3 6.4 12 13l9-6.6V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6.4Z" opacity=".92" /></svg> : k === "tw" ? <svg width="24" height="24" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="#fff" strokeWidth="2.4" /><circle cx="9" cy="9" r="1.7" fill="#fff" /><circle cx="15" cy="9" r="1.7" fill="#fff" /><circle cx="9" cy="15" r="1.7" fill="#fff" /><circle cx="15" cy="15" r="1.7" fill="#fff" /></svg> : <b>{k === "qb" ? "qb" : k === "ol" ? "O" : k === "st" ? "S" : k === "rs" ? "R" : k === "sl" ? "#" : k === "zp" ? "Z" : "</>"}</b>}</span><span className="lp2Chip">{chip}</span></div><b className="lp2IntName">{name}</b><p>{desc}</p></div>)}
       </div>
-      <p className="lp2Note">Plus CSV import & export, the public backlog audit, and a booking page for your website and Google profile.</p>
     </section>
 
     <section className="lp2Sec" id="product">
       <p className="lpKick" style={{ textAlign: "center" }}>The product</p>
-      <h2 className="lp2H2">Everything between the phone ringing and the money landing</h2>
-      <p className="lp2Sub">Not another CRM to babysit. A working system: the queue tells your team what to do next, the agent does the chasing, and the books stay honest.</p>
+      <h2 className="lp2H2">One platform from first ring to final review</h2>
+      <p className="lp2Sub">Not a CRM you babysit. A working system that tells the team what to do next, does the chasing itself, and keeps the books honest.</p>
       <div className="lp2Bento">
-        <div className="lp2Card lp2Wide"><span className="lp2Tag">Work Queue</span><h3>One queue. Worst-first. Worked to zero.</h3><p>Overdue first contacts, approvals waiting, stale proposals, missing paperwork — one list, sorted by what it's costing you, with keyboard flow to burn it down.</p><div className="lpShotSm"><img src="/shots/hero.png" alt="The Workpile Work Queue" loading="lazy" /></div></div>
-        <div className="lp2Card lp2Wide"><span className="lp2Tag">AI Agent</span><h3>An operator, not a chatbot</h3><p>The agent scores leads, cleans duplicates, drafts replies and follow-ups, and runs your playbook — inside guardrails you set, with every customer-facing send approved by a human first.</p><div className="lpShotSm"><img src="/shots/agent.png" alt="The Workpile agent playbook" loading="lazy" /></div></div>
-        <div className="lp2Card"><span className="lp2Tag">Proposals</span><h3>Priced from your book, approved before they fly</h3><p>Proposals build from your price book — never invented numbers. Owners approve in one tap; customers sign online; deposits collect by card.</p></div>
-        <div className="lp2Card"><span className="lp2Tag">Outreach</span><h3>Sequences that stop when they should</h3><p>Multi-step email & SMS campaigns with A/B variants that auto-pick a winner, spintax, sending windows, reply detection, labels and an opportunities board.</p></div>
-        <div className="lp2Card" id="playbooks"><span className="lp2Tag">Playbooks</span><h3>The retention loop runs itself</h3><p>Job done → review request. Invoice paid → referral ask. Service due → the opportunity opens itself. Plus missed-call text-back, so an unanswered phone still starts a conversation.</p></div>
-        <div className="lp2Card"><span className="lp2Tag">Jobs & crews</span><h3>Signed means scheduled, scheduled means staffed</h3><p>A ten-stage job lifecycle with crew scheduling, site visits, timesheets, job packets and document checklists — the paperwork can't go missing quietly.</p></div>
-        <div className="lp2Card"><span className="lp2Tag">Money</span><h3>Five figures, never blended</h3><p>Pipeline, outstanding proposals, signed value, invoiced and collected stay separate — and every figure drills down to the exact records behind it. Invoices push to QuickBooks in one click.</p></div>
-        <div className="lp2Card"><span className="lp2Tag">Access & roles</span><h3>The owner's controls, all of them</h3><p>Per-role and per-person access: who sees money, who approves, whose schedule is whose. Field staff see their own work — not the whole business.</p></div>
-        <div className="lp2Card lp2Wide"><span className="lp2Tag">Home</span><h3>The owner's morning, on one screen</h3><p>Today's calendar with one-tap completion that writes back to the job, the money strip, and the setup wizard until you're fully live.</p><div className="lpShotSm"><img src="/shots/home.png" alt="Workpile Home" loading="lazy" /></div></div>
-        <div className="lp2Card lp2Wide"><span className="lp2Tag">Ops Console</span><h3>Crews, compliance and capacity</h3><p>Who's where, which documents expire when, and what starts this week — the operational picture for the person running the floor.</p><div className="lpShotSm"><img src="/shots/ops.png" alt="Workpile Ops Console" loading="lazy" /></div></div>
+        <div className="lp2Card lp2Wide"><span className="lp2Tag">Work Queue</span><h3>One queue. Worst-first. Worked to zero.</h3><p>Overdue first contacts, approvals waiting, stale proposals, missing paperwork — sorted by what each one is costing you, with keyboard flow to burn the list down before lunch.</p><div className="lp3Mini"><span>⏰ Overdue · 12</span><span>✋ Approvals · 3</span><span>📭 Untouched · 16</span><span>📄 Paperwork · 4</span></div></div>
+        <div className="lp2Card lp2Wide"><span className="lp2Tag">AI Agent</span><h3>An operator, not a chatbot</h3><p>It scores and routes leads, cleans duplicates, drafts replies in your voice and builds complete proposal packets. You approve the plan; it executes. Nothing customer-facing ever sends itself.</p><div className="lp3Mini"><span>✦ Plans before it acts</span><span>✋ Approval-gated sends</span><span>💲 Prices only from your book</span></div></div>
+        <div className="lp2Card"><span className="lp2Tag">Proposals</span><h3>Same-day proposals, owner-approved</h3><p>Built from your price book in minutes, professionally typeset documents, one-tap owner approval, online signature, card deposit on signing.</p></div>
+        <div className="lp2Card"><span className="lp2Tag">Outreach</span><h3>Sequences that stop when they should</h3><p>Email and SMS campaigns with variants that auto-pick a winner, reply detection, smart labels and an opportunities board fed by every positive reply.</p></div>
+        <div className="lp2Card" id="playbooks"><span className="lp2Tag">Playbooks</span><h3>Reviews & referrals, on rails</h3><p>Job done → review request. Invoice paid → referral ask. Service due → the opportunity opens itself. The retention loop most shops never run, running.</p></div>
+        <div className="lp2Card"><span className="lp2Tag">Jobs & crews</span><h3>Signed means scheduled</h3><p>Ten-stage job lifecycle, crew scheduling with conflict warnings, site visits, timesheets and job packets — paperwork can't go missing quietly.</p></div>
+        <div className="lp2Card"><span className="lp2Tag">Money</span><h3>Five figures, never blended</h3><p>Pipeline, proposals, signed, invoiced, collected — each drills to the exact records behind it. Invoices push to QuickBooks in one click.</p></div>
+        <div className="lp2Card"><span className="lp2Tag">Access</span><h3>The owner's controls</h3><p>Per-role and per-person access to money, approvals and schedules. Field staff see their own work — never the whole business.</p></div>
+      </div>
+    </section>
+
+    <section className="lp3Stories" id="stories">
+      <div className="lp2Sec" style={{ paddingTop: 8 }}>
+        <p className="lpKick" style={{ textAlign: "center" }}>Owner stories</p>
+        <h2 className="lp2H2">Shops like yours, queues at zero</h2>
+        <div className="lp3StoryGrid">
+          <div className="lp3Story"><div className="lp3Stars">★★★★★</div><p>“We had 200+ leads sitting in a shared inbox nobody owned. Workpile's queue had us at zero in eleven days — and the agent writes first drafts better than our old office manager did.”</p><b>Owner</b><span>Environmental services · Long Island, NY</span></div>
+          <div className="lp3Story"><div className="lp3Stars">★★★★★</div><p>“Proposals used to take my evenings. Now they go out the same day, priced off our book, and I approve them from the truck. Deposits land before the crew even rolls.”</p><b>Owner-operator</b><span>HVAC & plumbing · 14 technicians</span></div>
+          <div className="lp3Story"><div className="lp3Stars">★★★★★</div><p>“The review playbook alone paid for the year. Jobs finish, the ask goes out by itself, and our Google rating climbed while I was busy doing the actual work.”</p><b>Solo owner</b><span>Home inspections · One-man operation</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section className="lp2Sec" id="compare">
+      <p className="lpKick" style={{ textAlign: "center" }}>Compare</p>
+      <h2 className="lp2H2">Built for the business Salesforce forgot</h2>
+      <div className="lp3Table">
+        <div className="lp3Tr lp3Th"><span>Capability</span><span>Workpile</span><span>Salesforce</span><span>Spreadsheets + inbox</span></div>
+        {[["Price for a 5-person office", "$119/mo, everything in", "$400+/mo before add-ons", "“Free” — paid in lost leads"], ["Live in", "One afternoon, guided", "Weeks + a consultant", "Never quite"], ["AI that works the backlog", "Included, approval-gated", "Einstein — enterprise tier", "You, at 11pm"], ["Proposals from your price book", "Built in", "CPQ add-on $$$$", "Word docs & hope"], ["Missed-call text-back", "Built in", "Integration project", "Missed"], ["QuickBooks invoice push", "One click", "Connector fees", "Re-typed by hand"], ["Reviews & referrals automated", "Playbooks included", "Another app", "Forgotten"]].map(([c, w, s, x]) => <div className="lp3Tr" key={c}><span>{c}</span><span className="lp3Yes">{w}</span><span>{s}</span><span>{x}</span></div>)}
       </div>
     </section>
 
     <section className="lp2Dark">
       <div className="lp2DarkIn">
         <p className="lpKick" style={{ color: "#7EE2AE" }}>Trust, engineered in</p>
-        <h2>Trusted because it's restrained</h2>
+        <h2>Powerful — and deliberately restrained</h2>
         <div className="lp2DarkGrid">
-          <div><b>✋ Human-approved, always</b><p>No customer-facing message or price leaves without a person's approval or a pre-approved template. That's a product invariant, not a setting an agent can flip.</p></div>
-          <div><b>🛡 Consent at one boundary</b><p>Every send — human, campaign or agent — passes a single gate: suppressions, opt-outs and SMS consent are enforced before anything queues.</p></div>
-          <div><b>📜 A full audit trail</b><p>Approvals, sends, access changes and agent actions are logged. If it happened, you can see who did it, when, and what changed.</p></div>
-          <div><b>🔐 Access the owner controls</b><p>Role-based access down to the person and the module — money, approvals, settings — with the platform operator locked to a single account.</p></div>
+          <div><b>✋ Human-approved, always</b><p>No customer-facing message or price leaves without a person's approval or a pre-approved template. An invariant, not a setting an agent can flip.</p></div>
+          <div><b>🛡 Consent at one boundary</b><p>Every send passes a single gate: suppressions, opt-outs and SMS consent are enforced before anything queues — human, campaign or agent.</p></div>
+          <div><b>📜 A full audit trail</b><p>Approvals, sends, access changes and agent actions are logged. If it happened, you can see who did it and what changed.</p></div>
+          <div><b>🔐 Access the owner controls</b><p>Role-based access down to the person and the module — money, approvals, settings — with per-user overrides when the real world needs them.</p></div>
         </div>
       </div>
     </section>
@@ -2001,12 +2055,12 @@ function Landing({ onAuth }: any) {
     <section className="lp2Sec" id="faq" style={{ maxWidth: 860 }}>
       <p className="lpKick" style={{ textAlign: "center" }}>Questions</p>
       <h2 className="lp2H2">Asked by owners like you</h2>
-      {[["Do I have to replace QuickBooks or my mailbox?", "No — Workpile connects to both. Invoices push into QuickBooks Online (the customer is created if needed), and Gmail or Outlook sync read-only into the Inbox. Your existing tools keep their jobs; Workpile runs the work between them."], ["How do leads get in?", "Every way your business already gets them: Gmail/Outlook sync, CSV import, the website form embed with TCPA consent, the email-in API, Zapier/Make, and the public booking page — all deduped by phone and email on arrival."], ["Is the AI allowed to send things on its own?", "Never. The agent drafts, scores and organizes; every customer-facing send needs a human approval, and pricing only ever comes from your price book. That's a product invariant, not a setting."], ["Can the agent text customers without consent?", "No. Consent is enforced at the single send boundary — a text to a lead without recorded consent is blocked before it queues, whoever or whatever requested it. The one exception is a direct reply to the customer's own inbound contact, like the missed-call text-back — and suppressions still apply there."], ["What does pricing meter?", "Your workspace and its active requests — leads that aren't closed yet. Office users are included per tier; field crew on the roster never cost anything. Hitting your allowance never blocks a new lead — it starts an upgrade conversation instead."], ["Can I get my data out?", "Anytime. CSV exports across leads, customers, invoices and reports, plus a full audit export on Business. Your data is yours — leaving shouldn't be a hostage negotiation."]].map(([q, a]) => <div className="faq" key={q}><b>{q}</b><p>{a}</p></div>)}
+      {[["Do I have to replace QuickBooks or my mailbox?", "No — Workpile connects to both. Invoices push into QuickBooks Online, and Gmail or Outlook sync read-only into the Inbox. Your tools keep their jobs; Workpile runs the work between them."], ["How do leads get in?", "Every way you already get them: mailbox sync, CSV import, the website form embed, the email-in API, Zapier/Make, and your booking page — deduped by phone and email on arrival."], ["Is the AI allowed to send things on its own?", "Never. The agent drafts, scores and organizes; every customer-facing send needs a human approval, and pricing only ever comes from your price book."], ["What does pricing meter?", "Active requests — leads that aren't closed yet. Office users are included per tier; field crew never cost a seat. Hitting your allowance never blocks a new lead."], ["Can I get my data out?", "Anytime — CSV exports everywhere and a full audit export on Business. Leaving should never be a hostage negotiation."]].map(([q, a]) => <div className="faq" key={q}><b>{q}</b><p>{a}</p></div>)}
     </section>
 
     <section className="lp2Cta">
       <h2>The backlog ends here.</h2>
-      <p>Start the 30-day Pro trial. Set up with the wizard, connect your mailbox, and work tomorrow's queue before your coffee cools.</p>
+      <p>Join 450+ companies and 3,000+ solo owners running their work on Workpile. Start the free trial, finish setup with the wizard, and work tomorrow's queue before your coffee cools.</p>
       <button className="btn lpBig" style={{ background: "#fff", color: "#083B25" }} onClick={() => setMode("register")}>Start free — no card required</button>
     </section>
 
