@@ -12,7 +12,7 @@ import { getProvider, providerStatus } from "./llm.ts";
 import { agentLevel } from "./ai.ts";
 import { qualifiedLeadsMissingProposals } from "./proposals-core.ts";
 
-export interface Step { id: string; tool: string; args: any; control: string; label: string; status: "pending" | "approved" | "rejected" | "done" | "failed" | "skipped"; needs_approval: boolean; result?: string; refs?: any; verified?: boolean }
+export interface Step { id: string; call_id?: string; tool: string; args: any; control: string; label: string; status: "pending" | "approved" | "rejected" | "done" | "failed" | "skipped"; needs_approval: boolean; result?: string; refs?: any; verified?: boolean }
 const J = (v: any, d: any) => { try { return JSON.parse(v); } catch { return d; } };
 
 export function needsApproval(control: string, level: number): boolean {
@@ -22,9 +22,9 @@ export function needsApproval(control: string, level: number): boolean {
   return false;
 }
 const labelFor = (tool: string, args: any) => { if (args?.__label) return String(args.__label); const t = TOOLS[tool]; return t ? `${tool.replaceAll("_", " ")}${args?.lead_id ? " · " + String(args.lead_id).slice(-6) : ""}` : tool; };
-function mkStep(tool: string, args: any, level: number): Step { const t = TOOLS[tool]; const na = needsApproval(t.control, level); return { id: uid("stp"), tool, args: args || {}, control: t.control, label: labelFor(tool, args), status: na ? "pending" : "approved", needs_approval: na }; }
+export function mkStep(tool: string, args: any, level: number): Step { const t = TOOLS[tool]; const na = needsApproval(t.control, level); return { id: uid("stp"), tool, args: args || {}, control: t.control, label: labelFor(tool, args), status: na ? "pending" : "approved", needs_approval: na }; }
 
-function businessContext(ws: string): any {
+export function businessContext(ws: string): any {
   const c = (sql: string) => (db.prepare(sql).get(ws) as any).c;
   return { leads_open: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state NOT IN ('WON','LOST','NO_RESPONSE','JUNK','DUPLICATE','UNSERVICEABLE','CLOSED')"),
     untouched: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND " + UNTOUCHED_WHERE),
@@ -108,6 +108,12 @@ export async function createExecution(ws: string, userId: string, instruction: s
   const ctx = businessContext(ws);
   if (parentId) { const p = db.prepare("SELECT summary, instruction FROM agent_executions WHERE id=? AND workspace_id=?").get(parentId, ws) as any; if (p) (ctx as any).parent = { instruction: p.instruction, summary: p.summary }; }
   db.prepare("INSERT INTO agent_executions (id,workspace_id,user_id,parent_id,instruction,status,planner,plan,context,created_at,updated_at) VALUES (?,?,?,?,?,'planning','', '[]',?,?,?)").run(id, ws, userId, parentId || null, instruction, JSON.stringify(ctx), now(), now());
+  if (getProvider(ws)) {
+    // V49: the multi-turn loop is the primary planner when a provider exists —
+    // plan → tools → observe → re-plan, pausing at approval gates. Any loop
+    // failure falls through to the one-shot planner below, unchanged.
+    try { const { startLoop } = await import("./agent-loop.ts"); const r = await startLoop(ws, id); if (r) return r; } catch { /* one-shot fallback */ }
+  }
   let steps: Step[] = []; let planner = "rules-v1"; let tokens = { in: 0, out: 0 }; let runNow = false;
   const provider = getProvider(ws);
   if (provider) {
@@ -148,6 +154,18 @@ export async function runExecution(ws: string, id: string): Promise<any> {
     catch (e: any) { s.result = "Failed: " + String(e?.message || e); s.verified = false; s.status = "failed"; }
     db.prepare("UPDATE agent_executions SET plan=?, updated_at=? WHERE id=?").run(JSON.stringify(steps), now(), id);
   }
+  const pending = steps.filter(s => s.status === "pending").length;
+  const raw = db.prepare("SELECT loop_state FROM agent_executions WHERE id=?").get(id) as any;
+  if (pending === 0 && raw?.loop_state) {
+    // Loop execution (v49): the human decided the paused steps and they just ran —
+    // hand control back to the model so it can observe the results and continue.
+    db.prepare("UPDATE agent_executions SET status='executing', updated_at=? WHERE id=?").run(now(), id);
+    try { const { resumeLoop } = await import("./agent-loop.ts"); const r = await resumeLoop(ws, id); if (r) return r; } catch { /* fall through to finalize */ }
+  }
+  return finalizeExecution(ws, id, steps);
+}
+
+export function finalizeExecution(ws: string, id: string, steps: Step[]): any {
   const done = steps.filter(s => s.status === "done").length, failed = steps.filter(s => s.status === "failed").length;
   const pending = steps.filter(s => s.status === "pending").length;
   const summary = steps.filter(s => s.result).map(s => `${s.status === "done" ? "✓" : s.status === "failed" ? "✗" : "•"} ${s.result}`).join("\n") || "No steps ran.";

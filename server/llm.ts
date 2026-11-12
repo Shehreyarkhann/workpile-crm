@@ -8,7 +8,25 @@ import { db } from "./db.ts";
 export interface LlmToolDef { name: string; description: string; parameters: Record<string, any> }
 export interface LlmCall { id: string; name: string; args: any }
 export interface LlmResult { text: string; calls: LlmCall[]; usage: { in: number; out: number }; model: string }
-export interface LlmProvider { kind: string; model: string; chat: (o: { system: string; messages: { role: string; content: string }[]; tools?: LlmToolDef[]; maxTokens?: number }) => Promise<LlmResult> }
+export interface LlmProvider { kind: string; model: string; chat: (o: { system: string; messages: any[]; tools?: LlmToolDef[]; maxTokens?: number }) => Promise<LlmResult> }
+// Neutral loop turns (v49): {role:"user", content} legacy · {role:"assistant", text?, calls?} ·
+// {role:"tool", results:[{id, content}]} — each provider translates to its wire format below.
+export function toAnthropicMessages(msgs: any[]): any[] {
+  return msgs.map(m => {
+    if (m.role === "assistant") { const blocks: any[] = []; if (m.text) blocks.push({ type: "text", text: m.text }); for (const c of m.calls || []) blocks.push({ type: "tool_use", id: c.id, name: c.name, input: c.args || {} }); return { role: "assistant", content: blocks.length ? blocks : "" }; }
+    if (m.role === "tool") return { role: "user", content: (m.results || []).map((r: any) => ({ type: "tool_result", tool_use_id: r.id, content: String(r.content) })) };
+    return { role: "user", content: m.content ?? m.text ?? "" };
+  });
+}
+export function toOpenAIMessages(msgs: any[]): any[] {
+  const out: any[] = [];
+  for (const m of msgs) {
+    if (m.role === "assistant") { out.push({ role: "assistant", content: m.text || "", ...(m.calls?.length ? { tool_calls: m.calls.map((c: any) => ({ id: c.id, type: "function", function: { name: c.name, arguments: JSON.stringify(c.args || {}) } })) } : {}) }); continue; }
+    if (m.role === "tool") { for (const r of m.results || []) out.push({ role: "tool", tool_call_id: r.id, content: String(r.content) }); continue; }
+    out.push({ role: "user", content: m.content ?? m.text ?? "" });
+  }
+  return out;
+}
 
 const TIMEOUT = 30000;
 
@@ -18,7 +36,7 @@ class AnthropicProvider implements LlmProvider {
   async chat(o: any): Promise<LlmResult> {
     const r = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", signal: AbortSignal.timeout(TIMEOUT),
       headers: { "x-api-key": this.key, "anthropic-version": "2023-06-01", "Content-Type": "application/json" },
-      body: JSON.stringify({ model: this.model, max_tokens: o.maxTokens || 2048, system: o.system, messages: o.messages, tools: (o.tools || []).map((t: LlmToolDef) => ({ name: t.name, description: t.description, input_schema: t.parameters })) }) });
+      body: JSON.stringify({ model: this.model, max_tokens: o.maxTokens || 2048, system: o.system, messages: toAnthropicMessages(o.messages), tools: (o.tools || []).map((t: LlmToolDef) => ({ name: t.name, description: t.description, input_schema: t.parameters })) }) });
     if (!r.ok) throw new Error(`anthropic ${r.status}: ${(await r.text()).slice(0, 200)}`);
     const j: any = await r.json();
     let text = ""; const calls: LlmCall[] = [];
@@ -33,7 +51,7 @@ class OpenAIProvider implements LlmProvider {
   async chat(o: any): Promise<LlmResult> {
     const r = await fetch("https://api.openai.com/v1/chat/completions", { method: "POST", signal: AbortSignal.timeout(TIMEOUT),
       headers: { Authorization: `Bearer ${this.key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: this.model, max_tokens: o.maxTokens || 2048, messages: [{ role: "system", content: o.system }, ...o.messages], tools: (o.tools || []).map((t: LlmToolDef) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } })) }) });
+      body: JSON.stringify({ model: this.model, max_tokens: o.maxTokens || 2048, messages: [{ role: "system", content: o.system }, ...toOpenAIMessages(o.messages)], tools: (o.tools || []).map((t: LlmToolDef) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } })) }) });
     if (!r.ok) throw new Error(`openai ${r.status}: ${(await r.text()).slice(0, 200)}`);
     const j: any = await r.json();
     const msg = j.choices?.[0]?.message || {};
