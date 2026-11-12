@@ -44,3 +44,57 @@ for (const [l, n] of effectLines) {
 }
 if (badFx) process.exit(1);
 console.log("Effect-hygiene check OK (no effect returns a promise)");
+
+// Third audit: a const/let declared AFTER a top-level early return in a
+// component, but referenced by an EFFECT closure created BEFORE the return,
+// is a permanent TDZ trap when a render takes the return path (the wpGoTab
+// bug, v63: App's globals effect captured `go` from the logged-out render
+// scope, where `const go` below `if (!user) return ...` never executed —
+// every wpGoTab call then threw "Cannot access 'go' before initialization").
+// Only effect closures count: they run even for early-returned renders and
+// can register escapes (window globals, listeners). Ordinary JSX handlers
+// created in the same render are safe — discarded branches never render.
+// Property names and parameter-shadowed identifiers are not references.
+let badTdz = 0;
+const collectEffectRefs = (node, refs) => {
+  const isEscapeCall = (n) => ts.isCallExpression(n) && ts.isIdentifier(n.expression) && (n.expression.text === "useEffect" || n.expression.text === "useLive");
+  const walkEffect = (n, shadow) => {
+    if ((ts.isArrowFunction(n) || ts.isFunctionExpression(n)) && n !== node) {
+      const inner = new Set(shadow);
+      for (const p of n.parameters) if (ts.isIdentifier(p.name)) inner.add(p.name.text);
+      n.forEachChild(c => walkEffect(c, inner)); return;
+    }
+    if (ts.isIdentifier(n)) {
+      const p = n.parent;
+      const isPropName = p && ((ts.isPropertyAssignment(p) || ts.isPropertyAccessExpression(p) || ts.isBindingElement(p) || ts.isVariableDeclaration(p) || ts.isParameter(p) || ts.isFunctionDeclaration(p)) && p.name === n);
+      if (!isPropName && !shadow.has(n.text)) refs.add(n.text);
+    }
+    n.forEachChild(c => walkEffect(c, shadow));
+  };
+  const find = (n) => {
+    if (isEscapeCall(n)) { for (const a of n.arguments) if (ts.isArrowFunction(a) || ts.isFunctionExpression(a)) walkEffect(a, new Set()); return; }
+    n.forEachChild(find);
+  };
+  find(node);
+};
+const auditTdz = (body, compName) => {
+  if (!body || !ts.isBlock(body)) return;
+  const stmts = body.statements;
+  const retIdx = stmts.findIndex(st => ts.isIfStatement(st) && st.thenStatement && /return/.test(st.thenStatement.getText()));
+  if (retIdx === -1) return;
+  const refs = new Set();
+  for (let i = 0; i < retIdx; i++) collectEffectRefs(stmts[i], refs);
+  for (let i = retIdx + 1; i < stmts.length; i++) {
+    const st = stmts[i];
+    if (!ts.isVariableStatement(st)) continue;
+    for (const d of st.declarationList.declarations) {
+      if (ts.isIdentifier(d.name) && refs.has(d.name.text)) { badTdz++; console.error(`UI-SCOPE: ${compName}: '${d.name.text}' (line ${line(d.getStart())}) is declared after an early return but captured by an effect closure created before it — on the render path that takes the return, calls throw TDZ. Move the declaration above the return.`); }
+    }
+  }
+};
+for (const st of src.statements) {
+  if (ts.isFunctionDeclaration(st) && st.name && st.body) auditTdz(st.body, st.name.text);
+  if (ts.isVariableStatement(st)) for (const d of st.declarationList.declarations) if (d.initializer && (ts.isArrowFunction(d.initializer) || ts.isFunctionExpression(d.initializer)) && ts.isIdentifier(d.name)) auditTdz(d.initializer.body, d.name.text);
+}
+if (badTdz) process.exit(1);
+console.log("TDZ early-return check OK (no effect closure captures a post-return declaration)");
