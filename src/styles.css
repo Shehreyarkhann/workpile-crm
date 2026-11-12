@@ -674,18 +674,18 @@ aside.rail button.on .nshort { background:#ffffff22; }
 .a2Panel h2{font-size:34px;font-weight:800;letter-spacing:-.025em;line-height:1.22;max-width:430px;position:relative;z-index:1}
 .a2Lede{margin-top:14px;font-size:15px;line-height:1.6;color:#B9CFC0;max-width:420px;position:relative;z-index:1}
 .a2Collage{position:relative;margin-top:40px;z-index:1;flex:1}
-.a2Ui{background:#fff;color:#101613;border-radius:14px;box-shadow:0 24px 50px rgba(0,0,0,.35);padding:18px 20px}
-.a2Main{width:min(430px,92%)}
+.a2Ui{background:#fff;color:#101613;border-radius:14px;box-shadow:0 24px 50px rgba(0,0,0,.35);padding:16px 18px}
+.a2Main{width:min(380px,92%)}
 .a2UiHead{display:flex;justify-content:space-between;align-items:baseline}
 .a2UiHead span{font-size:11.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#5B6B62}
-.a2UiHead b{font-size:22px;font-weight:800;letter-spacing:-.02em}
-.a2UiRow{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid #EEF2EF;font-size:13.5px}
+.a2UiHead b{font-size:20px;font-weight:800;letter-spacing:-.02em}
+.a2UiRow{display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid #EEF2EF;font-size:12.5px}
 .a2Dot{width:8px;height:8px;border-radius:50%;background:#22C55E;flex-shrink:0}
 .a2Dot.amber{background:#F5B544}
 .a2Pill{font-size:10.5px;font-weight:700;padding:3px 8px;border-radius:99px;background:#E7F6EC;color:#0E5C3A;white-space:nowrap}
 .a2Pill.wait{background:#FCF0DC;color:#9A6A12}
 .a2Amt{margin-left:auto;font-weight:700}
-.a2Float{position:absolute;right:2px;bottom:4px;width:218px;padding:16px 18px}
+.a2Float{position:absolute;right:2px;bottom:4px;width:198px;padding:14px 16px}
 .a2RingRow{display:flex;align-items:center;gap:14px;margin-top:8px}
 .a2RingTx b{display:block;font-size:19px;font-weight:800;letter-spacing:-.02em}
 .a2RingTx span{font-size:12px;color:#5B6B62;line-height:1.45;display:block}
@@ -696,3 +696,10 @@ aside.rail button.on .nshort { background:#ffffff22; }
 .a2Foot{margin-top:auto;padding-top:24px;display:flex;justify-content:space-between;font-size:12.5px;color:#9AA79E}
 @media (max-width:1020px){.a2Panel{display:none}.a2Left{flex:1;padding:28px 26px 24px}}
 @media (max-width:560px){.a2H1,.a2Sub{text-align:left}}
+
+.a2Toast{display:flex;gap:11px;align-items:flex-start;background:#fff;color:#101613;border-radius:12px;box-shadow:0 18px 40px rgba(0,0,0,.30);padding:13px 15px;width:342px;position:relative;z-index:1}
+.a2Toast .a2Tic{width:32px;height:32px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0}
+.a2Toast b{font-size:13px;display:block}
+.a2Toast span{font-size:12px;color:#5B6B62;display:block;line-height:1.45}
+.a2Toast time{margin-left:auto;font-size:11px;color:#9AA79E;white-space:nowrap}
+.a2T2{position:absolute;left:14px;bottom:2px}
