@@ -2,10 +2,30 @@ import React, { useEffect, useState, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
+// Topic bus (v59): every successful mutation publishes the data topics it touched;
+// mounted surfaces subscribed via useLive/wp-refresh refetch in the same tick, so a
+// change made anywhere is reflected everywhere the data is visible.
+const TOPIC_ROUTES: [RegExp, string[]][] = [
+  [/\/api\/leads/, ["leads", "home"]], [/\/api\/approvals/, ["approvals", "home"]],
+  [/\/api\/proposals/, ["proposals", "money", "home"]], [/\/api\/invoices|\/api\/payments|\/pay\//, ["money", "home"]],
+  [/\/api\/jobs/, ["jobs", "schedule", "home"]], [/\/api\/calendar|\/api\/site-visits|\/api\/schedule/, ["schedule", "home"]],
+  [/\/api\/agent|\/api\/ai\//, ["agent", "home"]], [/\/api\/campaigns|\/api\/outreach/, ["campaigns", "home"]],
+  [/\/api\/inbox/, ["inbox", "home"]], [/\/api\/settings|\/api\/onboarding/, ["home"]],
+];
+export const publishTopics = (path: string) => {
+  try {
+    const topics = new Set<string>(["home"]);
+    for (const [re, ts] of TOPIC_ROUTES) if (re.test(path)) ts.forEach(t => topics.add(t));
+    window.dispatchEvent(new CustomEvent("wp-topics", { detail: { topics: [...topics], path } }));
+    window.dispatchEvent(new Event("wp-refresh"));
+  } catch { /* bus is best-effort */ }
+};
 export const api = async (path: string, opts: any = {}) => {
   const r = await fetch(path, { method: opts.method || "GET", headers: { "Content-Type": "application/json" }, body: opts.body ? JSON.stringify(opts.body) : undefined });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error?.code || j.error?.message || `HTTP ${r.status}`);
+  const method = (opts.method || "GET").toUpperCase();
+  if (method !== "GET" && !path.startsWith("/api/home/layout") && !path.startsWith("/api/auth/")) publishTopics(path);
   return j;
 };
 
@@ -167,12 +187,87 @@ function OnboardingCard({ go }: any) {
     <p className="muted" style={{ fontSize: 12, margin: "6px 0 0" }}>Built around one thing: your first sent proposal. Everything else can wait.</p></div>);
 }
 
+// ================= Custom Home (v59) =================
+// Widget registry: every Home component declares its sizes once. New components
+// register here and appear in every user's gallery without touching saved layouts.
+type WDef = { id: string; icon: string; title: string; blurb: string; defW: number; minW: number; maxW: number };
+const WIDGET_DEFS: WDef[] = [
+  { id: "onboarding", icon: "🚀", title: "Get set up", blurb: "Your go-live checklist with the next step. Hides itself when you're done.", defW: 12, minW: 6, maxW: 12 },
+  { id: "setup", icon: "🧭", title: "Setup checklist", blurb: "The remaining setup steps that unlock the machine. Hides itself when complete.", defW: 8, minW: 4, maxW: 12 },
+  { id: "stat_pipeline", icon: "💵", title: "Open pipeline", blurb: "Qualified → sent pipeline value, straight from your live leads.", defW: 3, minW: 2, maxW: 6 },
+  { id: "stat_proposals", icon: "📨", title: "Proposals this week", blurb: "Sent vs built this week — the North Star, with test-mode honesty.", defW: 3, minW: 2, maxW: 6 },
+  { id: "stat_fpar", icon: "✅", title: "First-pass approval", blurb: "Your approval rate against the 90% target.", defW: 3, minW: 2, maxW: 6 },
+  { id: "stat_won", icon: "🏆", title: "Won value", blurb: "Lifetime won value and deal count.", defW: 3, minW: 2, maxW: 6 },
+  { id: "finances", icon: "💰", title: "Money — five figures", blurb: "Pipeline, proposals, signed, invoiced, collected — never blended, every figure drills in.", defW: 8, minW: 4, maxW: 12 },
+  { id: "goal", icon: "🎯", title: "Goal — first-pass approval", blurb: "The gauge: approvals without changes against the 90% goal.", defW: 4, minW: 3, maxW: 8 },
+  { id: "agent", icon: "🤖", title: "Workpile Agent", blurb: "What the agent did, what's armed, and one-tap triage of untouched leads.", defW: 8, minW: 4, maxW: 12 },
+  { id: "calendar", icon: "📅", title: "Calendar", blurb: "Visits, crew, tasks, callbacks and due dates with one-tap completion.", defW: 4, minW: 3, maxW: 8 },
+  { id: "activity", icon: "📈", title: "Activity", blurb: "Every action the team and the agent took, per day — 14 or 30 days.", defW: 8, minW: 4, maxW: 12 },
+  { id: "quicklinks", icon: "⚡", title: "Quick links", blurb: "Today's plan, follow-ups, the backlog, approvals and reports.", defW: 4, minW: 3, maxW: 8 },
+  { id: "recent", icon: "👥", title: "Recently assigned", blurb: "The newest leads, their owners and AI scores.", defW: 8, minW: 4, maxW: 12 },
+  { id: "periods", icon: "📊", title: "This week vs last week", blurb: "Leads, proposals, wins, jobs and signed value — this week against last.", defW: 4, minW: 3, maxW: 12 },
+  { id: "clock", icon: "🕐", title: "Clock", blurb: "Your workspace time in three styles — Analog Pine, Digital Paper, Digital Midnight. Switch style with ⚙ while editing.", defW: 3, minW: 3, maxW: 6 },
+];
+const DEF_BY_ID = new Map(WIDGET_DEFS.map(d => [d.id, d]));
+// The default layout IS today's Home — same components, same order. Customization is opt-in.
+const DEFAULT_LAYOUT: any[] = [
+  { wid: "onboarding", w: 12 }, { wid: "stat_pipeline", w: 3 }, { wid: "stat_proposals", w: 3 }, { wid: "stat_fpar", w: 3 }, { wid: "stat_won", w: 3 },
+  { wid: "setup", w: 8 }, { wid: "goal", w: 4 }, { wid: "finances", w: 8 }, { wid: "calendar", w: 4 },
+  { wid: "agent", w: 8 }, { wid: "quicklinks", w: 4 }, { wid: "activity", w: 8 }, { wid: "periods", w: 4 }, { wid: "recent", w: 8 },
+];
+const healLayout = (raw: any): any[] => {
+  if (!Array.isArray(raw)) return DEFAULT_LAYOUT.map(x => ({ ...x }));
+  const out: any[] = []; const seen = new Set<string>();
+  for (const it of raw) {
+    if (!it || typeof it !== "object") continue;
+    const def = DEF_BY_ID.get(String(it.wid || ""));
+    if (!def || seen.has(def.id)) continue;
+    seen.add(def.id);
+    const w = Math.max(def.minW, Math.min(def.maxW, Math.round(Number(it.w) || def.defW)));
+    out.push({ wid: def.id, w, ...(it.settings && typeof it.settings === "object" ? { settings: it.settings } : {}) });
+  }
+  return out;
+};
+
+function ClockWidget({ settings, tz }: any) {
+  const style = (settings && settings.style) || "analog";
+  const [nowT, setNowT] = useState(() => new Date());
+  useEffect(() => { const iv = setInterval(() => { setNowT(new Date()); }, 1000); return () => clearInterval(iv); }, []);
+  const zone = tz || (typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().timeZone : "UTC") || "UTC";
+  const parts: Record<string, string> = {};
+  try { for (const p of new Intl.DateTimeFormat("en-US", { timeZone: zone, hour12: false, hour: "numeric", minute: "numeric", second: "numeric" }).formatToParts(nowT)) parts[p.type] = p.value; } catch { /* bad tz falls back below */ }
+  const hh = Number(parts.hour || nowT.getHours()) % 24, mm = Number(parts.minute || nowT.getMinutes()), ss = Number(parts.second || nowT.getSeconds());
+  const city = zone.split("/").pop()?.replaceAll("_", " ") || zone;
+  const dateLine = (() => { try { return new Intl.DateTimeFormat("en-US", { timeZone: zone, weekday: "short", month: "short", day: "numeric" }).format(nowT); } catch { return nowT.toDateString(); } })();
+  const dig = `${((hh + 11) % 12) + 1}:${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")} ${hh >= 12 ? "PM" : "AM"}`;
+  const hA = (hh % 12) * 30 + mm * 0.5, mA = mm * 6 + ss * 0.1, sA = ss * 6;
+  return (<div className={"card clockW" + (style === "midnight" ? " dark" : "")} style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+    <h4 className="clockH">🕐 Local time · {city}</h4>
+    {style === "analog" ? (<div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "6px 0 2px" }}>
+      <svg width="104" height="104" viewBox="0 0 104 104"><circle cx="52" cy="52" r="48" fill="#0E5C3A" /><circle cx="52" cy="52" r="44" fill="#fff" /><g stroke="#101613" strokeWidth="2.5"><line x1="52" y1="10" x2="52" y2="16" /><line x1="52" y1="88" x2="52" y2="94" /><line x1="10" y1="52" x2="16" y2="52" /><line x1="88" y1="52" x2="94" y2="52" /></g><g transform={`rotate(${hA} 52 52)`}><line x1="52" y1="52" x2="52" y2="31" stroke="#101613" strokeWidth="4.5" strokeLinecap="round" /></g><g transform={`rotate(${mA} 52 52)`}><line x1="52" y1="52" x2="52" y2="22" stroke="#101613" strokeWidth="3.2" strokeLinecap="round" /></g><g transform={`rotate(${sA} 52 52)`}><line x1="52" y1="58" x2="52" y2="18" stroke="#22C55E" strokeWidth="1.8" strokeLinecap="round" /></g><circle cx="52" cy="52" r="3.6" fill="#0E5C3A" /></svg>
+      <div className="clockD">{dateLine}</div></div>)
+    : (<div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "10px 0 4px" }}>
+      <div className="clockDig">{dig}</div><div className="clockD">{dateLine} · {city}</div></div>)}
+  </div>);
+}
+
 function HomeDash({ go, openLead, m, d }: any) {
   const [home, setHome] = useState<any>(null); const [ins, setIns] = useState<any[]>([]);
   const reloadHome = () => { api("/api/home").then(setHome).catch(() => {}); };
   const [runOpen, setRunOpen] = useState(false); const [toasts, setToasts] = useState<any[]>([]); const [actRange, setActRange] = useState(30);
   const [calDay, setCalDay] = useState(new Date().toISOString().slice(0, 10)); const [calDone, setCalDone] = useState<Set<string>>(new Set());
   useEffect(() => { api("/api/home").then(setHome).catch(() => {}); api("/api/ai/insights").then(setIns).catch(() => {}); }, []);
+  // Custom Home state (v59)
+  const [layout, setLayout] = useState<any[] | null>(null);
+  const [editing, setEditing] = useState(false); const [gallery, setGallery] = useState(false);
+  const [savedFlash, setSavedFlash] = useState(""); const [removed, setRemoved] = useState<any>(null);
+  const [obDone, setObDone] = useState(false); const [setupDone, setSetupDone] = useState(false);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const gridRef = useRef<any>(null); const saveTimer = useRef<any>(null); const dragRef = useRef<any>(null); const rszRef = useRef<any>(null);
+  useEffect(() => { api("/api/home/layout").then(r => { if (Array.isArray(r.layout)) setLayout(healLayout(r.layout)); }).catch(() => {}); api("/api/onboarding").then(r => setObDone(!!r.complete || localStorage.getItem("wp_ob_hide") === "1")).catch(() => {}); api("/api/onboarding/status").then(r => setSetupDone(!!r.complete || localStorage.getItem("wp_setup_hide") === "1")).catch(() => {}); }, []);
+  useLive(() => { reloadHome(); api("/api/ai/insights").then(setIns).catch(() => {}); });
+  useEffect(() => { if (!removed) return; const t = setTimeout(() => setRemoved(null), 8000); return () => clearTimeout(t); }, [removed]);
+  const persist = (next: any[]) => { setLayout(next); if (saveTimer.current) clearTimeout(saveTimer.current); saveTimer.current = setTimeout(() => { api("/api/home/layout", { method: "PUT", body: { items: next } }).then(() => { setSavedFlash("Saved \u2713"); setTimeout(() => setSavedFlash(""), 2200); }).catch(() => { try { localStorage.setItem("wp_home_layout_mirror", JSON.stringify(next)); } catch { /* ignore */ } toast("Couldn't save your layout \u2014 kept on this device, will retry."); }); }, 600); };
   const toast = (text: string) => { const id = Date.now() + Math.random(); setToasts(t => [...t, { id, text }]); setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 5200); };
   const pipe = useCountUp(Math.round(m.pipeline_open_value || 0)); const wonM = useCountUp(Math.round(d.won_value || 0));
   if (!home) return <div className="card animIn"><p className="muted">Assembling your command center…</p></div>;
@@ -184,22 +279,20 @@ function HomeDash({ go, openLead, m, d }: any) {
   const week: any[] = [...Array(7)].map((_, i) => { const dt = new Date(Date.now() + i * 86400000); return { key: dt.toISOString().slice(0, 10), dow: dt.toLocaleDateString(undefined, { weekday: "narrow" }), num: dt.getDate(), has: home.upcoming.some((u: any) => u.date === dt.toISOString().slice(0, 10)) }; });
   const byDay = new Map<string, any[]>(); for (const u of home.upcoming) { if (!byDay.has(u.date)) byDay.set(u.date, []); byDay.get(u.date)!.push(u); }
   const STC: Record<string, string> = { NEW: "info", WORKING: "warn", QUALIFIED: "info", PROPOSAL: "warn", SENT: "info", FOLLOWUP: "warn", WON: "pass", LOST: "fail", NO_RESPONSE: "warn", CLOSED: "info", JUNK: "fail" };
-  return (<div>
-      <OnboardingCard go={go} />
-    <div className="homeGrid">
-      <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
-        <div className="statRow">
-          <div className="statCard animIn" style={{ animationDelay: "0ms", ["--glow" as any]: "#22c55e" }} onClick={() => go({ view: "leads", leads: { bucket: "proposal" } })}><div className="ic" style={{ background: "#dcfce7" }}>💵</div><div className="v">${num(pipe)}</div><div className="l">Open pipeline — qualified → sent</div></div>
-          <div className="statCard animIn" style={{ animationDelay: "60ms", ["--glow" as any]: "#f59e0b" }} onClick={() => go({ view: "leads", leads: { bucket: "proposal" } })}><div className="ic" style={{ background: "#fef9c3" }}>📨</div><div className="v">{home.proposals_sent_week}<span style={{ fontSize: 14, color: "#94a3b8" }}> / {home.proposals_built_week} built</span></div><div className="l">Proposals sent this week ★ North Star{home.proposals_test_week > 0 ? ` — ${home.proposals_test_week} in test mode (not delivered)` : ""}</div></div>
-          <div className="statCard animIn" style={{ animationDelay: "120ms", ["--glow" as any]: "#38bdf8" }} onClick={() => go({ view: "approvals" })}><div className="ic" style={{ background: "#dbeafe" }}>✅</div><div className="v">{m.first_pass_approval_rate !== null && m.first_pass_approval_rate !== undefined ? m.first_pass_approval_rate + "%" : "—"}</div><div className="l">First-pass approval · target 90%</div></div>
-          <div className="statCard animIn" style={{ animationDelay: "180ms", ["--glow" as any]: "#e879f9" }} onClick={() => go({ view: "leads", leads: { bucket: "won" } })}><div className="ic" style={{ background: "#fce7f3" }}>🏆</div><div className="v">${num(wonM)}</div><div className="l">Won value — {num(m.won)} deals all time</div></div>
-        </div>
-
-        <SetupCard go={go} />
-        <FinancesStrip f={home.finances} openLead={openLead} />
-    <PeriodsStrip />
-
-                <div className="agentCard animIn" style={{ animationDelay: "120ms" }}>
+  // ---- Custom Home rendering (v59) ----
+  const items: any[] = layout === null ? DEFAULT_LAYOUT.map(x => ({ ...x })) : layout;
+  const hiddenNow = (wid: string) => (wid === "onboarding" && obDone) || (wid === "setup" && setupDone);
+  const visItems = items.filter(it => DEF_BY_ID.has(it.wid) && (editing || !hiddenNow(it.wid)));
+  const WIDGET_RENDER: Record<string, () => any> = {
+    onboarding: () => <OnboardingCard go={go} />,
+    setup: () => <SetupCard go={go} />,
+    stat_pipeline: () => (<div className="statCard animIn" style={{ animationDelay: "0ms", ["--glow" as any]: "#22c55e" }} onClick={() => go({ view: "leads", leads: { bucket: "proposal" } })}><div className="ic" style={{ background: "#dcfce7" }}>💵</div><div className="v">${num(pipe)}</div><div className="l">Open pipeline — qualified → sent</div></div>),
+    stat_proposals: () => (<div className="statCard animIn" style={{ animationDelay: "60ms", ["--glow" as any]: "#f59e0b" }} onClick={() => go({ view: "leads", leads: { bucket: "proposal" } })}><div className="ic" style={{ background: "#fef9c3" }}>📨</div><div className="v">{home.proposals_sent_week}<span style={{ fontSize: 14, color: "#94a3b8" }}> / {home.proposals_built_week} built</span></div><div className="l">Proposals sent this week ★ North Star{home.proposals_test_week > 0 ? ` — ${home.proposals_test_week} in test mode (not delivered)` : ""}</div></div>),
+    stat_fpar: () => (<div className="statCard animIn" style={{ animationDelay: "120ms", ["--glow" as any]: "#38bdf8" }} onClick={() => go({ view: "approvals" })}><div className="ic" style={{ background: "#dbeafe" }}>✅</div><div className="v">{m.first_pass_approval_rate !== null && m.first_pass_approval_rate !== undefined ? m.first_pass_approval_rate + "%" : "—"}</div><div className="l">First-pass approval · target 90%</div></div>),
+    stat_won: () => (<div className="statCard animIn" style={{ animationDelay: "180ms", ["--glow" as any]: "#e879f9" }} onClick={() => go({ view: "leads", leads: { bucket: "won" } })}><div className="ic" style={{ background: "#fce7f3" }}>🏆</div><div className="v">${num(wonM)}</div><div className="l">Won value — {num(m.won)} deals all time</div></div>),
+    finances: () => <FinancesStrip f={home.finances} openLead={openLead} />,
+    periods: () => <PeriodsStrip />,
+    agent: () => (<div className="agentCard animIn" style={{ animationDelay: "120ms" }}>
           <div className="rowflex" style={{ justifyContent: "space-between" }}><b style={{ fontSize: 16 }}>🤖 Workpile Agent</b><span style={{ fontSize: 12.5, display: "flex", gap: 7, alignItems: "center" }}>{home.agent.active_count > 0 ? `🟢 Armed — ${home.agent.active_count} of 4 automations on${home.agent.runs?.[0] ? ` · last ran ${(() => { const h = Math.max(0, Math.round((Date.now() - new Date(home.agent.runs[0].created_at).getTime()) / 3600000)); return h < 1 ? "under an hour ago" : h < 24 ? `${h}h ago` : `${Math.round(h / 24)}d ago`; })()}` : ""}` : "⏸ Paused — all automations off"}</span></div>
           <p style={{ opacity: .85, fontSize: 13, margin: "6px 0 10px" }}>The agent works the backlog between your logins — scoring, assigning, de-duping, reactivating — inside your guardrails: nothing customer-facing sends without approval, prices only ever come from the price book. {auto.last_automation_at ? `Last run ${dt(auto.last_automation_at)}.` : "It hasn't run yet."}</p>
           <div className="rowflex" style={{ marginBottom: 10 }}>{autoNames.map(([k, l]) => <span key={k} className="tinyBadge" style={{ background: auto[k] ? "#22c55e" : "rgba(255,255,255,.18)", color: "#fff", border: 0 }}>{auto[k] ? "✓" : "○"} {l}</span>)}
@@ -208,14 +301,12 @@ function HomeDash({ go, openLead, m, d }: any) {
             <button className="btn ghost small" style={{ color: "#fff", borderColor: "rgba(255,255,255,.45)", background: "transparent", position: "relative", zIndex: 1 }} onClick={() => go({ view: "ai" })}>Open AI Assistant</button></div>
           {home.agent.runs.length > 0 && <div style={{ display: "flex", flexDirection: "column", gap: 6, position: "relative", zIndex: 1 }}>{home.agent.runs.slice(0, 3).map((r: any, i: number) => <div className="agentRun" key={i}><b>{r.agent}</b> — {r.summary} <span style={{ opacity: .7 }}>· {dt(r.created_at)}</span></div>)}</div>}
           {ins.length > 0 && <div style={{ marginTop: 10, position: "relative", zIndex: 1 }}>{ins.slice(0, 2).map((i: any, k: number) => <div key={k} style={{ fontSize: 13, padding: "5px 0", borderTop: "1px solid rgba(255,255,255,.15)" }}>{i.icon} <b>{i.title}</b> — <span style={{ opacity: .85 }}>{i.detail}</span></div>)}</div>}
-        </div>
-
-        <div className="card animIn" style={{ animationDelay: "200ms" }}><h3 style={{ marginTop: 0 }}>Activity <span className="muted" style={{ fontWeight: 400, fontSize: 12.5 }}>every action the team + agent took, per day</span><span style={{ float: "right" }} className="segPills"><button className={actRange === 14 ? "on" : ""} onClick={() => setActRange(14)}>14 days</button><button className={actRange === 30 ? "on" : ""} onClick={() => setActRange(30)}>30 days</button></span></h3>
+        </div>),
+    activity: () => (<div className="card animIn" style={{ animationDelay: "200ms" }}><h3 style={{ marginTop: 0 }}>Activity <span className="muted" style={{ fontWeight: 400, fontSize: 12.5 }}>every action the team + agent took, per day</span><span style={{ float: "right" }} className="segPills"><button className={actRange === 14 ? "on" : ""} onClick={() => setActRange(14)}>14 days</button><button className={actRange === 30 ? "on" : ""} onClick={() => setActRange(30)}>30 days</button></span></h3>
           <div className="actBars">{home.activity_series.slice(30 - actRange).map((s: any, i: number) => <div key={i} className={`ab ${s.day === todayStr ? "today" : ""}`} title={`${s.label}: ${s.count} actions`} style={{ height: `${Math.max(3, 100 * s.count / Math.max(1, ...home.activity_series.slice(30 - actRange).map((x: any) => x.count)))}%`, transitionDelay: `${i * 18}ms` }} />)}</div>
           <div className="rowflex" style={{ justifyContent: "space-between" }}><span className="muted" style={{ fontSize: 11.5 }}>{home.activity_series[30 - actRange]?.label}</span><span className="muted" style={{ fontSize: 11.5 }}>{home.activity_series[29]?.label} · today ●</span></div>
-        </div>
-
-        <div className="card animIn" style={{ animationDelay: "260ms" }}><h3 style={{ marginTop: 0 }}>Recently assigned <span className="more" onClick={() => go({ view: "leads" })}>View all →</span></h3>
+        </div>),
+    recent: () => (<div className="card animIn" style={{ animationDelay: "260ms" }}><h3 style={{ marginTop: 0 }}>Recently assigned <span className="more" onClick={() => go({ view: "leads" })}>View all →</span></h3>
           {home.recently_assigned.map((l: any, i: number) => <div className="recentRow animIn" key={l.id} style={{ animationDelay: `${i * 55}ms` }} onClick={() => openLead(l.id)}>
             <div className="avatar">{(l.contact_name || "?").split(" ").map((x: string) => x[0]).slice(0, 2).join("")}</div>
             <div style={{ flex: 1, minWidth: 0 }}><b>{l.contact_name || "—"}</b><div className="muted" style={{ fontSize: 12.5 }}>{l.service_requested} · {money(l.est_value)}{l.ai_score ? ` · AI score ${l.ai_score}` : ""}</div></div>
@@ -223,15 +314,12 @@ function HomeDash({ go, openLead, m, d }: any) {
             <span className={`st ${STC[l.state] || "info"}`}>{l.state.replaceAll("_", " ")}</span>
           </div>)}
           {home.recently_assigned.length === 0 && <p className="muted">No leads yet — import a CSV or connect a source and the agent starts working.</p>}
-        </div>
-      </div>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        <div className="card animIn" style={{ animationDelay: "200ms" }}><h3 style={{ marginTop: 0 }}>Goal — first-pass approval <span className="seeAll" onClick={() => go({ view: "approvals" })}>Approvals ↗</span></h3>
+        </div>),
+    goal: () => (<div className="card animIn" style={{ animationDelay: "200ms" }}><h3 style={{ marginTop: 0 }}>Goal — first-pass approval <span className="seeAll" onClick={() => go({ view: "approvals" })}>Approvals ↗</span></h3>
           <GoalGauge pct={m.first_pass_approval_rate} target={90} />
           <p className="muted" style={{ textAlign: "center", fontSize: 12.5, margin: "2px 0 4px" }}>{m.first_pass_approval_rate >= 90 ? "🎉 Target beaten — the agent's drafts are landing first try." : "Proposals approved without changes ÷ decided. The agent's drafting quality drives this."}</p>
-        </div>
-        <div className="card animIn" style={{ animationDelay: "150ms" }}><h3 style={{ marginTop: 0 }}>📅 Calendar <span style={{ float: "right", display: "flex", gap: 4 }}><button className="btn ghost small" onClick={() => { const d = new Date(calDay + "T12:00:00"); d.setDate(d.getDate() - 7); setCalDay(d.toISOString().slice(0, 10)); }}>‹ Week</button><button className="btn ghost small" onClick={() => setCalDay(todayStr)}>Today</button><button className="btn ghost small" onClick={() => { const d = new Date(calDay + "T12:00:00"); d.setDate(d.getDate() + 7); setCalDay(d.toISOString().slice(0, 10)); }}>Week ›</button></span></h3>
+        </div>),
+    calendar: () => (<div className="card animIn" style={{ animationDelay: "150ms" }}><h3 style={{ marginTop: 0 }}>📅 Calendar <span style={{ float: "right", display: "flex", gap: 4 }}><button className="btn ghost small" onClick={() => { const d = new Date(calDay + "T12:00:00"); d.setDate(d.getDate() - 7); setCalDay(d.toISOString().slice(0, 10)); }}>‹ Week</button><button className="btn ghost small" onClick={() => setCalDay(todayStr)}>Today</button><button className="btn ghost small" onClick={() => { const d = new Date(calDay + "T12:00:00"); d.setDate(d.getDate() + 7); setCalDay(d.toISOString().slice(0, 10)); }}>Week ›</button></span></h3>
           {(() => { const monday = new Date(calDay + "T12:00:00"); monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7)); const days = [...Array(7)].map((_, i) => { const d = new Date(monday); d.setDate(d.getDate() + i); const key = d.toISOString().slice(0, 10); return { key, dow: d.toLocaleDateString(undefined, { weekday: "narrow" }), num: d.getDate(), n: home.upcoming.filter((u: any) => u.date === key).length }; });
             const dayItems = home.upcoming.filter((u: any) => u.date === calDay);
             const rowKey = (u: any) => u.kind + ":" + (u.ref_id || u.task_id || u.title);
@@ -245,16 +333,64 @@ function HomeDash({ go, openLead, m, d }: any) {
               {dayItems.length === 0 && <p className="muted">Nothing scheduled this day — visits, crew days, tasks, follow-ups, callbacks, invoice due dates and expiries all land here.</p>}
             </>); })()}
           <button className="btn ghost small" style={{ marginTop: 4 }} onClick={() => (window as any).wpGoTab?.("planner", "calendar")}>Open full calendar →</button>
-        </div>
-        <div className="card animIn" style={{ animationDelay: "220ms" }}><h3 style={{ marginTop: 0 }}>Quick links</h3>
+        </div>),
+    quicklinks: () => (<div className="card animIn" style={{ animationDelay: "220ms" }}><h3 style={{ marginTop: 0 }}>Quick links</h3>
           <div className="qlRow" onClick={() => go({ view: "myday" })}>🌅 Today's plan <span style={{ marginLeft: "auto" }}>›</span></div>
           <div className="qlRow" onClick={() => (window as any).wpGoTab?.("planner", "tasks")}>🔁 Follow-ups & tasks <span style={{ marginLeft: "auto" }}>›</span></div>
           <div className="qlRow" onClick={() => go({ view: "queue" })}>⚡ Work the backlog <span style={{ marginLeft: "auto" }}>›</span></div>
           <div className="qlRow" onClick={() => go({ view: "approvals" })}>✅ Approvals inbox <span style={{ marginLeft: "auto" }}>›</span></div>
           <div className="qlRow" onClick={() => go({ view: "reports" })}>📊 Monthly target & reports <span style={{ marginLeft: "auto" }}>›</span></div>
-        </div>
+        </div>),
+  };
+  const moveItem = (arr: any[], from: number, to: number) => { const a = [...arr]; const [x] = a.splice(from, 1); a.splice(Math.max(0, Math.min(a.length, to)), 0, x); return a; };
+  const setItemW = (wid: string, w: number) => { const def = DEF_BY_ID.get(wid); if (!def) return; const cw = Math.max(def.minW, Math.min(def.maxW, w)); const next = items.map(it => it.wid === wid ? { ...it, w: cw } : it); persist(next); };
+  const removeItem = (it: any) => { const idx = items.findIndex(x => x.wid === it.wid); setRemoved({ item: it, idx }); persist(items.filter(x => x.wid !== it.wid)); };
+  const undoRemove = () => { if (!removed) return; const next = [...items]; next.splice(Math.max(0, Math.min(next.length, removed.idx)), 0, removed.item); setRemoved(null); persist(next); };
+  const cycleClock = (it: any) => { const styles = ["analog", "paper", "midnight"]; const cur = (it.settings && it.settings.style) || "analog"; const nx = styles[(styles.indexOf(cur) + 1) % styles.length]; persist(items.map(x => x.wid === "clock" ? { ...x, settings: { ...(x.settings || {}), style: nx } } : x)); };
+  const dragStart = (e: any, wid: string) => { if ((e.target as any).closest(".wBtn")) return; e.preventDefault(); try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* noop */ } dragRef.current = { wid }; setDragId(wid); };
+  const dragMove = (e: any) => { const dr = dragRef.current; if (!dr || !gridRef.current) return; const cells = [...gridRef.current.querySelectorAll("[data-wid]")]; let target = visItems.length - 1;
+    for (let i = 0; i < cells.length; i++) { const r = cells[i].getBoundingClientRect(); const cx = r.left + r.width / 2, cy = r.top + r.height / 2; if (e.clientY < cy - 4 || (Math.abs(e.clientY - cy) <= Math.max(30, r.height / 2) && e.clientX < cx)) { target = i; break; } }
+    const from = visItems.findIndex(x => x.wid === dr.wid); if (from === -1 || target === from) return;
+    const order = moveItem(visItems, from, target); const byWid = new Map(order.map((x: any) => [x.wid, x])); persist(items.map(x => byWid.get(x.wid) || x).sort((a: any, b: any) => order.findIndex((o: any) => o.wid === a.wid) - order.findIndex((o: any) => o.wid === b.wid))); };
+  const dragEnd = () => { dragRef.current = null; setDragId(null); };
+  const resizeStart = (e: any, it: any) => { e.preventDefault(); e.stopPropagation(); try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* noop */ } const grid = gridRef.current; const colW = grid ? (grid.clientWidth - 11 * 16) / 12 : 90; rszRef.current = { wid: it.wid, startX: e.clientX, startW: it.w, colW }; };
+  const resizeMove = (e: any) => { const rz = rszRef.current; if (!rz) return; const dw = Math.round((e.clientX - rz.startX) / rz.colW); if (dw !== 0) { const def = DEF_BY_ID.get(rz.wid); const cur = items.find(x => x.wid === rz.wid); if (def && cur && cur.w !== Math.max(def.minW, Math.min(def.maxW, rz.startW + dw))) setItemW(rz.wid, rz.startW + dw); } };
+  const resizeEnd = () => { rszRef.current = null; };
+  const cellKeys = (e: any, idx: number) => { if (!editing) return; const it = visItems[idx]; if (!it) return; if (e.key === "ArrowRight" || e.key === "ArrowDown") { e.preventDefault(); persist(moveItem(items, items.findIndex(x => x.wid === it.wid), items.findIndex(x => x.wid === it.wid) + 1)); } if (e.key === "ArrowLeft" || e.key === "ArrowUp") { e.preventDefault(); persist(moveItem(items, items.findIndex(x => x.wid === it.wid), items.findIndex(x => x.wid === it.wid) - 1)); } if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); removeItem(it); } };
+  const renderBody = (it: any) => {
+    if (hiddenNow(it.wid)) return <div className="card" style={{ padding: 16, height: "100%" }}><b>{DEF_BY_ID.get(it.wid)?.icon} {DEF_BY_ID.get(it.wid)?.title}</b><p className="muted" style={{ fontSize: 12.5, marginTop: 4 }}>Hidden right now — it's complete or dismissed. It will reappear here if it becomes relevant again; remove it if you never want it back.</p></div>;
+    if (it.wid === "clock") return <ClockWidget settings={it.settings} tz={home.tz} />;
+    const r = WIDGET_RENDER[it.wid]; return r ? r() : null;
+  };
+  const cell = (it: any, idx: number) => {
+    const def = DEF_BY_ID.get(it.wid) as any;
+    if (!editing) return <div key={it.wid} style={{ gridColumn: `span ${it.w}`, minWidth: 0 }}>{renderBody(it)}</div>;
+    return (<div key={it.wid} data-wid={it.wid} tabIndex={0} onKeyDown={e => cellKeys(e, idx)} className={"wCell" + (dragId === it.wid ? " dragging" : "")} style={{ gridColumn: `span ${it.w}`, minWidth: 0 }}>
+      <div className="wBar" onPointerDown={e => dragStart(e, it.wid)} onPointerMove={dragMove} onPointerUp={dragEnd} title="Drag to move">
+        <span className="wGrip">⠿</span><span className="wTitle">{def.icon} {def.title}</span>
+        <span className="wBtns">
+          {it.wid === "clock" && <button className="wBtn" onPointerDown={e => e.stopPropagation()} onClick={() => cycleClock(it)}>⚙ {((it.settings && it.settings.style) || "analog")}</button>}
+          <button className="wBtn danger" onPointerDown={e => e.stopPropagation()} onClick={() => removeItem(it)} title="Remove from Home">✕</button>
+        </span>
       </div>
+      <div className="wBody">{renderBody(it)}</div>
+      <div className="wRsz" onPointerDown={e => resizeStart(e, it)} onPointerMove={resizeMove} onPointerUp={resizeEnd} title="Drag to resize">◢</div>
+    </div>);
+  };
+  const placedIds = new Set(items.map(x => x.wid));
+  return (<div>
+{!editing && <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginBottom: 10 }}>{savedFlash && <span style={{ fontSize: 12.5, color: "#157347", fontWeight: 600 }}>{savedFlash}</span>}<button className="btn ghost small" onClick={() => setEditing(true)}>✎ Customize</button></div>}
+    {editing && <div className="editBar"><b>Editing your Home</b><span style={{ opacity: .75 }}>Drag the top bar to move · drag ◢ to resize · changes save automatically</span><span style={{ flex: 1 }} />{savedFlash && <span style={{ color: "#7ED492", fontWeight: 600 }}>{savedFlash}</span>}<button className="btn ghost small" onClick={() => setGallery(true)}>+ Add components</button><button className="btn ghost small" onClick={async () => { await api("/api/home/layout", { method: "DELETE" }).catch(() => {}); setLayout(DEFAULT_LAYOUT.map(x => ({ ...x }))); toast("Default layout restored"); }}>Reset</button><button className="btn small" onClick={() => setEditing(false)}>Done</button></div>}
+    <div className={"dashGrid" + (editing ? " editing" : "")} ref={gridRef}>
+      {visItems.map((it, i) => cell(it, i))}
     </div>
+    {visItems.length === 0 && <div className="card" style={{ textAlign: "center", padding: 34 }}><h3 style={{ marginTop: 0 }}>Your Home is clear</h3><p className="muted">Every component was removed — nothing was deleted, they all live in the gallery.</p><button className="btn" onClick={() => { setEditing(true); setGallery(true); }}>+ Add components</button></div>}
+    {gallery && <div className="galOverlay" onClick={() => setGallery(false)}><div className="galPanel" onClick={e => e.stopPropagation()}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}><h3 style={{ margin: 0 }}>Add components</h3><button className="btn ghost small" onClick={() => setGallery(false)}>Close</button></div>
+      <p className="muted" style={{ fontSize: 13 }}>Everything you can put on your Home. Components are live — the same data and actions as their full pages.</p>
+      <div className="galGrid">{WIDGET_DEFS.filter(d => d.id !== "onboarding" || !obDone).filter(d => d.id !== "setup" || !setupDone).map(d => { const placed = placedIds.has(d.id); return (<div className="galCard" key={d.id}><div style={{ fontSize: 22 }}>{d.icon}</div><b style={{ display: "block", marginTop: 4 }}>{d.title}</b><p className="muted" style={{ fontSize: 12.5, margin: "4px 0 10px", lineHeight: 1.5 }}>{d.blurb}</p>{placed ? <span className="tinyBadge" style={{ background: "#e7f6ec", color: "#0E5C3A" }}>On your Home ✓</span> : <button className="btn small" onClick={() => { persist([...items, { wid: d.id, w: d.defW, ...(d.id === "clock" ? { settings: { style: "analog" } } : {}) }]); toast(d.title + " added to your Home ✓"); }}>+ Add</button>}</div>); })}</div>
+    </div></div>}
+    {removed && <div className="undoBar"><span>{DEF_BY_ID.get(removed.item.wid)?.icon} {DEF_BY_ID.get(removed.item.wid)?.title} removed</span><button className="btn small" onClick={undoRemove}>Undo</button><button className="wBtn" onClick={() => setRemoved(null)}>✕</button></div>}
     {runOpen && <AgentRunModal close={() => setRunOpen(false)} done={(msg: string) => { setRunOpen(false); toast(msg); api("/api/home").then(setHome).catch(() => {}); }} />}
     <div className="toastBox">{toasts.map(t => <div className="toast" key={t.id}>✅ {t.text}</div>)}</div>
   </div>);

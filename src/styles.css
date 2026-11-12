@@ -703,3 +703,35 @@ aside.rail button.on .nshort { background:#ffffff22; }
 .a2Toast span{font-size:12px;color:#5B6B62;display:block;line-height:1.45}
 .a2Toast time{margin-left:auto;font-size:11px;color:#9AA79E;white-space:nowrap}
 .a2T2{position:absolute;left:14px;bottom:2px}
+
+/* ---- Custom Home (v59) ---- */
+.dashGrid{display:grid;grid-template-columns:repeat(12,1fr);gap:16px;align-items:start}
+.dashGrid .statCard{height:100%}
+.editBar{display:flex;align-items:center;gap:12px;background:#101613;color:#fff;border-radius:12px;padding:10px 14px;margin-bottom:14px;font-size:13.5px;flex-wrap:wrap}
+.editBar .btn.ghost{background:transparent;color:#fff;border-color:rgba(255,255,255,.4)}
+.wCell{position:relative;border:1.5px dashed #B9C6BC;border-radius:14px;padding:8px;background:rgba(255,255,255,.5)}
+.wCell.dragging{opacity:.55;border-color:#0E5C3A}
+.wCell:focus{outline:2px solid #0E5C3A;outline-offset:1px}
+.wBar{display:flex;align-items:center;gap:8px;padding:2px 2px 8px;cursor:grab;touch-action:none;user-select:none}
+.wBar:active{cursor:grabbing}
+.wGrip{color:#9AA79E;font-size:14px}
+.wTitle{font-size:12.5px;font-weight:700;color:#37423B;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wBtns{display:flex;gap:6px;align-items:center}
+.wBtn{border:1px solid #D8DED9;background:#fff;border-radius:7px;font-size:11.5px;font-weight:600;padding:3px 8px;cursor:pointer;color:#37423B}
+.wBtn.danger{background:#DC2626;border-color:#DC2626;color:#fff}
+.wBody{pointer-events:none}
+.wRsz{position:absolute;right:4px;bottom:2px;color:#9AA79E;font-size:13px;cursor:nwse-resize;touch-action:none;padding:4px;user-select:none}
+.galOverlay{position:fixed;inset:0;background:rgba(16,22,19,.5);z-index:200;display:flex;align-items:flex-start;justify-content:center;padding:38px 16px;overflow:auto}
+.galPanel{background:#fff;border-radius:16px;max-width:880px;width:100%;padding:22px 24px;box-shadow:0 30px 80px rgba(0,0,0,.3)}
+.galGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;margin-top:12px}
+.galCard{border:1.5px solid #E4EAE5;border-radius:12px;padding:14px}
+.undoBar{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:#101613;color:#fff;border-radius:12px;padding:10px 14px;display:flex;gap:12px;align-items:center;z-index:210;box-shadow:0 16px 40px rgba(0,0,0,.35);font-size:13.5px}
+.undoBar .wBtn{background:transparent;border-color:rgba(255,255,255,.35);color:#fff}
+.clockH{font-size:12px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#5B6B62;margin:0}
+.clockDig{font-size:34px;font-weight:800;letter-spacing:-.03em;color:#101613}
+.clockD{font-size:12.5px;color:#5B6B62;margin-top:3px}
+.clockW.dark{background:#101613;border-color:#101613}
+.clockW.dark .clockH{color:#7ED492}
+.clockW.dark .clockDig{color:#fff}
+.clockW.dark .clockD{color:#9DBFA9}
+@media (max-width:1020px){.dashGrid{grid-template-columns:repeat(6,1fr)}.dashGrid>*{grid-column:span 6 !important}}

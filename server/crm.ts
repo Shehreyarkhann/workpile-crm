@@ -50,6 +50,7 @@ const alter = (sql: string) => { try { db.exec(sql); } catch { /* column exists 
 export function initCrmSchema() {
   db.exec(`
   CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, workspace_id TEXT, name TEXT, phone TEXT, email TEXT, address TEXT, website TEXT, industry TEXT, notes TEXT, custom TEXT DEFAULT '{}', created_at TEXT, updated_at TEXT);
+  CREATE TABLE IF NOT EXISTS home_layouts (user_id TEXT, workspace_id TEXT, layout TEXT, updated_at TEXT, PRIMARY KEY(user_id, workspace_id));
   CREATE TABLE IF NOT EXISTS feed_posts (id TEXT PRIMARY KEY, workspace_id TEXT, entity_type TEXT, entity_id TEXT, user_id TEXT, body TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS follows (id TEXT PRIMARY KEY, workspace_id TEXT, user_id TEXT, entity_type TEXT, entity_id TEXT, created_at TEXT, UNIQUE(user_id, entity_type, entity_id));
   CREATE TABLE IF NOT EXISTS custom_fields (id TEXT PRIMARY KEY, workspace_id TEXT, object_type TEXT, key TEXT, label TEXT, field_type TEXT DEFAULT 'text', options TEXT DEFAULT '[]', active INTEGER DEFAULT 1, sort INTEGER DEFAULT 0, created_at TEXT, UNIQUE(workspace_id, object_type, key));
@@ -663,6 +664,38 @@ export function registerHome(app: any, requireAuth: any) {
       return res.status(422).json({ error: { code: "bad_kind", message: "That item can't be completed from the calendar." } });
     } catch (e: any) { return res.status(500).json({ error: { code: "complete_failed", message: String(e?.message || e) } }); }
   });
+  // ---- Custom Home layouts (v59): per user, per workspace; sanitized on write, healed on read by the client registry.
+  const sanitizeLayout = (raw: any) => {
+    if (!Array.isArray(raw)) return null;
+    const out: any[] = []; const seen = new Set<string>();
+    for (const it of raw.slice(0, 40)) {
+      if (!it || typeof it !== "object") continue;
+      const wid = String(it.wid || "");
+      if (!/^[a-z0-9_]{1,64}$/.test(wid) || seen.has(wid)) continue;
+      seen.add(wid);
+      const w = Math.max(2, Math.min(12, Math.round(Number(it.w) || 12)));
+      let settings: any = undefined;
+      if (it.settings && typeof it.settings === "object" && !Array.isArray(it.settings)) { try { const sj = JSON.stringify(it.settings); if (sj.length <= 2048) settings = JSON.parse(sj); } catch { /* drop bad settings */ } }
+      out.push({ wid, w, ...(settings ? { settings } : {}) });
+    }
+    return out;
+  };
+  app.get("/api/home/layout", requireAuth, (req: any, res: any) => {
+    const row = db.prepare("SELECT layout FROM home_layouts WHERE user_id=? AND workspace_id=?").get(req.user.id, req.user.workspace_id) as any;
+    let layout: any = null;
+    if (row?.layout) { try { layout = sanitizeLayout(JSON.parse(row.layout)); } catch { layout = null; } }
+    res.json({ layout });
+  });
+  app.put("/api/home/layout", requireAuth, (req: any, res: any) => {
+    const items = sanitizeLayout((req.body || {}).items);
+    if (!items) return res.status(422).json({ error: { code: "bad_layout", message: "Layout must be a list of components." } });
+    db.prepare("INSERT INTO home_layouts (user_id, workspace_id, layout, updated_at) VALUES (?,?,?,?) ON CONFLICT(user_id, workspace_id) DO UPDATE SET layout=excluded.layout, updated_at=excluded.updated_at").run(req.user.id, req.user.workspace_id, JSON.stringify(items), now());
+    res.json({ ok: true, layout: items });
+  });
+  app.delete("/api/home/layout", requireAuth, (req: any, res: any) => {
+    db.prepare("DELETE FROM home_layouts WHERE user_id=? AND workspace_id=?").run(req.user.id, req.user.workspace_id);
+    res.json({ ok: true });
+  });
   app.get("/api/home", requireAuth, (req: any, res: any) => {
     const w = req.user.workspace_id;
     // 30-day activity series (every lead event = work happening)
@@ -690,6 +723,6 @@ export function registerHome(app: any, requireAuth: any) {
     const propWeek = (db.prepare("SELECT COUNT(*) c FROM proposals WHERE workspace_id=? AND created_at>=date('now','-7 days') AND status IN ('sent','signed','viewed')").get(w) as any).c;
     const propTestWeek = (db.prepare("SELECT COUNT(*) c FROM proposals WHERE workspace_id=? AND created_at>=date('now','-7 days') AND status IN ('sent','signed','viewed') AND delivery_mode='test'").get(w) as any).c;
     const propWeekAll = (db.prepare("SELECT COUNT(*) c FROM proposals WHERE workspace_id=? AND created_at>=date('now','-7 days')").get(w) as any).c;
-    res.json({ activity_series: series, upcoming: filterAgenda(req.user, up).slice(0, 200), untouched_count: untouchedCount, recently_assigned: recent, agent: { automations: wrow, runs, active_count: [wrow?.auto_score, wrow?.auto_assign, wrow?.auto_dedupe, wrow?.auto_reactivate].filter(Boolean).length }, proposals_sent_week: propWeek, proposals_test_week: propTestWeek, proposals_built_week: propWeekAll, finances: permsOf(req.user).can_money ? financialSummary(w) : null });
+    res.json({ activity_series: series, upcoming: filterAgenda(req.user, up).slice(0, 200), untouched_count: untouchedCount, recently_assigned: recent, agent: { automations: wrow, runs, active_count: [wrow?.auto_score, wrow?.auto_assign, wrow?.auto_dedupe, wrow?.auto_reactivate].filter(Boolean).length }, proposals_sent_week: propWeek, proposals_test_week: propTestWeek, proposals_built_week: propWeekAll, finances: permsOf(req.user).can_money ? financialSummary(w) : null, tz: (db.prepare("SELECT timezone FROM workspaces WHERE id=?").get(w) as any)?.timezone || null });
   });
 }
