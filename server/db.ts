@@ -158,6 +158,7 @@ export function initSchema() {
   "ALTER TABLE workspaces ADD COLUMN llm_provider TEXT",
   "ALTER TABLE workspaces ADD COLUMN llm_model TEXT",
   "ALTER TABLE workspaces ADD COLUMN llm_api_key TEXT",
+  "ALTER TABLE workspaces ADD COLUMN llm_workspace_id TEXT",
   "CREATE TABLE IF NOT EXISTS agent_executions (id TEXT PRIMARY KEY, workspace_id TEXT, user_id TEXT, parent_id TEXT, instruction TEXT, status TEXT DEFAULT 'queued', planner TEXT, plan TEXT DEFAULT '[]', context TEXT DEFAULT '{}', tokens_in INTEGER DEFAULT 0, tokens_out INTEGER DEFAULT 0, summary TEXT, decided_by TEXT, decided_at TEXT, created_at TEXT, updated_at TEXT, loop_state TEXT)",
   "ALTER TABLE background_jobs ADD COLUMN lease_until TEXT",
   "ALTER TABLE background_jobs ADD COLUMN idem_key TEXT",

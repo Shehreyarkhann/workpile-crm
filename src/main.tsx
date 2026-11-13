@@ -2191,16 +2191,17 @@ function PlaybookCard() {
 }
 
 function ProviderCard() {
-  const [st, setSt] = useState<any>(null); const [kind, setKind] = useState("anthropic"); const [model, setModel] = useState(""); const [key, setKey] = useState(""); const [msg, setMsg] = useState("");
-  const load = () => { api("/api/ai/provider").then((r: any) => { setSt(r); if (r.model) setModel(r.model); if (r.kind && r.kind !== "rules") setKind(r.kind); }).catch(() => {}); };
+  const [st, setSt] = useState<any>(null); const [kind, setKind] = useState("anthropic"); const [model, setModel] = useState(""); const [key, setKey] = useState(""); const [msg, setMsg] = useState(""); const [wsId, setWsId] = useState("");
+  const load = () => { api("/api/ai/provider").then((r: any) => { setSt(r); if (r.model) setModel(r.model); if (r.kind && r.kind !== "rules") setKind(r.kind); setWsId(r.anthropic_workspace_id || ""); }).catch(() => {}); };
   useEffect(load, []);
-  const save = async () => { const r = await api("/api/ai/provider", { method: "PATCH", body: { provider: kind, model: model || undefined, api_key: key === "" ? undefined : key } }); setSt(r); setKey(""); setMsg("Provider settings saved ✓"); };
+  const save = async () => { const r = await api("/api/ai/provider", { method: "PATCH", body: { provider: kind, model: model || undefined, api_key: key === "" ? undefined : key, workspace_id: kind === "anthropic" ? wsId.trim() : undefined } }); setSt(r); setKey(""); setMsg("Provider settings saved ✓"); };
   const test = async () => { setMsg("Testing…"); const r = await api("/api/ai/provider/test", { method: "POST", body: {} }).catch((e: any) => ({ ok: false, error: e.message })); setMsg(r.ok ? (r.mode === "rules" ? r.message : `Connected ✓ ${r.model} responded in ${r.latency_ms}ms`) : "Failed: " + (r.error || "unknown")); };
   return (<div className="card" style={{ marginBottom: 14 }}><h3 style={{ marginTop: 0 }}>🧠 AI provider</h3>
     <p className="sub" style={{ marginTop: 0 }}>{st ? (st.configured ? <>Connected: <b>{st.label}</b>. The agent plans with the model; Workpile's policy engine still decides what may execute.</> : <>No provider connected — the agent runs on the deterministic rules planner and labels its output as such. Add a key to enable generative planning and drafting.</>) : "…"}</p>
     <div className="grid2"><label>Provider<select value={kind} onChange={e => setKind(e.target.value)}><option value="anthropic">Anthropic (Claude)</option><option value="openai">OpenAI</option></select></label>
     <label>Model<input value={model} onChange={e => setModel(e.target.value)} placeholder={kind === "anthropic" ? "claude-sonnet-4-5" : "gpt-5"} /></label>
-    <label>API key<input type="password" value={key} onChange={e => setKey(e.target.value)} placeholder={st?.source === "workspace" ? "•••••••• (saved — leave blank to keep)" : "sk-…"} /></label></div>
+    <label>API key<input type="password" value={key} onChange={e => setKey(e.target.value)} placeholder={st?.source === "workspace" ? "•••••••• (saved — leave blank to keep)" : "sk-…"} /></label>
+    {kind === "anthropic" && <label>Anthropic workspace ID<input value={wsId} onChange={e => setWsId(e.target.value)} placeholder="wrkspc_… (needed for personal sk-ant-usr- keys)" /></label>}</div>
     <div className="rowflex" style={{ marginTop: 10 }}><button className="btn small" onClick={save}>Save provider</button><button className="btn ghost small" onClick={test}>Test connection</button>{st?.source === "workspace" && <button className="btn ghost small" onClick={async () => { await api("/api/ai/provider", { method: "PATCH", body: { api_key: "" } }); load(); setMsg("Workspace key removed."); }}>Remove workspace key</button>}{msg && <span className="muted">{msg}</span>}</div>
   </div>);
 }

@@ -31,11 +31,11 @@ export function toOpenAIMessages(msgs: any[]): any[] {
 const TIMEOUT = 30000;
 
 class AnthropicProvider implements LlmProvider {
-  kind = "anthropic"; model: string; key: string;
-  constructor(key: string, model: string) { this.key = key; this.model = model || "claude-sonnet-4-5"; }
+  kind = "anthropic"; model: string; key: string; wsId: string | null;
+  constructor(key: string, model: string, wsId?: string | null) { this.key = key; this.model = model || "claude-sonnet-4-5"; this.wsId = wsId || null; }
   async chat(o: any): Promise<LlmResult> {
     const r = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", signal: AbortSignal.timeout(TIMEOUT),
-      headers: { "x-api-key": this.key, "anthropic-version": "2023-06-01", "Content-Type": "application/json" },
+      headers: { "x-api-key": this.key, "anthropic-version": "2023-06-01", "Content-Type": "application/json", ...(this.wsId ? { "anthropic-workspace-id": this.wsId } : {}) },
       body: JSON.stringify({ model: this.model, max_tokens: o.maxTokens || 2048, system: o.system, messages: toAnthropicMessages(o.messages), tools: (o.tools || []).map((t: LlmToolDef) => ({ name: t.name, description: t.description, input_schema: t.parameters })) }) });
     if (!r.ok) throw new Error(`anthropic ${r.status}: ${(await r.text()).slice(0, 200)}`);
     const j: any = await r.json();
@@ -60,18 +60,18 @@ class OpenAIProvider implements LlmProvider {
   }
 }
 
-export interface ProviderStatus { kind: string; model: string | null; configured: boolean; source: "workspace" | "env" | "none"; label: string }
+export interface ProviderStatus { kind: string; model: string | null; configured: boolean; source: "workspace" | "env" | "none"; label: string; anthropic_workspace_id: string | null }
 export function providerStatus(wsId: string): ProviderStatus {
-  const w = db.prepare("SELECT llm_provider, llm_model, llm_api_key FROM workspaces WHERE id=?").get(wsId) as any;
-  if (w?.llm_api_key) return { kind: w.llm_provider || "anthropic", model: w.llm_model || null, configured: true, source: "workspace", label: `${w.llm_provider || "anthropic"} (workspace key)` };
-  if (process.env.ANTHROPIC_API_KEY) return { kind: "anthropic", model: process.env.WORKPILE_LLM_MODEL || "claude-sonnet-4-5", configured: true, source: "env", label: "anthropic (platform key)" };
-  if (process.env.OPENAI_API_KEY) return { kind: "openai", model: process.env.WORKPILE_LLM_MODEL || "gpt-5", configured: true, source: "env", label: "openai (platform key)" };
-  return { kind: "rules", model: null, configured: false, source: "none", label: "rules — no AI provider connected" };
+  const w = db.prepare("SELECT llm_provider, llm_model, llm_api_key, llm_workspace_id FROM workspaces WHERE id=?").get(wsId) as any;
+  if (w?.llm_api_key) return { kind: w.llm_provider || "anthropic", model: w.llm_model || null, configured: true, source: "workspace", label: `${w.llm_provider || "anthropic"} (workspace key)`, anthropic_workspace_id: w.llm_workspace_id || null };
+  if (process.env.ANTHROPIC_API_KEY) return { kind: "anthropic", model: process.env.WORKPILE_LLM_MODEL || "claude-sonnet-4-5", configured: true, source: "env", label: "anthropic (platform key)", anthropic_workspace_id: null };
+  if (process.env.OPENAI_API_KEY) return { kind: "openai", model: process.env.WORKPILE_LLM_MODEL || "gpt-5", configured: true, source: "env", label: "openai (platform key)", anthropic_workspace_id: null };
+  return { kind: "rules", model: null, configured: false, source: "none", label: "rules — no AI provider connected", anthropic_workspace_id: null };
 }
 
 export function getProvider(wsId: string): LlmProvider | null {
-  const w = db.prepare("SELECT llm_provider, llm_model, llm_api_key FROM workspaces WHERE id=?").get(wsId) as any;
-  if (w?.llm_api_key) { const kind = w.llm_provider || "anthropic"; return kind === "openai" ? new OpenAIProvider(w.llm_api_key, w.llm_model) : new AnthropicProvider(w.llm_api_key, w.llm_model); }
+  const w = db.prepare("SELECT llm_provider, llm_model, llm_api_key, llm_workspace_id FROM workspaces WHERE id=?").get(wsId) as any;
+  if (w?.llm_api_key) { const kind = w.llm_provider || "anthropic"; return kind === "openai" ? new OpenAIProvider(w.llm_api_key, w.llm_model) : new AnthropicProvider(w.llm_api_key, w.llm_model, w.llm_workspace_id); }
   if (process.env.ANTHROPIC_API_KEY) return new AnthropicProvider(process.env.ANTHROPIC_API_KEY, process.env.WORKPILE_LLM_MODEL || "claude-sonnet-4-5");
   if (process.env.OPENAI_API_KEY) return new OpenAIProvider(process.env.OPENAI_API_KEY, process.env.WORKPILE_LLM_MODEL || "gpt-5");
   return null;
