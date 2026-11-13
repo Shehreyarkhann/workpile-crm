@@ -3774,13 +3774,17 @@ export function refChips(s: any): { kind: string; id: string; label: string }[] 
   const out: { kind: string; id: string; label: string }[] = []; const seen = new Set<string>();
   const push = (kind: string, id: any, label: string) => { if (!id || typeof id !== "string") return; const k = kind + ":" + id; if (seen.has(k)) return; seen.add(k); out.push({ kind, id, label }); };
   const r = s?.refs || {}; const a = s?.args || {};
+  // refs are tool-shaped: a key that is a list in one tool can be a NUMBER in
+  // another (list_tasks' overdue = count; get_ar_snapshot's overdue = list).
+  // An unguarded .forEach on the number white-screened the app (v73.1).
+  const arr = (v: any): any[] => Array.isArray(v) ? v : [];
   push("lead", r.lead_id || a.lead_id, "🎯 Open lead");
-  (r.lead_ids || []).forEach((id: string) => push("lead", id, "🎯 Lead"));
-  (r.items || []).forEach((it: any) => { push("inbox", it.id, "📥 " + String(it.subject || "Inbox item").slice(0, 26)); if (it.lead_id) push("lead", it.lead_id, "🎯 Lead"); if (it.job_id) push("job", it.job_id, "🛠 Job"); });
-  (r.jobs || []).forEach((j: any) => push("job", j.id, "🛠 Job"));
-  push("job", r.job_id, "🛠 Open job"); (r.job_ids || []).forEach((id: string) => push("job", id, "🛠 Job"));
-  (r.invoices || []).forEach((iv: any) => { if (iv.lead_id) push("lead", iv.lead_id, "🧾 " + (iv.number || "Invoice")); });
-  (r.overdue || []).forEach((o: any) => { if (o && typeof o === "object") push("lead", r.lead_id || a.lead_id, "🧾 " + (o.number || "Invoice")); });
+  arr(r.lead_ids).forEach((id: string) => push("lead", id, "🎯 Lead"));
+  arr(r.items).forEach((it: any) => { push("inbox", it.id, "📥 " + String(it.subject || "Inbox item").slice(0, 26)); if (it.lead_id) push("lead", it.lead_id, "🎯 Lead"); if (it.job_id) push("job", it.job_id, "🛠 Job"); });
+  arr(r.jobs).forEach((j: any) => push("job", j.id, "🛠 Job"));
+  push("job", r.job_id, "🛠 Open job"); arr(r.job_ids).forEach((id: string) => push("job", id, "🛠 Job"));
+  arr(r.invoices).forEach((iv: any) => { if (iv.lead_id) push("lead", iv.lead_id, "🧾 " + (iv.number || "Invoice")); });
+  arr(r.overdue).forEach((o: any) => { if (o && typeof o === "object") push("lead", r.lead_id || a.lead_id, "🧾 " + (o.number || "Invoice")); });
   if (r.proposal) push("lead", r.lead_id || a.lead_id, "📄 Proposal " + (r.proposal.number ? "PROP-" + r.proposal.number : ""));
   push("inbox", r.item_id || a.item_id, "📥 Open inbox item");
   return out.slice(0, 6);
@@ -3958,7 +3962,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       </EB>
       {jobOpen && <EB key={"job" + jobOpen}><JobDetail id={jobOpen} users={users} me={user} priceBook={priceBook} close={() => setJobOpen(null)} refresh={() => setTick(t => t + 1)} openLead={(lid: string) => { setJobOpen(null); setLeadId(lid); }} /></EB>}
       {custOpen && <EB key={"cust" + custOpen}><CustomerDetail id={custOpen} close={() => setCustOpen(null)} openLead={openLead} openJob={(id: string) => setJobOpen(id)} /></EB>}
-      {agentOpen && <AgentPanel close={() => setAgentOpen(false)} focusId={agentFocus} />}
+      {agentOpen && <EB><AgentPanel close={() => setAgentOpen(false)} focusId={agentFocus} /></EB>}
       {profOpen && <ProfileModal user={user} close={() => setProfOpen(false)} onSaved={(u: any) => setUser({ ...user, ...u })} />}
       {ltOpen && <LogTimeModal close={() => setLtOpen(false)} done={() => setTick(t => t + 1)} />}
       {creating && <CreateLead users={users} done={(id: any) => { setCreating(false); setTick(t => t + 1); if (id) openLead(id); }} />}
