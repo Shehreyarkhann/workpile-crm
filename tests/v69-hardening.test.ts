@@ -162,7 +162,7 @@ test("I/J/K/L: forged assignees are dropped, garbage times refused, unlinked ite
   // unlinked item → task, not a visit
   const free = await inboxFor("", "walkin@v69.test", "Meet?", "Can we schedule a meeting for Friday at 2 pm?");
   r = await owner.call("POST", `/api/inbox/${free}/actions`, { draft: "" });
-  const a = (r.body.actions || []).find((x: any) => x.kind === "schedule_task");
+  const a = (r.body.actions || []).find((x: any) => x.kind === "schedule_visit");
   assert.ok(a, JSON.stringify(r.body.actions));
   const ex = await owner.call("POST", `/api/inbox/${free}/actions/execute`, { action: a });
   // v70: an unlinked client booking creates the sender's record and books a

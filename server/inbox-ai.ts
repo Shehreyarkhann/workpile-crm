@@ -93,3 +93,29 @@ export function convertInboxItem(wsId: string, actorId: string, item: any): { le
   db.prepare("UPDATE inbox_items SET status='done', completed_at=?, lead_id=? WHERE id=?").run(now(), lid, item.id);
   return { lead_id: lid };
 }
+
+// v71: the workspace scan — run when an AI key lands and from the Inbox's
+// "AI scan" button. Sweeps open mail: links senders to their existing records
+// (never creates records for old mail — booking does that), attaches threads
+// to the active job, logs newly linked mail on the record, and drafts replies
+// for anything still undrafted when a provider is configured.
+export async function scanWorkspace(wsId: string, actorId: string): Promise<any> {
+  const { logActivity } = await import("./inbox-actions.ts");
+  const items = db.prepare("SELECT * FROM inbox_items WHERE workspace_id=? AND status='open' ORDER BY created_at DESC LIMIT 200").all(wsId) as any[];
+  let linked = 0, jobsAttached = 0, drafts = 0;
+  const provider = getProvider(wsId);
+  for (const it of items) {
+    let leadId = it.lead_id;
+    if (!leadId && it.from_email) {
+      const contact = db.prepare("SELECT * FROM contacts WHERE workspace_id=? AND lower(email)=lower(?)").get(wsId, it.from_email) as any;
+      const lead = contact ? db.prepare("SELECT * FROM leads WHERE workspace_id=? AND contact_id=? ORDER BY created_at DESC").get(wsId, contact.id) as any : null;
+      if (lead) { db.prepare("UPDATE inbox_items SET lead_id=? WHERE id=?").run(lead.id, it.id); leadId = lead.id; linked++; logActivity(wsId, lead.id, actorId, "email_in", `${it.from_name || ""} <${it.from_email}>: ${it.subject || "(no subject)"} — ${String(it.body || "").slice(0, 240)}`); }
+    }
+    if (leadId) {
+      const j = db.prepare("SELECT id FROM jobs WHERE workspace_id=? AND lead_id=? AND stage NOT IN ('CLOSED','CANCELLED') ORDER BY created_at DESC").get(wsId, leadId) as any;
+      if (j && it.job_id !== j.id) { db.prepare("UPDATE inbox_items SET job_id=? WHERE id=?").run(j.id, it.id); jobsAttached++; }
+    }
+    if (provider && !it.ai_draft_body && drafts < 25) { try { const biz = (db.prepare("SELECT name FROM workspaces WHERE id=?").get(wsId) as any)?.name || ""; await inboxSuggestion(wsId, { ...it, lead_id: leadId }, biz); drafts++; } catch { /* one bad item never stops the scan */ } }
+  }
+  return { scanned: items.length, linked, jobs_attached: jobsAttached, drafts, provider: !!provider };
+}

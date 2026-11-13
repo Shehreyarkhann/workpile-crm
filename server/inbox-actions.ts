@@ -102,6 +102,10 @@ function parsePerson(text: string, roster: any[]): any | null {
 }
 const SCHED_RE = /schedul|meet|appointment|visit|come (out|by)|stop by|walk ?through|be there|send (someone|him|her|a tech)/;
 const CALL_RE = /call (me|you|back|us)|give (me|you|us) a call|phone call|ring (me|you)/;
+// The operator's latest words can also CLOSE the thread: a draft that says no
+// action is needed (and proposes nothing itself) wins over the email's asks —
+// re-offering them is exactly the noise the operator complains about.
+const CLOSING_RE = /\bno action (is )?(needed|required|necessary)\b|\bnothing (further )?(is )?(needed|required)\b|\bno (further )?(need|action)\b|\ball set\b|\bjust (confirming|acknowledging)\b/i;
 
 const MENTION_STOP = new Set(["i", "we", "he", "she", "they", "it", "that", "this", "there", "someone", "somebody", "anyone", "everyone", "crew", "team", "tech", "guy", "guys", "friday", "monday", "tuesday", "wednesday", "thursday", "saturday", "sunday", "tomorrow", "today", "will"]);
 export function findMention(text: string): string | null {
@@ -136,6 +140,7 @@ function fromText<T>(text: string, fn: (t: string) => T | null): T | null {
 }
 
 export function rulesActions(wsId: string, item: any, draft: string, lead: any): DetectedAction[] {
+  if (draft && CLOSING_RE.test(draft) && !SCHED_RE.test(draft.toLowerCase()) && !CALL_RE.test(draft.toLowerCase())) return [];
   const tz = wsTz(wsId);
   const roster = db.prepare("SELECT id, name FROM users WHERE workspace_id=? AND COALESCE(active,1)=1").all(wsId) as any[];
   const incoming = `${item.subject || ""}\n${item.body || ""}`;
@@ -193,12 +198,15 @@ export async function detectActions(wsId: string, item: any, draft: string): Pro
   const ai = await aiActions(wsId, item, draft, lead);
   const rules = rulesActions(wsId, item, draft, lead);
   const future = (arr: DetectedAction[]) => arr.filter(a => new Date(a.when).getTime() >= Date.now() - 15 * 60000);
+  // Never re-offer what is already booked: a scheduled visit for this lead at
+  // the same instant means the action was taken — the strip stays clean.
+  const notBooked = (arr: DetectedAction[]) => !lead ? arr : arr.filter(a => a.kind !== "schedule_visit" || !(db.prepare("SELECT id FROM site_visits WHERE workspace_id=? AND lead_id=? AND scheduled_at=? AND status='scheduled'").get(wsId, lead.id, a.when) as any));
   if (ai && ai.length) {
     const merged = [...ai];
     for (const r of rules) if (!merged.some(a => a.kind === r.kind)) merged.push(r);
-    return { actions: future(merged).slice(0, 3), source: "ai", people };
+    return { actions: notBooked(future(merged)).slice(0, 3), source: "ai", people };
   }
-  return { actions: future(rules), source: ai ? "ai" : "rules", people };
+  return { actions: notBooked(future(rules)), source: ai ? "ai" : "rules", people };
 }
 
 // Every client interaction belongs on a record: when a booking comes from an

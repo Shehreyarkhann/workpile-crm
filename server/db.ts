@@ -61,7 +61,7 @@ export function initSchema() {
   CREATE TABLE IF NOT EXISTS change_orders (id TEXT PRIMARY KEY, workspace_id TEXT, project_id TEXT, lead_id TEXT, delta_scope TEXT, delta_total REAL DEFAULT 0, status TEXT DEFAULT 'draft', created_at TEXT);
   CREATE TABLE IF NOT EXISTS audit_log (id TEXT PRIMARY KEY, workspace_id TEXT, user_id TEXT, action TEXT, entity TEXT, entity_id TEXT, diff TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS webhook_endpoints (id TEXT PRIMARY KEY, workspace_id TEXT, url TEXT, secret TEXT, events TEXT DEFAULT 'lead.finalized', active INTEGER DEFAULT 1, created_at TEXT);
-  CREATE TABLE IF NOT EXISTS inbox_items (id TEXT PRIMARY KEY, workspace_id TEXT, category TEXT, from_name TEXT, from_email TEXT, subject TEXT, body TEXT, lead_id TEXT, owner_id TEXT, next_action_due_at TEXT, received_at TEXT, created_at TEXT, reply_label TEXT);
+  CREATE TABLE IF NOT EXISTS inbox_items (id TEXT PRIMARY KEY, workspace_id TEXT, category TEXT, from_name TEXT, from_email TEXT, subject TEXT, body TEXT, lead_id TEXT, owner_id TEXT, next_action_due_at TEXT, received_at TEXT, created_at TEXT, reply_label TEXT, job_id TEXT);
   CREATE TABLE IF NOT EXISTS signatures (id TEXT PRIMARY KEY, proposal_id TEXT, workspace_id TEXT, token TEXT UNIQUE, signer_name TEXT, signer_email TEXT, typed_signature TEXT, consent INTEGER DEFAULT 0, ip TEXT, user_agent TEXT, doc_hash TEXT, signed_at TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS payments (id TEXT PRIMARY KEY, workspace_id TEXT, proposal_id TEXT, kind TEXT DEFAULT 'deposit', amount REAL, currency TEXT DEFAULT 'USD', mode TEXT DEFAULT 'test', stripe_session_id TEXT, status TEXT DEFAULT 'pending', link TEXT, created_at TEXT, paid_at TEXT);
   CREATE TABLE IF NOT EXISTS background_jobs (id TEXT PRIMARY KEY, kind TEXT, payload TEXT, status TEXT DEFAULT 'queued', attempts INTEGER DEFAULT 0, run_after TEXT, last_error TEXT, created_at TEXT, updated_at TEXT);
@@ -93,6 +93,7 @@ export function initSchema() {
   // additive columns for existing DBs (expand step of expand-migrate-contract)
   for (const stmt of [
     "ALTER TABLE users ADD COLUMN is_platform_admin INTEGER DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN created_at TEXT",
     "ALTER TABLE notifications ADD COLUMN entity_type TEXT",
     "ALTER TABLE users ADD COLUMN avatar_url TEXT",
     "ALTER TABLE workspaces ADD COLUMN suspended INTEGER DEFAULT 0",
@@ -107,6 +108,7 @@ export function initSchema() {
     "ALTER TABLE job_schedule ADD COLUMN done_at TEXT",
     "ALTER TABLE messages_outbox ADD COLUMN attachments TEXT",
     "ALTER TABLE inbox_items ADD COLUMN ai_attach TEXT",
+    "ALTER TABLE inbox_items ADD COLUMN job_id TEXT",
     "ALTER TABLE proposals ADD COLUMN number INTEGER",
     "ALTER TABLE workspaces ADD COLUMN reply_email TEXT",
     "ALTER TABLE inbox_items ADD COLUMN escalated_at TEXT",
