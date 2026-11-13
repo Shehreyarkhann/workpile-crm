@@ -3793,15 +3793,59 @@ export function goRef(c: { kind: string; id: string }) { const w = window as any
 function RefChips({ s }: any) { const [showDraft, setShowDraft] = useState(false); const chips = refChips(s); const draft = s?.refs?.draft_body || s?.refs?.draft; if (!chips.length && !draft) return null;
   return (<div className="rowflex" style={{ marginTop: 4, gap: 6, flexWrap: "wrap" }}>{chips.map(c => <button key={c.kind + c.id} className="btn ghost small" style={{ fontSize: 11.5, padding: "2px 8px" }} onClick={() => goRef(c)}>{c.label} →</button>)}{draft && <button className="btn ghost small" style={{ fontSize: 11.5, padding: "2px 8px" }} onClick={() => setShowDraft(v => !v)}>{showDraft ? "Hide draft" : "📝 View draft"}</button>}{showDraft && draft && <div style={{ flexBasis: "100%", background: "#f8fafc", borderRadius: 8, padding: 8, fontSize: 12.5, whiteSpace: "pre-wrap" }}>{draft}</div>}</div>); }
 
+const AG_STATUS: Record<string, { label: string; bg: string; fg: string }> = {
+  planning: { label: "Planning…", bg: "#e0f2fe", fg: "#075985" },
+  executing: { label: "Working…", bg: "#e0f2fe", fg: "#075985" },
+  awaiting_approval: { label: "Waiting for your approval", bg: "#fef3c7", fg: "#92400e" },
+  completed: { label: "Completed", bg: "#dcfce7", fg: "#166534" },
+  failed: { label: "Failed", bg: "#fee2e2", fg: "#991b1b" },
+  rejected: { label: "Rejected", bg: "#f1f5f9", fg: "#475569" },
+  cancelled: { label: "Cancelled", bg: "#f1f5f9", fg: "#475569" },
+};
+function richLine(text: string) { const parts = text.split("**"); return <>{parts.map((part, i) => i % 2 ? <b key={i}>{part}</b> : <span key={i}>{part}</span>)}</>; }
+function SummaryText({ text }: any) {
+  const lines = String(text || "").split("\n");
+  return (<div>{lines.map((ln: string, i: number) => {
+    const s = ln.trim();
+    if (!s) return <div key={i} style={{ height: 6 }} />;
+    if (s === "—" || s === "---") return <hr key={i} style={{ border: "none", borderTop: "1px solid #cfe6d4", margin: "8px 0" }} />;
+    if (/^\*\*.+\*\*:?$/.test(s) && s.length < 90) return <div key={i} style={{ fontWeight: 800, margin: "10px 0 3px", color: "#083B25", fontSize: 13.5 }}>{s.replaceAll("**", "")}</div>;
+    if (s.startsWith("✓ ")) return <div key={i} style={{ display: "flex", gap: 7, margin: "3px 0" }}><span style={{ color: "#15803d", fontWeight: 800 }}>✓</span><span>{richLine(s.slice(2))}</span></div>;
+    if (s.startsWith("✗ ")) return <div key={i} style={{ display: "flex", gap: 7, margin: "3px 0" }}><span style={{ color: "#dc2626", fontWeight: 800 }}>✗</span><span>{richLine(s.slice(2))}</span></div>;
+    if (s.startsWith("- ") || s.startsWith("• ")) return <div key={i} style={{ display: "flex", gap: 7, margin: "3px 0" }}><span style={{ color: "#0E5C3A" }}>•</span><span>{richLine(s.slice(2))}</span></div>;
+    return <div key={i} style={{ margin: "3px 0" }}>{richLine(s)}</div>;
+  })}</div>);
+}
+function AgentStep({ s, sel, onToggle, CB }: any) {
+  const [open, setOpen] = useState(false);
+  const meta: Record<string, { icon: string; color: string }> = { done: { icon: "✓", color: "#15803d" }, failed: { icon: "✗", color: "#dc2626" }, running: { icon: "◌", color: "#0E5C3A" }, pending: { icon: "⏸", color: "#b45309" }, approved: { icon: "➜", color: "#0E5C3A" }, rejected: { icon: "—", color: "#94a3b8" }, skipped: { icon: "—", color: "#94a3b8" } };
+  const m = meta[s.status] || { icon: "•", color: "#64748b" };
+  const long = (s.result || "").length > 320;
+  return (<div style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "8px 0", borderTop: "1px solid #eef2f7" }}>
+    {s.status === "pending" ? <input type="checkbox" checked={sel.has(s.id)} onChange={onToggle} style={{ width: 16, height: 16, marginTop: 3 }} /> : <span className={s.status === "running" ? "agPulseWrap" : ""} style={{ width: 20, height: 20, borderRadius: "50%", background: m.color + "1a", color: m.color, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 800, flexShrink: 0, marginTop: 1 }}>{m.icon}</span>}
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <span className="tinyBadge" style={{ background: CB[s.control] || "#e2e8f0" }}>{s.control}{s.needs_approval ? " · approval" : ""}</span> <b style={{ fontSize: 13.5 }}>{s.label}</b>
+      {s.result && <div className="muted" style={{ fontSize: 12.5, marginTop: 3, lineHeight: 1.55 }}>{long && !open ? s.result.slice(0, 320) + "…" : s.result}{long && <button className="btn ghost small" style={{ fontSize: 11, padding: "0 4px", marginLeft: 4 }} onClick={() => setOpen(v => !v)}>{open ? "Show less" : "Show more"}</button>}</div>}
+      <RefChips s={s} />
+    </div>
+  </div>);
+}
+
 function AgentPanel({ close, focusId }: any) {
   const [prov, setProv] = useState<any>(null); const [text, setText] = useState(""); const [ex, setEx] = useState<any>(null); const [hist, setHist] = useState<any[]>([]); const [sel, setSel] = useState<Set<string>>(new Set()); const [busy, setBusy] = useState(false); const [err, setErr] = useState("");
   const loadHist = () => { api("/api/agent/executions").then(setHist).catch(() => {}); };
-  useEffect(() => { api("/api/ai/provider").then(setProv).catch(() => {}); loadHist(); }, []);
-  useEffect(() => { if (focusId) api(`/api/agent/executions/${focusId}`).then((r: any) => { setEx(r); setSel(new Set()); }).catch(() => {}); }, [focusId]);
+  const AG_TERMINAL = ["completed", "failed", "rejected", "cancelled"];
+  const pollRef = useRef<any>(null); const watchIdRef = useRef<string>("");
+  const stopWatch = () => { if (pollRef.current) { clearTimeout(pollRef.current); pollRef.current = null; } };
+  // v74: runs execute server-side and persist every step — the panel polls
+  // and renders the work live instead of holding one request open.
+  const watch = (id: string) => { stopWatch(); watchIdRef.current = id; const tick = async () => { if (watchIdRef.current !== id) return; try { const e = await api(`/api/agent/executions/${id}`); if (watchIdRef.current !== id) return; setEx(e); if (AG_TERMINAL.includes(e.status) || e.status === "awaiting_approval") { setBusy(false); loadHist(); return; } } catch { /* transient — the run lives server-side; keep watching */ } if (watchIdRef.current === id) pollRef.current = setTimeout(tick, 1500); }; pollRef.current = setTimeout(tick, 900); };
+  useEffect(() => { api("/api/ai/provider").then(setProv).catch(() => {}); loadHist(); return () => stopWatch(); }, []);
+  useEffect(() => { if (focusId) api(`/api/agent/executions/${focusId}`).then((r: any) => { setEx(r); setSel(new Set()); if (r && !AG_TERMINAL.includes(r.status) && r.status !== "awaiting_approval") { setBusy(true); watch(r.id); } }).catch(() => {}); }, [focusId]);
   const triage = async () => { if (busy) return; setBusy(true); setErr(""); try { const r = await api("/api/agent/triage-untouched", { method: "POST", body: {} }); setEx(r); setSel(new Set()); loadHist(); } catch (e: any) { setErr(e.message); } setBusy(false); };
-  const run = async (instruction: string, parent?: string) => { if (!instruction.trim() || busy) return; setBusy(true); setErr(""); try { const r = await api("/api/agent/execute", { method: "POST", body: { instruction, parent_id: parent || undefined } }); setEx(r); setSel(new Set()); setText(""); loadHist(); } catch (e: any) { setErr(e.message); } setBusy(false); };
-  const decide = async (mode: "approve" | "reject") => { if (!ex || !sel.size) return; setBusy(true); try { const r = await api(`/api/agent/executions/${ex.id}/decide`, { method: "POST", body: mode === "approve" ? { approve: [...sel] } : { reject: [...sel] } }); setEx(r); setSel(new Set()); loadHist(); } catch (e: any) { setErr(e.message); } setBusy(false); };
-  const cancel = async () => { if (!ex) return; const r = await api(`/api/agent/executions/${ex.id}/cancel`, { method: "POST", body: {} }); setEx(r); loadHist(); };
+  const run = async (instruction: string, parent?: string) => { if (!instruction.trim() || busy) return; setBusy(true); setErr(""); try { const r = await api("/api/agent/execute?async=1", { method: "POST", body: { instruction, parent_id: parent || undefined } }); setEx(r); setSel(new Set()); setText(""); loadHist(); if (r && r.id && !AG_TERMINAL.includes(r.status) && r.status !== "awaiting_approval") watch(r.id); else setBusy(false); } catch (e: any) { setErr(e.message); setBusy(false); } };
+  const decide = async (mode: "approve" | "reject") => { if (!ex || !sel.size) return; setBusy(true); try { const r = await api(`/api/agent/executions/${ex.id}/decide?async=1`, { method: "POST", body: mode === "approve" ? { approve: [...sel] } : { reject: [...sel] } }); setEx(r); setSel(new Set()); loadHist(); if (r && r.id && !AG_TERMINAL.includes(r.status) && r.status !== "awaiting_approval") watch(r.id); else setBusy(false); } catch (e: any) { setErr(e.message); setBusy(false); } };
+  const cancel = async () => { if (!ex) return; stopWatch(); const r = await api(`/api/agent/executions/${ex.id}/cancel`, { method: "POST", body: {} }); setEx(r); setBusy(false); loadHist(); };
   const CB: Record<string, string> = { read: "#e0f2fe", draft: "#fef9c3", execute: "#dcfce7", approval: "#fee2e2" };
   const followParent = ex && ex.status !== "awaiting_approval" ? ex.id : undefined;
   return (<div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: 430, maxWidth: "94vw", background: "#fff", boxShadow: "-8px 0 30px rgba(15,40,25,.18)", zIndex: 60, display: "flex", flexDirection: "column" }}>
@@ -3814,16 +3858,14 @@ function AgentPanel({ close, focusId }: any) {
       {ex && <div style={{ marginTop: 14 }}>
         <p style={{ margin: "0 0 4px" }}><b>“{ex.instruction}”</b></p>
         <p className="muted" style={{ margin: "0 0 4px", fontSize: 12 }}>Run by {ex.creator_name || "a teammate"} · {new Date(ex.created_at).toLocaleString()}{ex.decided_by_name ? ` · decided by ${ex.decided_by_name}` : ""}</p>
-        <p className="muted" style={{ margin: "0 0 10px", fontSize: 12.5 }}>Status: <b>{String(ex.status).replaceAll("_", " ")}</b> · planner: {ex.planner || "—"}{(ex.tokens_in || ex.tokens_out) ? ` · tokens ${ex.tokens_in}/${ex.tokens_out}` : ""}</p>
-        {(ex.plan || []).map((s: any) => <div key={s.id} style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "7px 0", borderTop: "1px solid #eef2f7" }}>
-          {s.status === "pending" ? <input type="checkbox" checked={sel.has(s.id)} onChange={() => setSel(prev => { const n = new Set(prev); if (n.has(s.id)) n.delete(s.id); else n.add(s.id); return n; })} style={{ width: 16, height: 16, marginTop: 2 }} /> : <span style={{ width: 16, textAlign: "center" }}>{s.status === "done" ? "✓" : s.status === "failed" ? "✗" : s.status === "rejected" ? "—" : "•"}</span>}
-          <div style={{ flex: 1 }}><span className="tinyBadge" style={{ background: CB[s.control] || "#e2e8f0" }}>{s.control}{s.needs_approval ? " · approval" : ""}</span> <b style={{ fontSize: 13.5 }}>{s.label}</b>{s.result && <div className="muted" style={{ fontSize: 12.5, marginTop: 2 }}>{s.result}</div>}<RefChips s={s} /></div>
-        </div>)}
+        <div className="rowflex" style={{ gap: 8, alignItems: "center", margin: "0 0 10px", flexWrap: "wrap" }}><span style={{ background: (AG_STATUS[ex.status] || AG_STATUS.planning).bg, color: (AG_STATUS[ex.status] || AG_STATUS.planning).fg, fontSize: 12, fontWeight: 700, borderRadius: 999, padding: "3px 11px" }}>{(AG_STATUS[ex.status] || AG_STATUS.planning).label}</span><span className="muted" style={{ fontSize: 12 }}>{ex.planner || ""}{(ex.tokens_in || ex.tokens_out) ? ` · tokens ${ex.tokens_in}/${ex.tokens_out}` : ""}</span></div>
+        {busy && ["planning", "executing"].includes(ex.status) && <div className="agLiveBar"><span className="agPulse" /><span>Live — steps appear here as the agent works. You can close this panel; the run keeps going and waits under Previous runs.</span></div>}
+        {(ex.plan || []).map((s: any) => <AgentStep key={s.id} s={s} CB={CB} sel={sel} onToggle={() => setSel((prev: any) => { const n = new Set(prev); if (n.has(s.id)) n.delete(s.id); else n.add(s.id); return n; })} />)}
         {ex.status === "awaiting_approval" && <div className="rowflex" style={{ marginTop: 10 }}>{(() => { const pend = (ex.plan || []).filter((s: any) => s.status === "pending"); const allSel = pend.length > 0 && pend.every((s: any) => sel.has(s.id)); return <button className="btn ghost small" onClick={() => setSel(allSel ? new Set() : new Set(pend.map((s: any) => s.id)))}>{allSel ? "Clear selection" : `Select all ${pend.length} pending`}</button>; })()}<button className="btn small" disabled={!sel.size || busy} onClick={() => decide("approve")}>Approve selected ({sel.size})</button><button className="btn ghost small" disabled={!sel.size || busy} onClick={() => decide("reject")}>Reject selected</button><button className="btn ghost small" onClick={cancel}>Cancel run</button></div>}
-        {ex.summary && !["awaiting_approval", "executing", "planning"].includes(ex.status) && <div style={{ background: "#f0fdf4", borderRadius: 8, padding: 10, marginTop: 10, whiteSpace: "pre-wrap", fontSize: 13 }}>{ex.summary}</div>}
-        {ex.summary && !["awaiting_approval", "executing", "planning"].includes(ex.status) && (() => { const all: any[] = []; const seen = new Set<string>(); for (const st of ex.plan || []) for (const c of refChips(st)) { const k = c.kind + ":" + c.id; if (!seen.has(k)) { seen.add(k); all.push(c); } } if (!all.length) return null; return <div className="rowflex" style={{ marginTop: 8, gap: 6, flexWrap: "wrap" }}><span className="muted" style={{ fontSize: 12 }}>Jump to:</span>{all.slice(0, 8).map(c => <button key={c.kind + c.id} className="btn ghost small" style={{ fontSize: 11.5, padding: "2px 8px" }} onClick={() => goRef(c)}>{c.label} →</button>)}</div>; })()}
+        {ex.summary && !["executing", "planning"].includes(ex.status) && <div style={{ background: "linear-gradient(180deg,#f2fbf5,#eaf7ee)", border: "1px solid #cdeeda", borderRadius: 12, padding: "12px 14px", marginTop: 12, fontSize: 13, lineHeight: 1.55, color: "#14301f" }}><div style={{ fontSize: 11, fontWeight: 800, letterSpacing: ".08em", textTransform: "uppercase", color: "#0E5C3A", marginBottom: 6 }}>Summary</div><SummaryText text={ex.summary} /></div>}
+        {ex.summary && !["executing", "planning"].includes(ex.status) && (() => { const all: any[] = []; const seen = new Set<string>(); for (const st of ex.plan || []) for (const c of refChips(st)) { const k = c.kind + ":" + c.id; if (!seen.has(k)) { seen.add(k); all.push(c); } } if (!all.length) return null; return <div className="rowflex" style={{ marginTop: 8, gap: 6, flexWrap: "wrap" }}><span className="muted" style={{ fontSize: 12 }}>Jump to:</span>{all.slice(0, 8).map(c => <button key={c.kind + c.id} className="btn ghost small" style={{ fontSize: 11.5, padding: "2px 8px" }} onClick={() => goRef(c)}>{c.label} →</button>)}</div>; })()}
       </div>}
-      {hist.length > 0 && <div style={{ marginTop: 18 }}><h4 style={{ margin: "0 0 6px" }}>Previous runs</h4>{hist.slice(0, 8).map((h: any) => <p key={h.id} className="clickable" style={{ margin: "5px 0", fontSize: 13 }} onClick={() => { setEx(h); setSel(new Set()); }}>“{h.instruction}” <span className="muted">· {String(h.status).replaceAll("_", " ")} · {new Date(h.created_at).toLocaleString()}</span></p>)}</div>}
+      {hist.length > 0 && <div style={{ marginTop: 18 }}><h4 style={{ margin: "0 0 6px" }}>Previous runs</h4>{hist.slice(0, 8).map((h: any) => <p key={h.id} className="clickable" style={{ margin: "5px 0", fontSize: 13 }} onClick={() => { setEx(h); setSel(new Set()); if (!AG_TERMINAL.includes(h.status) && h.status !== "awaiting_approval") { setBusy(true); watch(h.id); } }}>“{h.instruction}” <span className="muted">· {String(h.status).replaceAll("_", " ")} · {new Date(h.created_at).toLocaleString()}</span></p>)}</div>}
     </div>
   </div>);
 }

@@ -103,13 +103,35 @@ export async function createTriageExecution(ws: string, userId: string): Promise
   return runExecution(ws, id);
 }
 
-export async function createExecution(ws: string, userId: string, instruction: string, parentId?: string): Promise<any> {
-  const w = db.prepare("SELECT * FROM workspaces WHERE id=?").get(ws) as any;
-  const level = agentLevel(w);
+export function insertExecution(ws: string, userId: string, instruction: string, parentId?: string): string {
   const id = uid("exe");
   const ctx = businessContext(ws);
   if (parentId) { const p = db.prepare("SELECT summary, instruction FROM agent_executions WHERE id=? AND workspace_id=?").get(parentId, ws) as any; if (p) (ctx as any).parent = { instruction: p.instruction, summary: p.summary }; }
   db.prepare("INSERT INTO agent_executions (id,workspace_id,user_id,parent_id,instruction,status,planner,plan,context,created_at,updated_at) VALUES (?,?,?,?,?,'planning','', '[]',?,?,?)").run(id, ws, userId, parentId || null, instruction, JSON.stringify(ctx), now(), now());
+  return id;
+}
+
+export async function createExecution(ws: string, userId: string, instruction: string, parentId?: string): Promise<any> {
+  const id = insertExecution(ws, userId, instruction, parentId);
+  return planAndRunExecution(ws, id);
+}
+
+// v74 live runs: insert the row and hand it back immediately; planning and
+// execution continue in the background. Every stage already persists as it
+// goes (the loop saves after each turn, runExecution after each step), so
+// any client can poll GET /api/agent/executions/:id and watch the work
+// happen — and a dropped connection no longer strands the run.
+export function startExecutionAsync(ws: string, userId: string, instruction: string, parentId?: string): any {
+  const id = insertExecution(ws, userId, instruction, parentId);
+  void planAndRunExecution(ws, id).catch(() => { try { db.prepare("UPDATE agent_executions SET status='failed', summary='The run failed before it could start — please try again.', updated_at=? WHERE id=? AND status IN ('planning','executing')").run(now(), id); } catch { /* already final */ } });
+  return getExecution(ws, id);
+}
+
+async function planAndRunExecution(ws: string, id: string): Promise<any> {
+  const exRow = getExecution(ws, id); if (!exRow) return null;
+  const instruction = exRow.instruction; const ctx = exRow.context || {};
+  const w = db.prepare("SELECT * FROM workspaces WHERE id=?").get(ws) as any;
+  const level = agentLevel(w);
   if (getProvider(ws)) {
     // V49: the multi-turn loop is the primary planner when a provider exists —
     // plan → tools → observe → re-plan, pausing at approval gates. Any loop
