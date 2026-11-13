@@ -2832,8 +2832,45 @@ function CallbackForm({ leadId, done }: any) {
     {msg && <p className="muted" style={{ marginTop: 6 }}>{msg}</p>}<p className="muted" style={{ fontSize: 12.5 }}>"Call me Thursday" is a promise — it lands in the queue when it's due, with your note attached.</p></div>);
 }
 
+
+// Handle an inbox item without leaving the Work Queue (v65): the full
+// original email, the same suggestion/draft machinery as the Inbox page,
+// reply & close, mark-done, snooze — the queue is worked to zero in place.
+function InboxHandleModal({ item, onClose, onDone, openLead, go }: any) {
+  const [full, setFull] = useState<any>(null); const [sug, setSug] = useState<any>(null);
+  const [draft, setDraft] = useState(""); const [att, setAtt] = useState<any[]>([]);
+  const [msg, setMsg] = useState(""); const [busy, setBusy] = useState("");
+  const loadAll = () => { api("/api/inbox").then(rows => { const it = (rows || []).find((r: any) => r.id === item.inbox_id); if (it) setFull(it); }).catch(() => {}); api("/api/inbox/" + item.inbox_id + "/suggestion").then(r => { if (r) { setSug(r); setDraft(r.draft_body || ""); setAtt((r.attachments || []).map((x: any) => ({ kind: x.kind, id: x.id, label: x.label, why: x.why }))); } }).catch(() => {}); };
+  useEffect(loadAll, [item.inbox_id]);
+  useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); }; window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, []);
+  const send = async () => { setBusy("send"); const r = await api("/api/inbox/" + item.inbox_id + "/reply", { method: "POST", body: { body: draft, attachments: att.map(x => ({ kind: x.kind, id: x.id })) } }).catch((e: any) => ({ error: e.message })); setBusy(""); if ((r as any).error) { setMsg("Failed: " + (r as any).error); return; } toast(r.status === "test_mode" ? "Reply recorded (test mode — sending is off until a provider is connected) — item closed ✓" : "Reply sent ✓ — item closed"); onDone(); };
+  const doneOnly = async () => { setBusy("done"); await api("/api/inbox/" + item.inbox_id, { method: "PATCH", body: { status: "done" } }).catch(() => {}); setBusy(""); toast("Marked done ✓"); onDone(); };
+  const snooze = async () => { setBusy("snooze"); await api("/api/inbox/" + item.inbox_id, { method: "PATCH", body: { snooze_days: 1 } }).catch(() => {}); setBusy(""); toast("Snoozed 1 day ✓"); onDone(); };
+  const regen = async () => { const r = await api("/api/inbox/" + item.inbox_id + "/suggestion/regenerate", { method: "POST", body: {} }).catch(() => null); if (r) { setSug(r); setDraft(r.draft_body || ""); if (r.source !== "ai") setMsg("No AI provider connected yet — add a key in Automations → AI provider and this writes the reply from the email itself."); } };
+  return (<div className="modalOverlay" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className="card" style={{ maxWidth: 780, width: "100%", maxHeight: "88vh", overflowY: "auto", padding: "18px 20px" }}>
+      <div className="rowflex" style={{ alignItems: "flex-start" }}><div style={{ flex: 1 }}><span className="badge b-TRIAGED">{String(full?.category || "inbox").replaceAll("_", " ")}</span> <b style={{ fontSize: 16 }}>{full?.subject || item.title}</b><div className="muted" style={{ fontSize: 12.5, marginTop: 2 }}>From {full?.from_name || ""} &lt;{full?.from_email || ""}&gt; · {full ? dt(full.received_at || full.created_at) : ""} — handle it here, without leaving the Queue.</div></div><button className="btn ghost small" onClick={onClose}>✕ Close</button></div>
+      {full ? <div className="origMail" style={{ marginTop: 10 }}><div className="origHead"><b>📧 Original email</b></div><div style={{ whiteSpace: "pre-wrap", fontSize: 13.5, lineHeight: 1.55, padding: "4px 2px" }}>{full.body || "(no body)"}</div></div> : <p className="muted" style={{ marginTop: 10 }}>Loading the email…</p>}
+      {sug ? <div style={{ marginTop: 10 }}><p style={{ margin: "0 0 4px" }}><b>🤖 Suggested: {sug.action}</b> {sug.source === "ai" ? <span className="tinyBadge" style={{ background: "#e7f6ec", color: "#14532d" }}>✨ AI draft — written from this email{sug.model ? " · " + sug.model : ""}</span> : <span className="tinyBadge" style={{ background: "#fef9c3", color: "#854d0e" }}>📄 Template draft — add an AI key in Automations for drafts written from the actual email</span>}<button className="btn ghost small" style={{ marginLeft: 8 }} onClick={regen}>{sug.source === "ai" ? "↻ Regenerate" : "✨ Enhance with AI"}</button></p>
+        <p className="muted" style={{ margin: "0 0 8px", fontSize: 12.5 }}>{sug.why}</p>
+        <label className="f">Reply — edit freely, sends from your workspace</label>
+        <textarea rows={7} value={draft} onChange={e => setDraft(e.target.value)} />
+        {att.length > 0 && <div className="rowflex" style={{ marginTop: 6 }}>{att.map((x: any, ix: number) => <span key={ix} className="chip on">📎 {x.label}{x.why ? ` (${String(x.why).toLowerCase()})` : ""} <button className="wBtn" title="Remove attachment" onClick={() => setAtt(att.filter((_, j) => j !== ix))}>✕</button></span>)}</div>}
+      </div> : <p className="muted" style={{ marginTop: 10 }}>Loading suggestion…</p>}
+      {msg && <div className="note" style={{ marginTop: 8 }}>{msg}</div>}
+      <div className="rowflex" style={{ marginTop: 12 }}>
+        <button className="btn" disabled={busy === "send" || !draft.trim()} onClick={send}>✉ Send reply & close{att.length ? ` (${att.length} 📎)` : ""}</button>
+        <button className="btn ghost" disabled={!!busy} onClick={doneOnly}>✓ Mark done — no reply</button>
+        <button className="btn ghost" disabled={!!busy} onClick={snooze}>😴 Snooze 1d</button>
+        {item.lead_id && <button className="btn ghost" onClick={() => { onClose(); openLead(item.lead_id); }}>Open lead →</button>}
+        <button className="btn ghost" onClick={() => { onClose(); go({ view: "inbox" }); }}>Open in Inbox →</button>
+      </div>
+    </div>
+  </div>);
+}
+
 function WorkQueue({ openLead, openJob, go, me }: any) {
-  const [q, setQ] = useState<any>(null); const [typeF, setTypeF] = useState("all"); const [focus, setFocus] = useState(0);
+  const [q, setQ] = useState<any>(null); const [typeF, setTypeF] = useState("all"); const [focus, setFocus] = useState(0); const [handling, setHandling] = useState<any>(null);
   const [sel, setSel] = useState<Set<string>>(new Set()); const [team, setTeam] = useState<any[]>([]); const [bulkMsg, setBulkMsg] = useState("");
   useEffect(() => { api("/api/users").then(setTeam).catch(() => {}); }, []);
   const [keysOn, setKeysOn] = useState(() => { try { return localStorage.getItem("wp_keys") !== "off"; } catch { return true; } });
@@ -2849,7 +2886,7 @@ function WorkQueue({ openLead, openJob, go, me }: any) {
     if (e.key.toLowerCase() === "k") setFocus(f => Math.max(0, f - 1));
     if (e.key === "Enter" && items[focus]) act(items[focus]); };
     window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, [items, focus, keysOn]);
-  const act = (i: any) => { if (i.type === "approval") go({ view: "approvals" }); else if (i.job_id && i.type !== "followup_overdue" && i.type !== "lead_untouched" && i.type !== "proposal_cold" && i.type !== "proposal_viewed") openJob(i.job_id); else if (i.type === "inbox") go({ view: "ops" }); else if (i.type === "field_report" || i.type === "timesheet") go({ view: "ops" }); else if (i.lead_id) openLead(i.lead_id); };
+  const act = (i: any) => { if (i.type === "approval") go({ view: "approvals" }); else if (i.type === "inbox") setHandling(i); else if (i.job_id && i.type !== "followup_overdue" && i.type !== "lead_untouched" && i.type !== "proposal_cold" && i.type !== "proposal_viewed") openJob(i.job_id); else if (i.type === "field_report" || i.type === "timesheet") go({ view: "ops" }); else if (i.lead_id) openLead(i.lead_id); };
   const doneQuick = async (i: any) => { if (i.type === "callback") await api(`/api/callbacks/${i.callback_id}/done`, { method: "POST", body: {} }); load(); };
   const assignMine = async (i: any) => { if (!me?.id || !i.lead_id) return; await api("/api/queue/bulk", { method: "POST", body: { lead_ids: [i.lead_id], action: "assign", assignee_id: me.id } }); setQ((prev: any) => prev ? { ...prev, items: prev.items.filter((x: any) => x.id !== i.id), total: Math.max(0, prev.total - 1) } : prev); toast("Assigned to you — it's off the untouched pile ✓"); };
   if (!q) return <p className="muted">Loading your pile…</p>;
@@ -2864,6 +2901,7 @@ function WorkQueue({ openLead, openJob, go, me }: any) {
       <div className="qTitle"><b>{i.title}</b><span className="muted">{i.subtitle}</span></div>
       <span className="qQuick">{i.type === "callback" ? <button className="btn ghost small qDoneBtn" onClick={() => doneQuick(i)}>✓ Done</button> : i.type === "lead_untouched" ? <button className="btn ghost small qDoneBtn" title="Assign this lead to me — it leaves the untouched pile" onClick={() => assignMine(i)}>👤 Mine</button> : null}</span>
       <button className="btn small qBtn" onClick={() => act(i)}>{i.primary?.label || "Open"}</button></div>)}
+    {handling && <InboxHandleModal item={handling} onClose={() => setHandling(null)} onDone={() => { setHandling(null); load(); }} openLead={openLead} go={go} />}
   </div>);
 }
 
