@@ -16,10 +16,15 @@ import { mkStep, getExecution, finalizeExecution, houseRules, type Step } from "
 
 export const MAX_TURNS = 12;
 const LOOP_SYSTEM = `You are Workpile Agent, the operator of a CRM for field-service businesses. Work in turns: call tools, read their results, then choose the next step — keep going until the instruction is fully handled, then stop calling tools and give a concise summary using only numbers and facts from tool results.
-Rules: never invent ids (search first), read before you write, prefer drafts over sends. Customer-facing sends (send_message, send_inbox_reply, record_payment) always pause for human approval — when a run pauses, that's the design working, not an error. Prices come only from prepare_proposal (price-book governed). If a step is rejected by the user, do not retry it — adapt.`;
+Rules: never invent ids (search first), read before you write, prefer drafts over sends. Every tool result ends with a "refs:" block containing the exact ids (item_id, lead_id, job_id, proposal_id, invoice_id, task_id) — copy them verbatim into follow-up calls; a tool that needs an id can only work if you pass the id from refs. For inbox work: triage_inbox to see the pile, get_inbox_item to read the actual email, then draft_inbox_reply / send_inbox_reply / file_inbox_item / convert_inbox_lead; when an item has a lead_id, get_customer_context first so the reply fits the customer's history. Use list_team / list_jobs / list_tasks / list_invoices to discover ids you do not have yet. Customer-facing sends (send_message, send_inbox_reply, record_payment) always pause for human approval — when a run pauses, that's the design working, not an error. Prices come only from prepare_proposal (price-book governed). If a step is rejected by the user, do not retry it — adapt.`;
 
 type LoopState = { messages: any[]; turns: number; turn_results: Record<string, string>; final_text?: string };
 const J = (v: any, d: any) => { try { return JSON.parse(v); } catch { return d; } };
+// The model only ever sees the content we feed back — summaries alone carry no
+// ids (v72 fix: the agent told users it "cannot work the inbox" because the
+// inbox tools seemed to return only subject + description). Always append the
+// structured refs so follow-up calls can reference the exact records.
+export const withRefs = (text: string, refs: any): string => refs && typeof refs === "object" && Object.keys(refs).length ? `${text}\nrefs: ${JSON.stringify(refs).slice(0, 3000)}` : text;
 
 function persist(ws: string, id: string, steps: Step[], state: LoopState, status: string, planner: string, tokens: { in: number; out: number }) {
   db.prepare("UPDATE agent_executions SET plan=?, loop_state=?, status=?, planner=?, tokens_in=?, tokens_out=?, updated_at=? WHERE id=?")
@@ -41,6 +46,9 @@ async function drive(ws: string, exId: string): Promise<any> {
   const finish = () => {
     persist(ws, exId, steps, state, "executing", planner, tokens);
     const fin = finalizeExecution(ws, exId, steps);
+    // A provider error with zero completed steps is a FAILED run, not a
+    // completed one — the status must say what actually happened.
+    if (state.final_text?.startsWith("Provider error") && !steps.some(x => x.status === "done")) db.prepare("UPDATE agent_executions SET status='failed', updated_at=? WHERE id=?").run(now(), exId);
     if (state.final_text) db.prepare("UPDATE agent_executions SET summary=?, updated_at=? WHERE id=?").run((state.final_text + "\n—\n" + (fin.summary || "")).slice(0, 6000), now(), exId);
     return getExecution(ws, exId);
   };
@@ -65,8 +73,8 @@ async function drive(ws: string, exId: string): Promise<any> {
       try { const out = await tool.run(ws, ex.user_id, s.args); s.result = out.summary; s.refs = out.refs; s.verified = true; s.status = "done"; }
       catch (e: any) { s.result = "Failed: " + String(e?.message || e); s.verified = false; s.status = "failed"; }
       steps.push(s);
-      results.push({ id: call.id, content: s.result });
-      state.turn_results[call.id] = s.result;
+      results.push({ id: call.id, content: withRefs(s.result, s.refs) });
+      state.turn_results[call.id] = withRefs(s.result, s.refs);
     }
     if (gated) { persist(ws, exId, steps, state, "awaiting_approval", planner, tokens); return getExecution(ws, exId); }
     state.messages.push({ role: "tool", results });
@@ -89,7 +97,7 @@ export async function resumeLoop(ws: string, exId: string): Promise<any> {
       if (state.turn_results[c.id]) return { id: c.id, content: state.turn_results[c.id] };
       const st = steps.find(s => s.call_id === c.id);
       if (!st) return { id: c.id, content: "Not executed." };
-      if (st.status === "done") return { id: c.id, content: st.result || "Done." };
+      if (st.status === "done") return { id: c.id, content: withRefs(st.result || "Done.", st.refs) };
       if (st.status === "rejected") return { id: c.id, content: "The user REJECTED this step. Do not retry this action; adapt the plan around it." };
       if (st.status === "failed") return { id: c.id, content: "Step failed: " + (st.result || "unknown error") };
       return { id: c.id, content: "Step status: " + st.status };

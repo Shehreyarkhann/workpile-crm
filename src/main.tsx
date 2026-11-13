@@ -1226,6 +1226,7 @@ function InboxQueue({ inbox, reload }: any) {
   const [comments, setComments] = useState<any[]>([]); const [canned, setCanned] = useState<any[]>([]); const [cText, setCText] = useState("");
   useEffect(() => { api("/api/canned-replies").then(setCanned).catch(() => {}); }, []);
   const expand = async (i: any) => { if (openId === i.id) { setOpenId(""); return; } setOpenId(i.id); setSug(null); setAtt([]); const r = await api("/api/inbox/" + i.id + "/suggestion").catch(() => null); setSug(r); if (r) { setDraft(r.draft_body); setAtt((r.attachments || []).map((x: any) => ({ kind: x.kind, id: x.id, label: x.label, why: x.why }))); } api("/api/inbox/" + i.id + "/claim", { method: "POST", body: {} }).catch(() => {}); api("/api/inbox/" + i.id + "/comments").then(setComments).catch(() => {}); };
+  useEffect(() => { let id: string | null = null; try { id = localStorage.getItem("wp_open_inbox"); } catch {} if (!id) return; const it = (inbox || []).find((x: any) => x.id === id); if (it) { try { localStorage.removeItem("wp_open_inbox"); } catch {} expand(it); } }, [inbox]);
   const act = async (fn: () => Promise<any>, okMsg: string) => { const r = await fn().catch((e: any) => ({ error: e.message })); setMsg(r?.error ? "Failed: " + r.error : okMsg); reload(); };
   return (<div className="card"><h3>Inbox queue — everything that isn't a lead, worked like a queue</h3>
     <p className="muted">Triaged on arrival, each with an owner, a due date, and an AI-suggested next action with a ready-to-send reply. {openCount} open.</p>
@@ -3767,6 +3768,27 @@ function OnlinePill() {
   return <span className="tinyBadge" title={on ? "Connected — changes save to the server" : "You're offline — work keeps queuing on this device and sends when you're back"} style={{ background: on ? "#dcfce7" : "#fee2e2", fontSize: 12, padding: "5px 9px" }}>{on ? "🟢 Online" : "🔴 Offline"}{queued > 0 ? ` · ${queued} queued` : ""}</span>;
 }
 
+// v72: agent results are navigable — every record a step touched becomes a
+// chip that opens it (lead / job / inbox item), and drafts expand in place.
+export function refChips(s: any): { kind: string; id: string; label: string }[] {
+  const out: { kind: string; id: string; label: string }[] = []; const seen = new Set<string>();
+  const push = (kind: string, id: any, label: string) => { if (!id || typeof id !== "string") return; const k = kind + ":" + id; if (seen.has(k)) return; seen.add(k); out.push({ kind, id, label }); };
+  const r = s?.refs || {}; const a = s?.args || {};
+  push("lead", r.lead_id || a.lead_id, "🎯 Open lead");
+  (r.lead_ids || []).forEach((id: string) => push("lead", id, "🎯 Lead"));
+  (r.items || []).forEach((it: any) => { push("inbox", it.id, "📥 " + String(it.subject || "Inbox item").slice(0, 26)); if (it.lead_id) push("lead", it.lead_id, "🎯 Lead"); if (it.job_id) push("job", it.job_id, "🛠 Job"); });
+  (r.jobs || []).forEach((j: any) => push("job", j.id, "🛠 Job"));
+  push("job", r.job_id, "🛠 Open job"); (r.job_ids || []).forEach((id: string) => push("job", id, "🛠 Job"));
+  (r.invoices || []).forEach((iv: any) => { if (iv.lead_id) push("lead", iv.lead_id, "🧾 " + (iv.number || "Invoice")); });
+  (r.overdue || []).forEach((o: any) => { if (o && typeof o === "object") push("lead", r.lead_id || a.lead_id, "🧾 " + (o.number || "Invoice")); });
+  if (r.proposal) push("lead", r.lead_id || a.lead_id, "📄 Proposal " + (r.proposal.number ? "PROP-" + r.proposal.number : ""));
+  push("inbox", r.item_id || a.item_id, "📥 Open inbox item");
+  return out.slice(0, 6);
+}
+export function goRef(c: { kind: string; id: string }) { const w = window as any; if (c.kind === "lead") w.wpOpenLead?.(c.id); else if (c.kind === "job") w.wpOpenJob?.(c.id); else if (c.kind === "inbox") w.wpOpenInboxItem?.(c.id); }
+function RefChips({ s }: any) { const [showDraft, setShowDraft] = useState(false); const chips = refChips(s); const draft = s?.refs?.draft_body || s?.refs?.draft; if (!chips.length && !draft) return null;
+  return (<div className="rowflex" style={{ marginTop: 4, gap: 6, flexWrap: "wrap" }}>{chips.map(c => <button key={c.kind + c.id} className="btn ghost small" style={{ fontSize: 11.5, padding: "2px 8px" }} onClick={() => goRef(c)}>{c.label} →</button>)}{draft && <button className="btn ghost small" style={{ fontSize: 11.5, padding: "2px 8px" }} onClick={() => setShowDraft(v => !v)}>{showDraft ? "Hide draft" : "📝 View draft"}</button>}{showDraft && draft && <div style={{ flexBasis: "100%", background: "#f8fafc", borderRadius: 8, padding: 8, fontSize: 12.5, whiteSpace: "pre-wrap" }}>{draft}</div>}</div>); }
+
 function AgentPanel({ close, focusId }: any) {
   const [prov, setProv] = useState<any>(null); const [text, setText] = useState(""); const [ex, setEx] = useState<any>(null); const [hist, setHist] = useState<any[]>([]); const [sel, setSel] = useState<Set<string>>(new Set()); const [busy, setBusy] = useState(false); const [err, setErr] = useState("");
   const loadHist = () => { api("/api/agent/executions").then(setHist).catch(() => {}); };
@@ -3791,10 +3813,11 @@ function AgentPanel({ close, focusId }: any) {
         <p className="muted" style={{ margin: "0 0 10px", fontSize: 12.5 }}>Status: <b>{String(ex.status).replaceAll("_", " ")}</b> · planner: {ex.planner || "—"}{(ex.tokens_in || ex.tokens_out) ? ` · tokens ${ex.tokens_in}/${ex.tokens_out}` : ""}</p>
         {(ex.plan || []).map((s: any) => <div key={s.id} style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "7px 0", borderTop: "1px solid #eef2f7" }}>
           {s.status === "pending" ? <input type="checkbox" checked={sel.has(s.id)} onChange={() => setSel(prev => { const n = new Set(prev); if (n.has(s.id)) n.delete(s.id); else n.add(s.id); return n; })} style={{ width: 16, height: 16, marginTop: 2 }} /> : <span style={{ width: 16, textAlign: "center" }}>{s.status === "done" ? "✓" : s.status === "failed" ? "✗" : s.status === "rejected" ? "—" : "•"}</span>}
-          <div style={{ flex: 1 }}><span className="tinyBadge" style={{ background: CB[s.control] || "#e2e8f0" }}>{s.control}{s.needs_approval ? " · approval" : ""}</span> <b style={{ fontSize: 13.5 }}>{s.label}</b>{s.result && <div className="muted" style={{ fontSize: 12.5, marginTop: 2 }}>{s.result}</div>}</div>
+          <div style={{ flex: 1 }}><span className="tinyBadge" style={{ background: CB[s.control] || "#e2e8f0" }}>{s.control}{s.needs_approval ? " · approval" : ""}</span> <b style={{ fontSize: 13.5 }}>{s.label}</b>{s.result && <div className="muted" style={{ fontSize: 12.5, marginTop: 2 }}>{s.result}</div>}<RefChips s={s} /></div>
         </div>)}
         {ex.status === "awaiting_approval" && <div className="rowflex" style={{ marginTop: 10 }}>{(() => { const pend = (ex.plan || []).filter((s: any) => s.status === "pending"); const allSel = pend.length > 0 && pend.every((s: any) => sel.has(s.id)); return <button className="btn ghost small" onClick={() => setSel(allSel ? new Set() : new Set(pend.map((s: any) => s.id)))}>{allSel ? "Clear selection" : `Select all ${pend.length} pending`}</button>; })()}<button className="btn small" disabled={!sel.size || busy} onClick={() => decide("approve")}>Approve selected ({sel.size})</button><button className="btn ghost small" disabled={!sel.size || busy} onClick={() => decide("reject")}>Reject selected</button><button className="btn ghost small" onClick={cancel}>Cancel run</button></div>}
         {ex.summary && !["awaiting_approval", "executing", "planning"].includes(ex.status) && <div style={{ background: "#f0fdf4", borderRadius: 8, padding: 10, marginTop: 10, whiteSpace: "pre-wrap", fontSize: 13 }}>{ex.summary}</div>}
+        {ex.summary && !["awaiting_approval", "executing", "planning"].includes(ex.status) && (() => { const all: any[] = []; const seen = new Set<string>(); for (const st of ex.plan || []) for (const c of refChips(st)) { const k = c.kind + ":" + c.id; if (!seen.has(k)) { seen.add(k); all.push(c); } } if (!all.length) return null; return <div className="rowflex" style={{ marginTop: 8, gap: 6, flexWrap: "wrap" }}><span className="muted" style={{ fontSize: 12 }}>Jump to:</span>{all.slice(0, 8).map(c => <button key={c.kind + c.id} className="btn ghost small" style={{ fontSize: 11.5, padding: "2px 8px" }} onClick={() => goRef(c)}>{c.label} →</button>)}</div>; })()}
       </div>}
       {hist.length > 0 && <div style={{ marginTop: 18 }}><h4 style={{ margin: "0 0 6px" }}>Previous runs</h4>{hist.slice(0, 8).map((h: any) => <p key={h.id} className="clickable" style={{ margin: "5px 0", fontSize: 13 }} onClick={() => { setEx(h); setSel(new Set()); }}>“{h.instruction}” <span className="muted">· {String(h.status).replaceAll("_", " ")} · {new Date(h.created_at).toLocaleString()}</span></p>)}</div>}
     </div>
@@ -3819,7 +3842,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
   const [theme, setTheme] = useState(() => localStorage.getItem("wp_theme") || "light");
   useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem("wp_theme", theme); }, [theme]);
   useEffect(() => { if (user && "serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {}); }, [user?.id]);
-  useEffect(() => { (window as any).wpLogTime = () => setLtOpen(true); (window as any).wpOpenJob = (id: string) => setJobOpen(id); (window as any).wpOpenLead = (id: string) => openLead(id); (window as any).wpOpenAccount = (id: string) => setCustOpen(id); (window as any).wpGoTab = (view: string, tab: string) => { setTabSignal({ view, tab, n: Date.now() }); go({ view }); }; }, []);
+  useEffect(() => { (window as any).wpLogTime = () => setLtOpen(true); (window as any).wpOpenJob = (id: string) => setJobOpen(id); (window as any).wpOpenLead = (id: string) => openLead(id); (window as any).wpOpenInboxItem = (id: string) => { try { localStorage.setItem("wp_open_inbox", id); } catch {} setNav({ view: "inbox" }); }; (window as any).wpOpenAccount = (id: string) => setCustOpen(id); (window as any).wpGoTab = (view: string, tab: string) => { setTabSignal({ view, tab, n: Date.now() }); go({ view }); }; }, []);
   useEffect(() => { localStorage.setItem("wp_app", appMode); }, [appMode]);
   useEffect(() => { if (user) api("/api/favorites").then(setFavs).catch(() => {}); }, [user, tick]);
   const openLead = (id: string) => { setLeadId(id); try { const r = JSON.parse(localStorage.getItem("wp_recent") || "[]").filter((x: string) => x !== id); r.unshift(id); localStorage.setItem("wp_recent", JSON.stringify(r.slice(0, 6))); } catch {} };
