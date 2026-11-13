@@ -241,16 +241,20 @@ export function executeAction(wsId: string, actor: string, item: any, a: any) {
     const dup = db.prepare("SELECT id FROM site_visits WHERE workspace_id=? AND lead_id=? AND scheduled_at=? AND status='scheduled' AND COALESCE(assigned_to,'')=COALESCE(?,'')").get(wsId, lead.id, when.toISOString(), assignee) as any;
     if (dup) { if (lead) logActivity(wsId, lead.id, actor, "visit_booked", `📅 Site visit booked — ${whenTxt}${assigneeName ? ` · with ${assigneeName}` : ""} (from the inbox reply${recordCreated ? "; record created for this sender" : ""})`); return { created_kind: "site_visit", created_id: dup.id, draft_line: a.draft_line || "", deduped: true, lead_id: lead.id, record_created: recordCreated }; }
     const id = uid("vis");
-    db.prepare("INSERT INTO site_visits (id,workspace_id,lead_id,assigned_to,scheduled_at,status,notes) VALUES (?,?,?,?,?,?,?)")
-      .run(id, wsId, lead.id, assignee, when.toISOString(), "scheduled", `Booked from inbox reply${item.subject ? ` — ${item.subject}` : ""}`);
+    db.prepare("INSERT INTO site_visits (id,workspace_id,lead_id,assigned_to,scheduled_at,status,notes,source_inbox_item_id) VALUES (?,?,?,?,?,?,?,?)")
+      .run(id, wsId, lead.id, assignee, when.toISOString(), "scheduled", `Booked from inbox reply${item.subject ? ` — ${item.subject}` : ""}`, item.id || null);
     logActivity(wsId, lead.id, actor, "visit_booked", `📅 Site visit booked — ${whenTxt}${assigneeName ? ` · with ${assigneeName}` : ""} (from the inbox reply${recordCreated ? "; record created for this sender" : ""})`);
     return { created_kind: "site_visit", created_id: id, draft_line: a.draft_line || "", lead_id: lead.id, record_created: recordCreated };
   }
   const dupT = db.prepare("SELECT id FROM tasks WHERE workspace_id=? AND COALESCE(lead_id,'')=COALESCE(?,'') AND assignee_id=? AND due_at=? AND title=? AND status='open'").get(wsId, lead?.id || null, assignee || actor, when.toISOString(), String(a.title || "Follow up").slice(0, 140)) as any;
   if (dupT) { if (lead) logActivity(wsId, lead.id, actor, a.kind === "callback" ? "callback_booked" : "meeting_booked", `${a.kind === "callback" ? "📞 Callback" : "📅 Meeting"} booked — ${whenTxt}${assigneeName ? ` · with ${assigneeName}` : ""} (from the inbox reply)`); return { created_kind: "task", created_id: dupT.id, draft_line: a.draft_line || "", deduped: true, lead_id: lead?.id || null, record_created: recordCreated }; }
   const id = uid("tsk");
-  db.prepare("INSERT INTO tasks (id,workspace_id,lead_id,assignee_id,type,title,due_at,status,created_at) VALUES (?,?,?,?,?,?,?,?,?)")
-    .run(id, wsId, lead?.id || null, assignee || actor, a.kind === "callback" ? "callback" : "meeting", String(a.title || "Follow up").slice(0, 140), when.toISOString(), "open", now());
+  // v75: a booking that arrives from an email must carry its context with it —
+  // the agenda shows WHY it exists and can open the original thread. The
+  // one-line summary is the email subject plus the first line of the ask.
+  const whyLine = (() => { const subj = String(item.subject || "").trim(); const firstLine = String(item.body || "").replace(/\s+/g, " ").trim().slice(0, 120); const s = subj && firstLine && !firstLine.startsWith(subj) ? `${subj} — ${firstLine}` : (subj || firstLine); return s.slice(0, 200); })();
+  db.prepare("INSERT INTO tasks (id,workspace_id,lead_id,assignee_id,type,title,due_at,status,created_at,notes,source_inbox_item_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+    .run(id, wsId, lead?.id || null, assignee || actor, a.kind === "callback" ? "callback" : "meeting", String(a.title || "Follow up").slice(0, 140), when.toISOString(), "open", now(), whyLine || null, item.id || null);
   if (lead) logActivity(wsId, lead.id, actor, a.kind === "callback" ? "callback_booked" : "meeting_booked", `${a.kind === "callback" ? "📞 Callback" : "📅 Meeting"} booked — ${whenTxt}${assigneeName ? ` · with ${assigneeName}` : ""} (from the inbox reply${recordCreated ? "; record created for this sender" : ""})`);
   return { created_kind: "task", created_id: id, draft_line: a.draft_line || "", lead_id: lead?.id || null, record_created: recordCreated };
 }

@@ -119,6 +119,32 @@ function AgendaComplete({ u, onDone }: any) {
   return (<button className="btn small upDone" disabled={busy} onClick={async (e) => { e.stopPropagation(); setBusy(true); try { const r = await api("/api/calendar/complete", { method: "POST", body: { kind: u.kind, ref_id: u.ref_id || u.task_id } }); toast(r.message || "Done ✓"); onDone && onDone(); } catch (err: any) { toast(err.message || "Could not complete that"); setBusy(false); } }}>{busy ? "…" : label}</button>);
 }
 
+// v75: an agenda item must explain itself. Anything booked from the inbox
+// carries its source email; this detail view shows what the item is FOR
+// (one-line why), the original thread, and one-tap jumps to the lead, the
+// job, or the email itself — alongside the same Done action as the row.
+export function openAgendaDetail(u: any) { window.dispatchEvent(new CustomEvent("wp-agenda", { detail: u })); }
+function AgendaDetailModal({ u, close }: any) {
+  const w = window as any;
+  const whenTxt = u.date ? new Date(u.date + "T" + (u.time && u.time !== "00:00" ? u.time : "12:00") + ":00").toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: u.time && u.time !== "00:00" ? "numeric" : undefined, minute: u.time && u.time !== "00:00" ? "2-digit" : undefined }) : "";
+  return (<div className="modalWrap" onClick={close}><div className="modal" style={{ maxWidth: 560 }} onClick={e => e.stopPropagation()}>
+    <div className="rowflex" style={{ justifyContent: "space-between", alignItems: "flex-start" }}><h3 style={{ margin: 0, flex: 1 }}>{u.title}</h3><button className="btn ghost small" onClick={close}>✕</button></div>
+    <p className="muted" style={{ margin: "6px 0 0", fontSize: 13 }}>{whenTxt}{u.sub ? ` · ${u.sub}` : ""}{u.assignee_name ? ` · with ${u.assignee_name}` : ""}</p>
+    {u.why && <div style={{ background: "#f2fbf5", border: "1px solid #cdeeda", borderRadius: 10, padding: "9px 12px", marginTop: 12, fontSize: 13.5, lineHeight: 1.5 }}><b>What it's for:</b> {u.why}</div>}
+    {u.thread && <div style={{ border: "1px solid #e2e8f0", borderRadius: 10, marginTop: 12, overflow: "hidden" }}>
+      <div style={{ background: "#f8fafc", padding: "8px 12px", fontSize: 12.5 }} className="muted">📧 Original email — <b style={{ color: "#334155" }}>{u.thread.from_name || u.thread.from_email}</b>{u.thread.from_email ? ` <${u.thread.from_email}>` : ""}{u.thread.received_at ? ` · ${new Date(u.thread.received_at).toLocaleString()}` : ""}</div>
+      <div style={{ padding: "10px 12px" }}><b style={{ fontSize: 13.5 }}>{u.thread.subject || "(no subject)"}</b><div style={{ whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.55, marginTop: 6, maxHeight: 260, overflowY: "auto" }}>{u.thread.body || "(no body)"}</div></div>
+    </div>}
+    <div className="rowflex" style={{ marginTop: 14, gap: 8, flexWrap: "wrap" }}>
+      {u.lead_id && <button className="btn small" onClick={() => { w.wpOpenLead?.(u.lead_id); close(); }}>📋 Open lead</button>}
+      {u.job_id && <button className="btn small" onClick={() => { w.wpOpenJob?.(u.job_id); close(); }}>🛠 Open job</button>}
+      {u.inbox_item_id && <button className="btn ghost small" onClick={() => { w.wpOpenInboxItem?.(u.inbox_item_id); close(); }}>📥 Open email</button>}
+      <span style={{ flex: 1 }} />
+      <AgendaComplete u={u} onDone={close} />
+    </div>
+  </div></div>);
+}
+
 function FinancesStrip({ f, openLead }: any) {
   const [drillKey, setDrillKey] = useState("");
   if (!f) return null;
@@ -413,7 +439,7 @@ function WSchedAgenda({ go, openLead, onForbidden, settings }: any) {
   return (<WShell icon="📅" title={day === "tomorrow" ? "Tomorrow's agenda" : "Today's agenda"} onAll={() => (window as any).wpGoTab?.("planner", "calendar")}>
     {!data && !err && <WLoad />}{err && <WErr />}
     {data && evs.length === 0 && <p className="muted" style={{ fontSize: 13 }}>{day === "tomorrow" ? "Nothing scheduled tomorrow." : "Nothing scheduled today."}</p>}
-    {evs.map((e: any, i: number) => <div className="wRow" key={i} onClick={() => e.lead_id && openLead(e.lead_id)}><span className="muted" style={{ fontSize: 12, width: 42 }}>{e.time && e.time !== "00:00" ? e.time : "—"}</span><span style={{ flex: 1, minWidth: 0 }}><b style={{ fontSize: 13.5 }}>{e.title}</b><div className="muted" style={{ fontSize: 12 }}>{e.sub}</div></span></div>)}
+    {evs.map((e: any, i: number) => <div className="wRow" key={i} onClick={() => (e.why || e.thread) ? openAgendaDetail(e) : (e.lead_id && openLead(e.lead_id))}><span className="muted" style={{ fontSize: 12, width: 42 }}>{e.time && e.time !== "00:00" ? e.time : "—"}</span><span style={{ flex: 1, minWidth: 0 }}><b style={{ fontSize: 13.5 }}>{e.title}</b>{e.why && <div className="agWhyLine">{e.why}</div>}<div className="muted" style={{ fontSize: 12 }}>{e.sub}</div></span></div>)}
   </WShell>);
 }
 function WOpsVisits({ go, openLead, onForbidden }: any) {
@@ -559,7 +585,7 @@ function HomeDash({ go, openLead, m, d }: any) {
             const dayItems = home.upcoming.filter((u: any) => u.date === calDay);
             const rowKey = (u: any) => u.kind + ":" + (u.ref_id || u.task_id || u.title);
             const overdue = calDay === todayStr ? home.upcoming.filter((u: any) => u.date < todayStr && !calDone.has(rowKey(u))) : [];
-            const row = (u: any, i: number) => <div className="upCard" key={(u.task_id || u.kind + u.date + u.title) + i} style={{ background: (KINDC[u.kind] || ["#f1f5f9"])[0], animationDelay: `${i * 40}ms`, opacity: calDone.has(rowKey(u)) ? .45 : 1 }} onClick={() => u.lead_id && openLead(u.lead_id)}><span className="upIc">{(KINDC[u.kind] || ["", "•"])[1]}</span><span className="upMain"><b>{u.title}</b><span className="upSub">{u.sub}{u.time && u.time !== "00:00" ? ` · ${u.time}` : ""}</span></span><span className="upAct">{!calDone.has(rowKey(u)) ? <AgendaComplete u={u} onDone={() => { setCalDone(prev => new Set(prev).add(rowKey(u))); reloadHome(); }} /> : null}{calDone.has(rowKey(u)) ? <span className="tiny" style={{ color: "#157347", fontWeight: 700 }}>✓ Done</span> : (u.time && u.time !== "00:00" ? <span className="upTime">{u.time}</span> : null)}</span></div>;
+            const row = (u: any, i: number) => <div className="upCard" key={(u.task_id || u.kind + u.date + u.title) + i} style={{ background: (KINDC[u.kind] || ["#f1f5f9"])[0], animationDelay: `${i * 40}ms`, opacity: calDone.has(rowKey(u)) ? .45 : 1 }} onClick={() => (u.why || u.thread) ? openAgendaDetail(u) : (u.lead_id && openLead(u.lead_id))}><span className="upIc">{(KINDC[u.kind] || ["", "•"])[1]}</span><span className="upMain"><b>{u.title}</b>{u.why && <span className="agWhyLine">{u.why}</span>}<span className="upSub">{u.sub}{u.time && u.time !== "00:00" ? ` · ${u.time}` : ""}</span></span><span className="upAct">{!calDone.has(rowKey(u)) ? <AgendaComplete u={u} onDone={() => { setCalDone(prev => new Set(prev).add(rowKey(u))); reloadHome(); }} /> : null}{calDone.has(rowKey(u)) ? <span className="tiny" style={{ color: "#157347", fontWeight: 700 }}>✓ Done</span> : (u.time && u.time !== "00:00" ? <span className="upTime">{u.time}</span> : null)}</span></div>;
             return (<>
               <div className="weekStrip">{days.map(wd => <div key={wd.key} onClick={() => setCalDay(wd.key)} style={{ cursor: "pointer" }}><div className="wd">{wd.dow}</div><div className={`wn ${wd.key === todayStr ? "today" : ""} ${wd.n ? "has" : ""}`} style={wd.key === calDay ? { outline: "2.5px solid #166534", outlineOffset: 1 } : undefined}>{wd.num}</div>{wd.n > 0 && <div style={{ fontSize: 10, textAlign: "center", color: "#64748b" }}>{wd.n} item{wd.n === 1 ? "" : "s"}</div>}</div>)}</div>
               {overdue.length > 0 && <div style={{ marginTop: 6 }}><div className="muted" style={{ fontSize: 12, fontWeight: 700, color: "#b3261e" }}>⚠ Overdue ({overdue.length})</div>{overdue.slice(0, 5).map(row)}{overdue.length > 5 && <p className="muted" style={{ fontSize: 12 }}>+{overdue.length - 5} more overdue — work them in the Queue.</p>}</div>}
@@ -3629,7 +3655,7 @@ function CalendarView({ openLead, embedded }: any) {
       {cells.map((d, i) => <div key={i} onClick={() => d && setSel(dstr(d))} style={{ minHeight: 92, background: d ? (sel === dstr(d) ? "#f0fdf4" : "#fff") : "transparent", border: d ? "1px solid #e5e7eb" : "none", borderRadius: 8, padding: 5, cursor: d ? "pointer" : "default", outline: d && sel === dstr(d) ? "2px solid #166534" : d && dstr(d) === todayStr ? "2px solid #94a3b8" : "none" }}>{d && <><b style={{ fontSize: 12 }}>{d}{dstr(d) === todayStr ? " · today" : ""}</b>{byDay(d).slice(0, 3).map(e => <div key={e.id} style={{ fontSize: 11, background: e.kind === "task_done" ? "#f1f5f9" : "#f0fdf4", color: e.kind === "task_done" ? "#64748b" : "inherit", textDecoration: e.kind === "task_done" ? "line-through" : "none", borderRadius: 5, padding: "2px 4px", marginTop: 3, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }} title={e.title + " — " + e.sub}>{KINDS[e.kind]?.[0] || "•"} {e.title}</div>)}{byDay(d).length > 3 && <div className="muted" style={{ fontSize: 11 }}>+{byDay(d).length - 3} more — click the day</div>}</>}</div>)}
     </div>
     <div className="card" style={{ marginTop: 14 }}><h3 style={{ marginTop: 0 }}>📋 Agenda — {new Date(sel + "T12:00:00").toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })} ({dayList.length})</h3>
-      {dayList.map(e => <div key={e.id} style={{ display: "flex", gap: 10, alignItems: "center", padding: "8px 0", borderBottom: "1px solid #eef2f7" }}><span className="calIc">{KINDS[e.kind]?.[0] || "•"}</span><div style={{ flex: 1, minWidth: 0 }}><b style={{ textDecoration: e.kind === "task_done" ? "line-through" : "none" }}>{e.title}</b> <span className="tinyBadge">{KINDS[e.kind]?.[1] || e.kind}</span><br /><span className="muted">{e.sub}</span></div>
+      {dayList.map(e => <div key={e.id} style={{ display: "flex", gap: 10, alignItems: "center", padding: "8px 0", borderBottom: "1px solid #eef2f7" }}><span className="calIc">{KINDS[e.kind]?.[0] || "•"}</span><div style={{ flex: 1, minWidth: 0, cursor: (e.why || e.thread) ? "pointer" : "default" }} onClick={() => { if (e.why || e.thread) openAgendaDetail(e); }}><b style={{ textDecoration: e.kind === "task_done" ? "line-through" : "none" }}>{e.title}</b> <span className="tinyBadge">{KINDS[e.kind]?.[1] || e.kind}</span>{e.assignee_name ? <span className="muted" style={{ fontSize: 12 }}> · with {e.assignee_name}</span> : null}<br /><span className="muted">{e.sub}</span>{e.why && <span className="agWhyLine">{e.why}</span>}</div>
         <span className="calAct">{e.kind !== "task_done" && <AgendaComplete u={e} onDone={() => { const from = new Date(cur.getFullYear(), cur.getMonth(), 1).toISOString().slice(0, 10); const to = new Date(cur.getFullYear(), cur.getMonth() + 1, 0).toISOString().slice(0, 10); api(`/api/calendar?from=${from}&to=${to}&done=1`).then(setEvs).catch(() => {}); }} />}
         {e.lead_id && <button className="btn small" onClick={() => openLead(e.lead_id)}>Open record →</button>}</span></div>)}
       {dayList.length === 0 && <p className="muted">Nothing scheduled this day{kindF !== "all" ? " for this filter" : ""}. Click any other day to see its agenda.</p>}
@@ -3873,6 +3899,8 @@ function AgentPanel({ close, focusId }: any) {
 function App() {
   useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key !== "Escape") return; const wraps = document.querySelectorAll(".modalWrap"); const last = wraps[wraps.length - 1] as HTMLElement | undefined; if (!last) return; const btns = Array.from(last.querySelectorAll("button")); const closer = btns.find(b => (b.textContent || "").includes("✕")); if (closer) (closer as HTMLButtonElement).click(); }; window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, []);
   const [user, setUser] = useState<any>(null); const [login, setLogin] = useState({ email: "", password: "" }); const [err, setErr] = useState("");
+  const [agendaItem, setAgendaItem] = useState<any>(null);
+  useEffect(() => { const h = (e: any) => setAgendaItem(e.detail || null); window.addEventListener("wp-agenda", h); return () => window.removeEventListener("wp-agenda", h); }, []);
   const [nav, setNav] = useState<Nav>({ view: "queue" }); const [agentOpen, setAgentOpen] = useState(false); const [agentFocus, setAgentFocus] = useState("");
   useEffect(() => { const h = (e: any) => { setAgentFocus(e.detail?.executionId || ""); setAgentOpen(true); }; window.addEventListener("wp-agent", h); return () => window.removeEventListener("wp-agent", h); }, []);
 const [users, setUsers] = useState<any[]>([]); const [priceBook, setPriceBook] = useState<any[]>([]);
@@ -4005,6 +4033,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       {jobOpen && <EB key={"job" + jobOpen}><JobDetail id={jobOpen} users={users} me={user} priceBook={priceBook} close={() => setJobOpen(null)} refresh={() => setTick(t => t + 1)} openLead={(lid: string) => { setJobOpen(null); setLeadId(lid); }} /></EB>}
       {custOpen && <EB key={"cust" + custOpen}><CustomerDetail id={custOpen} close={() => setCustOpen(null)} openLead={openLead} openJob={(id: string) => setJobOpen(id)} /></EB>}
       {agentOpen && <EB><AgentPanel close={() => setAgentOpen(false)} focusId={agentFocus} /></EB>}
+      {agendaItem && <EB><AgendaDetailModal u={agendaItem} close={() => setAgendaItem(null)} /></EB>}
       {profOpen && <ProfileModal user={user} close={() => setProfOpen(false)} onSaved={(u: any) => setUser({ ...user, ...u })} />}
       {ltOpen && <LogTimeModal close={() => setLtOpen(false)} done={() => setTick(t => t + 1)} />}
       {creating && <CreateLead users={users} done={(id: any) => { setCreating(false); setTick(t => t + 1); if (id) openLead(id); }} />}
