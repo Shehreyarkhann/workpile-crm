@@ -147,6 +147,7 @@ export function initSchema() {
     "ALTER TABLE tasks ADD COLUMN completed_by TEXT",
     "ALTER TABLE tasks ADD COLUMN notes TEXT",
     "ALTER TABLE tasks ADD COLUMN source_inbox_item_id TEXT",
+    "ALTER TABLE agent_executions ADD COLUMN thread_id TEXT",
     "ALTER TABLE site_visits ADD COLUMN source_inbox_item_id TEXT",
     "ALTER TABLE workspaces ADD COLUMN quiet_start INTEGER",
     "ALTER TABLE workspaces ADD COLUMN quiet_end INTEGER",

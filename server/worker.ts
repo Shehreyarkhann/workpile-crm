@@ -64,6 +64,6 @@ export function replayDelivery(deliveryId: string): boolean {
 let timer: any = null;
 export function startWorker(intervalMs = 15000) {
   if (timer) return;
-  timer = setInterval(() => { processDeliveries().catch(() => {}); processEventDeliveries().catch(() => {}); processFollowups(process.env.BASE_URL || "").catch(() => {}); processCampaigns(process.env.BASE_URL || "").catch(() => {}); try { processReplyClassification(); } catch {} try { processRecurrences(); } catch {} processProactive().catch(() => {}); try { processAutomations(); } catch {} chaseMissing().catch(() => {}); chaseMissingReports().catch(() => {}); processJobs(JOB_HANDLERS).catch(() => {}); try { relayOutbox(); } catch {} }, intervalMs);
+  timer = setInterval(() => { processDeliveries().catch(() => {}); processEventDeliveries().catch(() => {}); processFollowups(process.env.BASE_URL || "").catch(() => {}); processCampaigns(process.env.BASE_URL || "").catch(() => {}); try { processReplyClassification(); } catch {} try { processRecurrences(); } catch {} processProactive().catch(() => {}); try { processAutomations(); } catch {} import("./agent-learning.ts").then(m => m.processLearning()).catch(() => {}); chaseMissing().catch(() => {}); chaseMissingReports().catch(() => {}); processJobs(JOB_HANDLERS).catch(() => {}); try { relayOutbox(); } catch {} }, intervalMs);
   timer.unref?.();
 }

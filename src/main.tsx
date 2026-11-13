@@ -1482,7 +1482,7 @@ function ServicesConsole({ svcs, reload }: any) {
   </div>);
 }
 
-const MOD_LABELS: Record<string, string> = { home: "Home dashboard", queue: "Work Queue", myday: "My Day", inbox: "Inbox", tasks: "Tasks", leads: "Leads / Pipeline", customers: "Customers", proposals: "Proposals", approvals: "Approvals", jobs: "Jobs", schedule: "Schedule & Calendar", ops: "Ops Console", campaigns: "Campaigns", opportunities: "Opportunities", demand: "Demand Gap", pulse: "Pulse", handoffs: "Handoffs", library: "Library & Files", import: "Import", reports: "Reports & Analytics", automations: "Automations & Agent", settings: "Settings" };
+const MOD_LABELS: Record<string, string> = { home: "Home dashboard", queue: "Work Queue", myday: "My Day", inbox: "Inbox", tasks: "Tasks", leads: "Leads / Pipeline", customers: "Customers", proposals: "Proposals", approvals: "Approvals", jobs: "Jobs", schedule: "Schedule & Calendar", ops: "Ops Console", campaigns: "Campaigns", opportunities: "Opportunities", demand: "Demand Gap", pulse: "Pulse", handoffs: "Handoffs", library: "Library & Files", import: "Import", reports: "Reports & Analytics", automations: "Automations & Agent", copilot: "Copilot", settings: "Settings" };
 const PERM_TOGGLES: [string, string, string][] = [["can_approve", "Approve proposals", "Decide approvals routed to them"], ["can_money", "See money figures", "Home money cards, invoices, reports totals"], ["can_complete_others", "Complete others' work", "Mark anyone's tasks, visits and schedule items done"], ["can_export", "Export data", "CSV exports and report downloads"], ["can_billing", "Billing & plan", "Subscription, invoices from Workpile, plan changes"], ["can_settings", "Workspace settings", "Business profile, templates, integrations"], ["can_manage_team", "Manage team", "Invite people, change roles and access"]];
 function PermEditor({ draft, setDraft }: any) {
   const seg = (mod: string) => (<span className="rowflex" style={{ gap: 4 }}>{(["none", "view", "edit"] as const).map(lvl => <button key={lvl} className={"chip" + (draft.modules?.[mod] === lvl ? " on" : "")} style={draft.modules?.[mod] === lvl ? { background: lvl === "none" ? "#991B1B" : "#0E5C3A", color: "#fff", borderColor: "transparent" } : {}} onClick={() => setDraft({ ...draft, modules: { ...draft.modules, [mod]: lvl } })}>{lvl === "none" ? "Hidden" : lvl === "view" ? "View" : "View + Edit"}</button>)}</span>);
@@ -2649,20 +2649,28 @@ function PrintProposal({ id }: any) {
   </div>);
 }
 
-function AgentCommand({ openLead, openJob }: any) {
-  const [text, setText] = useState(""); const [busy, setBusy] = useState(false); const [report, setReport] = useState<any>(null); const [runs, setRuns] = useState<any[]>([]); const [err, setErr] = useState("");
-  const loadRuns = () => { api("/api/agent/runs").then(setRuns).catch(() => {}); };
-  useEffect(loadRuns, []);
-  const run = async (t?: string) => { const cmd = (t ?? text).trim(); if (!cmd || busy) return; setBusy(true); setErr(""); try { const r = await api("/api/agent/command", { method: "POST", body: { text: cmd } }); setReport(r); setText(""); loadRuns(); } catch (e: any) { setErr(e.message); } setBusy(false); };
-  const examples = ["Get my business organized", "Prepare proposals for all qualified leads missing one", "Review all active jobs — missing documents, scheduling, invoicing", "Find customers and proposals going cold and recover them", "How did we do this week?"];
+
+// v76: the Automations tab no longer has its own bot. One AI — the loop —
+// powers the navbar agent and Copilot alike; this card hands off to the
+// full-window chat, and the learned card shows what that AI has picked up
+// from the business on its own (it reads these facts at every run's start).
+function CopilotLauncher({ go }: any) {
+  const jump = (seed?: string) => { if (seed) localStorage.setItem("wp_copilot_seed", seed); go({ view: "copilot" }); };
   return (<div className="card" style={{ borderLeft: "4px solid #14532d", marginBottom: 14 }}>
-    <h3 style={{ marginTop: 0 }}>🤖 Agent — tell it what to do</h3>
-    <p className="sub" style={{ marginTop: 0 }}>It plans, uses the product's tools, respects your autonomy level and approval rules, and reports back with evidence. It never sends customer messages or changes prices on its own.</p>
-    <div className="rowflex"><input style={{ flex: 1 }} placeholder="e.g. Prepare proposals for all qualified leads missing one" value={text} onChange={e => setText(e.target.value)} onKeyDown={e => { if (e.key === "Enter") run(); }} /><button className="btn" disabled={busy} onClick={() => run()}>{busy ? "Working…" : "Run"}</button></div>
-    <div className="chipRow" style={{ marginTop: 8 }}>{examples.map(x => <button key={x} className="chip" onClick={() => run(x)}>{x}</button>)}</div>
-    {err && <div className="err">{err}</div>}
-    {report && <div style={{ marginTop: 12 }}>{report.results.map((r: any, i: number) => <div key={i} style={{ padding: "8px 0", borderTop: "1px solid #e2e8f0" }}><b>{r.tool.replaceAll("_", " ")}</b> <span className="tinyBadge">{r.mode}</span><br /><span>{r.summary}</span>{r.items.length > 0 && <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>{r.items.slice(0, 8).map((it: any, j: number) => <li key={j}>{it.lead_id ? <span className="clickable" onClick={() => openLead && openLead(it.lead_id)}>{it.label} →</span> : it.label}</li>)}</ul>}</div>)}</div>}
-    {runs.length > 0 && <details style={{ marginTop: 10 }}><summary className="muted" style={{ cursor: "pointer" }}>Previous runs ({runs.length})</summary>{runs.slice(0, 6).map((r: any) => <p key={r.id} className="muted" style={{ margin: "4px 0", fontSize: 12.5 }}>“{r.command}” · {new Date(r.created_at).toLocaleString()} · {r.results?.map((x: any) => x.tool).join(", ")}</p>)}</details>}
+    <h3 style={{ marginTop: 0 }}>✦ Workpile Copilot — one AI, everywhere</h3>
+    <p className="sub" style={{ marginTop: 0 }}>The old command box here ran on fixed rules. It's retired: the navbar agent and Copilot are the <b>same AI</b> — it plans in turns, uses every tool, remembers the conversation, learns from finished work, and can generate reports and documents as real files.</p>
+    <div className="rowflex" style={{ flexWrap: "wrap" }}><button className="btn" onClick={() => jump()}>Open Copilot →</button><button className="btn ghost small" onClick={() => jump("Generate the weekly status report as a file")}>📄 Weekly status report</button><button className="btn ghost small" onClick={() => jump("Brief me — what needs my attention today?")}>☀️ Brief me</button></div>
+  </div>);
+}
+function LearnedCard() {
+  const [facts, setFacts] = useState<any[]>([]);
+  const load = () => { api("/api/agent/memories").then(setFacts).catch(() => {}); };
+  useEffect(load, []);
+  const SRC: Record<string, string> = { taught: "🧑 Taught by you", learned: "✦ Learned from work", patterns: "📊 From the data", remember_fact: "✦ Learned from work" };
+  return (<div className="card"><h3>🧠 What the agent has learned</h3>
+    <p className="muted" style={{ marginTop: 0, fontSize: 13 }}>Picked up on its own — from finished runs and a daily pass over the data. The agent reads these at the start of every run. Remove anything wrong and it stops shaping the work.</p>
+    {facts.length === 0 && <p className="muted">Nothing yet — facts appear here as runs finish and the daily patterns pass finds them.</p>}
+    {facts.map(f => <div key={f.id} className="rowflex" style={{ padding: "6px 0", borderTop: "1px solid #eef2f7", alignItems: "flex-start" }}><span className="tinyBadge">{SRC[f.source] || f.source}</span><span style={{ flex: 1, fontSize: 13.5 }}>{f.content}</span><span className="muted" style={{ fontSize: 12 }}>{relTime(f.created_at)}</span><button className="btn ghost small" title="Forget this" onClick={async () => { await api(`/api/agent/memories/${f.id}`, { method: "DELETE" }).catch(() => {}); load(); }}>✕</button></div>)}
   </div>);
 }
 
@@ -2687,7 +2695,7 @@ function AIAssistant({ go, openLead, openJob }: any) {
   const setAutoKey = async (k: string, v: boolean) => { const r = await api("/api/ai/automations", { method: "POST", body: { [k]: v } }); setAuto(r); };
   const agentLabel: Record<string, string> = { triage: "🔍 Triage", automation: "🤖 Auto-pilot", nudge: "📨 Nudge", packet_check: "🛂 Packet check" };
   return (<div>
-    <AgentCommand openLead={openLead} openJob={openJob} /><h2 className="pt">AI Assistant</h2><p className="sub">Agents do the chasing, sorting, and scoring — nothing customer-facing ever sends without your approval. Every action here is preview first, apply second; auto-pilot actions are logged below.</p>
+    <CopilotLauncher go={go} /><h2 className="pt">AI Assistant</h2><p className="sub">Agents do the chasing, sorting, and scoring — nothing customer-facing ever sends without your approval. Every action here is preview first, apply second; auto-pilot actions are logged below.</p>
     {msg && <div className="ok">{msg}</div>}
     <div className="card"><h3>Insights — what needs you today</h3>
       {ins.map((i: any, k: number) => <div className="insight" key={k}><div className="ic">{i.icon}</div><div style={{ flex: 1 }}><b>{i.title}</b><p>{i.detail}</p></div>{actFor(i)}</div>)}
@@ -2702,6 +2710,7 @@ function AIAssistant({ go, openLead, openJob }: any) {
     <AutonomyCard />
     <ProviderCard />
     <PlaybookCard />
+    <LearnedCard />
     <AgentMetricsCard />
     <QuietHoursCard />
     <SuppressionsCard />
@@ -3829,6 +3838,13 @@ const AG_STATUS: Record<string, { label: string; bg: string; fg: string }> = {
   cancelled: { label: "Cancelled", bg: "#f1f5f9", fg: "#475569" },
 };
 function richLine(text: string) { const parts = text.split("**"); return <>{parts.map((part, i) => i % 2 ? <b key={i}>{part}</b> : <span key={i}>{part}</span>)}</>; }
+// v76: files generated during a run (reports, documents) ride the step refs —
+// render them as download chips wherever steps render.
+function FileChips({ s }: any) {
+  const f = s?.refs?.file_id ? { id: s.refs.file_id, name: s.refs.filename || "Download file", title: s.refs.file_title || "" } : null;
+  if (!f) return null;
+  return (<div style={{ marginTop: 6 }}><a className="btn small" style={{ textDecoration: "none", display: "inline-flex", gap: 6, alignItems: "center" }} href={`/api/agent/files/${f.id}/download`}>📄 {f.name}</a>{f.title ? <span className="muted" style={{ fontSize: 12, marginLeft: 8 }}>{f.title} · Word document</span> : null}</div>);
+}
 function SummaryText({ text }: any) {
   const lines = String(text || "").split("\n");
   return (<div>{lines.map((ln: string, i: number) => {
@@ -3853,6 +3869,75 @@ function AgentStep({ s, sel, onToggle, CB }: any) {
       <span className="tinyBadge" style={{ background: CB[s.control] || "#e2e8f0" }}>{s.control}{s.needs_approval ? " · approval" : ""}</span> <b style={{ fontSize: 13.5 }}>{s.label}</b>
       {s.result && <div className="muted" style={{ fontSize: 12.5, marginTop: 3, lineHeight: 1.55 }}>{long && !open ? s.result.slice(0, 320) + "…" : s.result}{long && <button className="btn ghost small" style={{ fontSize: 11, padding: "0 4px", marginLeft: 4 }} onClick={() => setOpen(v => !v)}>{open ? "Show less" : "Show more"}</button>}</div>}
       <RefChips s={s} />
+      <FileChips s={s} />
+    </div>
+  </div>);
+}
+
+
+// v76 Copilot: the SAME agent as the navbar panel — same loop, same tools,
+// same approvals — as a full-window chat. Threads persist server-side
+// (executions carry thread_id) and earlier turns ride into each new run's
+// context, so the conversation actually continues. It can also produce real
+// files (generate_report / draft_document) that download from the run.
+const COP_CB: Record<string, string> = { read: "#e0f2fe", draft: "#fef9c3", execute: "#dcfce7", approval: "#fee2e2" };
+const COP_STATUS: Record<string, [string, string]> = { planning: ["Planning…", "#fef9c3"], executing: ["Working…", "#dbeafe"], awaiting_approval: ["Waiting for your approval", "#fee2e2"], completed: ["Completed", "#dcfce7"], failed: ["Failed", "#fee2e2"], rejected: ["Rejected", "#f1f5f9"], cancelled: ["Cancelled", "#f1f5f9"] };
+function CopilotChat() {
+  const [threads, setThreads] = useState<any[]>([]);
+  const [tid, setTid] = useState("");
+  const [turns, setTurns] = useState<any[]>([]);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [prov, setProv] = useState<any>(null);
+  const [selMap, setSelMap] = useState<Record<string, Set<string>>>({});
+  const pollRef = useRef<any>(null); const watchIdRef = useRef<string>("");
+  const scrollRef = useRef<any>(null);
+  const TERM = ["completed", "failed", "rejected", "cancelled"];
+  const loadThreads = () => { api("/api/agent/threads").then(setThreads).catch(() => {}); };
+  const stopWatch = () => { if (pollRef.current) { clearTimeout(pollRef.current); pollRef.current = null; } };
+  const replaceTurn = (e: any) => setTurns(prev => prev.map(x => x.id === e.id ? e : x));
+  const watch = (id: string) => { stopWatch(); watchIdRef.current = id; const tick = async () => { if (watchIdRef.current !== id) return; try { const e = await api(`/api/agent/executions/${id}`); if (watchIdRef.current !== id) return; replaceTurn(e); if (TERM.includes(e.status) || e.status === "awaiting_approval") { setBusy(false); loadThreads(); return; } } catch { /* transient */ } if (watchIdRef.current === id) pollRef.current = setTimeout(tick, 1500); }; pollRef.current = setTimeout(tick, 900); };
+  const openThread = async (id: string) => { stopWatch(); setTid(id); setSelMap({}); try { const rows = await api(`/api/agent/threads/${id}`); setTurns(rows || []); const live = (rows || []).find((r: any) => !TERM.includes(r.status) && r.status !== "awaiting_approval"); if (live) { setBusy(true); watch(live.id); } } catch { setTurns([]); } };
+  const newChat = () => { stopWatch(); setTid(""); setTurns([]); setText(""); setBusy(false); setSelMap({}); };
+  const send = async (raw?: string) => { const instruction = (raw ?? text).trim(); if (!instruction || busy) return; setBusy(true); let thread = tid; if (!thread) { thread = "thr_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); setTid(thread); } try { const r = await api("/api/agent/execute?async=1", { method: "POST", body: { instruction, thread_id: thread } }); setTurns(prev => [...prev, r]); setText(""); loadThreads(); if (r && r.id && !TERM.includes(r.status) && r.status !== "awaiting_approval") watch(r.id); else setBusy(false); } catch (e: any) { toast(e.message || "Could not start that run"); setBusy(false); } };
+  const decide = async (ex: any, mode: "approve" | "reject") => { const sel = selMap[ex.id]; if (!sel || !sel.size) return; setBusy(true); try { const r = await api(`/api/agent/executions/${ex.id}/decide?async=1`, { method: "POST", body: mode === "approve" ? { approve: [...sel] } : { reject: [...sel] } }); replaceTurn(r); setSelMap(prev => ({ ...prev, [ex.id]: new Set() })); loadThreads(); if (r && !TERM.includes(r.status) && r.status !== "awaiting_approval") watch(r.id); else setBusy(false); } catch (e: any) { toast(e.message || "Decision failed"); setBusy(false); } };
+  const toggle = (exId: string, stepId: string) => setSelMap(prev => { const s = new Set(prev[exId] || []); s.has(stepId) ? s.delete(stepId) : s.add(stepId); return { ...prev, [exId]: s }; });
+  useEffect(() => { api("/api/ai/provider").then(setProv).catch(() => {}); loadThreads(); const seed = localStorage.getItem("wp_copilot_seed"); if (seed) { localStorage.removeItem("wp_copilot_seed"); setTimeout(() => send(seed), 350); } return () => stopWatch(); }, []);
+  useEffect(() => { const el = scrollRef.current; if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 300) el.scrollTop = el.scrollHeight; }, [turns]);
+  const SUGGEST = ["☀️ Brief me — what needs my attention today?", "📄 Generate the weekly status report as a file", "📊 Generate a business snapshot as a file", "🧹 Work my inbox — draft replies and file the rest", "💰 Which invoices are overdue, and draft the chases"];
+  return (<div>
+    <h2 className="pt">✦ Copilot</h2>
+    <p className="sub" style={{ marginTop: 0 }}>{prov ? (prov.configured ? <>Connected: <b>{prov.label}</b>{prov.model ? ` · ${prov.model}` : ""} — the same AI as the navbar agent, with the whole business as its context. It remembers this conversation, learns from every finished run, and can hand you real files.</> : <>Deterministic mode — <b>no AI provider connected</b>. Copilot plans with rules until a provider is connected in Settings → AI provider.</>) : "…"}</p>
+    <div className="copGrid">
+      <div className="copRail">
+        <button className="btn" style={{ width: "100%" }} onClick={newChat}>+ New chat</button>
+        <div style={{ marginTop: 10, display: "grid", gap: 4 }}>
+          {threads.map(th => <button key={th.thread_id} className={`copThread ${th.thread_id === tid ? "on" : ""}`} onClick={() => openThread(th.thread_id)}><b>{String(th.title || "Conversation").slice(0, 44)}</b><span>{th.turns} turn{th.turns === 1 ? "" : "s"} · {relTime(th.updated_at)}</span></button>)}
+          {threads.length === 0 && <p className="muted" style={{ fontSize: 12.5 }}>No conversations yet — ask for a brief, a report, or the inbox, and it will show up here.</p>}
+        </div>
+      </div>
+      <div className="copMain">
+        <div className="copScroll" ref={scrollRef}>
+          {turns.length === 0 && <div className="copEmpty"><div style={{ fontSize: 34 }}>✦</div><b>What should we get done?</b><p className="muted">Ask in plain words. Copilot plans, uses the tools, pauses for your approval before anything sends, and can generate documents and reports from the live data.</p><div className="rowflex" style={{ flexWrap: "wrap", gap: 6, justifyContent: "center" }}>{SUGGEST.map(s => <button key={s} className="chip" onClick={() => send(s)}>{s}</button>)}</div></div>}
+          {turns.map(ex => { const st = COP_STATUS[ex.status] || ["…", "#f1f5f9"]; const pending = (ex.plan || []).filter((s: any) => s.status === "pending"); const sel = selMap[ex.id] || new Set(); return (<div key={ex.id} className="copTurn">
+            <div className="copUser"><div>{ex.instruction}</div></div>
+            <div className="copAgent">
+              <div className="rowflex" style={{ justifyContent: "space-between" }}><span className="tinyBadge" style={{ background: st[1], fontWeight: 700 }}>{st[0]}</span>{ex.planner ? <span className="muted" style={{ fontSize: 11.5 }}>{ex.planner}</span> : null}</div>
+              {(ex.status === "planning" || ex.status === "executing") && <div className="agLiveBar" style={{ marginTop: 8 }}><span className="agPulse"></span> Live — steps appear here as Copilot works. You can switch tabs; the run keeps going.</div>}
+              <div>{(ex.plan || []).map((s: any) => <AgentStep key={s.id} s={s} sel={sel} onToggle={() => toggle(ex.id, s.id)} CB={COP_CB} />)}</div>
+              {ex.status === "awaiting_approval" && pending.length > 0 && <div className="rowflex" style={{ marginTop: 10, padding: "10px 12px", background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: 10 }}><span style={{ fontSize: 13 }}><b>{pending.length} step{pending.length === 1 ? "" : "s"}</b> waiting — tick the ones to run, the rest are rejected.</span><span style={{ flex: 1 }} /><button className="btn small" disabled={!sel.size || busy} onClick={() => decide(ex, "approve")}>✓ Approve selected ({sel.size})</button><button className="btn ghost small" disabled={!sel.size || busy} onClick={() => decide(ex, "reject")}>Reject selected</button></div>}
+              {ex.summary && !["planning", "executing"].includes(ex.status) && <div style={{ marginTop: 10 }}><SummaryText text={ex.summary} /></div>}
+            </div>
+          </div>); })}
+        </div>
+        <div className="copComposer">
+          <div className="rowflex" style={{ flexWrap: "wrap", gap: 6, marginBottom: 8 }}>{SUGGEST.map(s => <button key={s} className="chip" disabled={busy} onClick={() => send(s)}>{s}</button>)}</div>
+          <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+            <textarea value={text} onChange={e => setText(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} placeholder="Tell Copilot what to do — e.g. 'Draft a follow-up document for the Johnson job from its record'" rows={2} style={{ flex: 1, resize: "vertical" }} />
+            <button className="btn" disabled={busy || !text.trim()} onClick={() => send()}>{busy ? "Working…" : "Send →"}</button>
+          </div>
+        </div>
+      </div>
     </div>
   </div>);
 }
@@ -3945,7 +4030,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
   const go = (n: Nav) => setNav(n);
   if (!user) return <Landing onAuth={(u: any) => { setUser(u); }} />;
   const APPS: Record<string, string[]> = { sales: ["queue", "myday", "dashboard", "pulse", "leads", "proposals", "jobs", "customers", "campaigns", "planner", "library", "reports", "approvals", "ai", "inbox"], ops: ["queue", "jobs", "ops", "planner", "leads", "proposals", "inbox", "library", "handoffs", "imports", "demand"], marketing: ["dashboard", "campaigns", "leads", "customers", "proposals", "imports", "demand", "reports", "library"] };
-  const VIEW_MODULE: Record<string, string> = { dashboard: "home", home: "home", queue: "queue", myday: "myday", inbox: "inbox", tasks: "tasks", calendar: "schedule", leads: "leads", customers: "customers", people: "customers", proposals: "proposals", approvals: "approvals", jobs: "jobs", schedule: "schedule", ops: "ops", campaigns: "campaigns", opportunities: "opportunities", demand: "demand", pulse: "pulse", handoffs: "handoffs", library: "library", notes: "library", files: "library", imports: "import", import: "import", reports: "reports", ai: "automations", automations: "automations", settings: "settings" };
+  const VIEW_MODULE: Record<string, string> = { copilot: "automations", dashboard: "home", home: "home", queue: "queue", myday: "myday", inbox: "inbox", tasks: "tasks", calendar: "schedule", leads: "leads", customers: "customers", people: "customers", proposals: "proposals", approvals: "approvals", jobs: "jobs", schedule: "schedule", ops: "ops", campaigns: "campaigns", opportunities: "opportunities", demand: "demand", pulse: "pulse", handoffs: "handoffs", library: "library", notes: "library", files: "library", imports: "import", import: "import", reports: "reports", ai: "automations", automations: "automations", settings: "settings" };
   const modLvl = (v: string) => { const mods = user?.permissions?.modules || {}; if (v === "planner") { const t = mods.tasks ?? "edit", s = mods.schedule ?? "edit"; return (t === "none" && s === "none") ? "none" : (t === "edit" || s === "edit") ? "edit" : "view"; } const mod = VIEW_MODULE[v]; if (!mod) return "edit"; return (mods[mod] ?? "edit") as string; };
   const viewOK = modLvl(nav.view) !== "none" || ["settings", "billing", "admin"].includes(nav.view);
   const inApp = (v: string) => (appMode === "all" || (APPS[appMode] || []).includes(v) || ["settings", "billing", "admin"].includes(v)) && modLvl(v) !== "none";
@@ -3985,7 +4070,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
         <NavB v="reports" short="📈">Reports</NavB>
       </NavGroup>
       <NavGroup id="system" label="SYSTEM">
-        <NavB v="ai" short="🤖">Automations</NavB><NavB v="settings" short="⚙️">Settings</NavB>
+        <NavB v="copilot" short="✦">Copilot</NavB><NavB v="ai" short="🤖">Automations</NavB><NavB v="settings" short="⚙️">Settings</NavB>
         {user.is_platform_admin ? <NavB v="admin" short="🛡">Platform Admin</NavB> : null}
         {sb !== "rail" && <label className="appModeRow">App view<select value={appMode} onChange={e => setAppMode(e.target.value)} title="Salesforce-style tab sets"><option value="all">All modules</option><option value="sales">Sales</option><option value="ops">Operations</option><option value="marketing">Marketing</option></select></label>}
       </NavGroup>
@@ -4022,6 +4107,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       {nav.view === "proposals" && viewOK && <ProposalsView openLead={openLead} />}
       {nav.view === "inbox" && viewOK && <InboxPage />}
       {nav.view === "ai" && viewOK && <AIAssistant go={go} openLead={(id: string) => setLeadId(id)} openJob={(id: string) => setJobOpen(id)} />}
+      {nav.view === "copilot" && viewOK && <CopilotChat />}
       {nav.view === "imports" && viewOK && <Imports />}
       {nav.view === "demand" && viewOK && <Demand openLead={openLead} />}
       {nav.view === "handoffs" && viewOK && <Handoffs />}

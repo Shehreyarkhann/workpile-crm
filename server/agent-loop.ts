@@ -40,18 +40,22 @@ async function drive(ws: string, exId: string): Promise<any> {
   const planner = `loop:${provider.kind}:${provider.model}`;
   let brief = ""; try { const { operatorBrief } = await import("./agent-memory.ts"); brief = operatorBrief(ws); } catch { brief = ""; }
   const tz = (w as any)?.timezone || "America/New_York"; let todayStr = ""; try { todayStr = new Intl.DateTimeFormat("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: tz }).format(new Date()); } catch { todayStr = new Date().toISOString().slice(0, 10); }
-  const state: LoopState = J(ex.loop_state, null) || { messages: [{ role: "user", content: `Instruction: ${ex.instruction}\nToday is ${todayStr} (${tz}). Compute every relative date ("Friday", "tomorrow", "next week") from this date.\n${brief ? "\n" + brief + "\n" : ""}Counts: ${JSON.stringify(ex.context || {})}\nWorkspace autonomy level: L${level}.` }], turns: 0, turn_results: {} };
+  const state: LoopState = J(ex.loop_state, null) || { messages: [{ role: "user", content: `Instruction: ${ex.instruction}\nToday is ${todayStr} (${tz}). Compute every relative date ("Friday", "tomorrow", "next week") from this date.\n${brief ? "\n" + brief + "\n" : ""}Counts: ${JSON.stringify(ex.context || {})}\nWorkspace autonomy level: L${level}.${(ex.context as any)?.thread?.length ? `\nConversation so far in this thread (oldest first — the user may refer back to it):\n${((ex.context as any).thread as any[]).map((r: any) => `User: ${r.instruction}\nAgent: ${r.summary || "(no summary)"}`).join("\n")}` : ""}` }], turns: 0, turn_results: {} };
   const steps: Step[] = ex.plan || [];
   const tokens = { in: ex.tokens_in || 0, out: ex.tokens_out || 0 };
   const hr = houseRules(ws);
-  const system = hr ? LOOP_SYSTEM + "\nHouse rules from this business (follow them unless they conflict with the rules above): " + hr : LOOP_SYSTEM;
+  const system = (hr ? LOOP_SYSTEM + "\nHouse rules from this business (follow them unless they conflict with the rules above): " + hr : LOOP_SYSTEM) + "\nFILES: When the user asks for a report, document, summary file, or anything they can download or share, produce a real file: generate_report for the standard reports (weekly_status, business_snapshot — every figure computed by code from the database, always exact); draft_document for custom documents, writing the content yourself ONLY from facts and figures returned by tools earlier in this run — never invent a number. After generating, name the file in your summary so the user can download it from the run.";
   const finish = () => {
     persist(ws, exId, steps, state, "executing", planner, tokens);
     const fin = finalizeExecution(ws, exId, steps);
     // A provider error with zero completed steps is a FAILED run, not a
     // completed one — the status must say what actually happened.
     if (state.final_text?.startsWith("Provider error") && !steps.some(x => x.status === "done")) db.prepare("UPDATE agent_executions SET status='failed', updated_at=? WHERE id=?").run(now(), exId);
-    if (state.final_text) db.prepare("UPDATE agent_executions SET summary=?, updated_at=? WHERE id=?").run((state.final_text + "\n—\n" + (fin.summary || "")).slice(0, 6000), now(), exId);
+    if (state.final_text) { db.prepare("UPDATE agent_executions SET summary=?, updated_at=? WHERE id=?").run((state.final_text + "\n—\n" + (fin.summary || "")).slice(0, 6000), now(), exId);
+      // v76 self-learning: distill durable facts from this finished run into
+      // business memory (fire-and-forget; it re-checks status and no-ops for
+      // rules runs, failures, and provider-less workspaces).
+      void import("./agent-learning.ts").then(m => m.distillRun(ws, exId)).catch(() => {}); }
     return getExecution(ws, exId);
   };
   while (state.turns < MAX_TURNS) {

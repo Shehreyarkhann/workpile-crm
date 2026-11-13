@@ -345,5 +345,18 @@ export const TOOLS: Record<string, ToolDef> = {
     parameters: { type: "object", properties: {} },
     async run(ws) { const { financialSummary } = await import("./metrics.ts"); const f: any = financialSummary(ws);
       return { summary: Object.entries(f).map(([k, v]: any) => `${k.replaceAll("_", " ")}: ${money(v.value)}`).join(" · "), refs: {} }; } },
+  generate_report: { name: "generate_report", description: "Generate a standard report as a downloadable Word (.docx) file. Every figure is computed by code from the live database — exact by construction. kind: weekly_status (money, pipeline, jobs, overdue invoices, what's waiting) or business_snapshot (everything in weekly status plus services ranked by value, team, open work). Use whenever the user asks for a report or a file they can share.", control: "execute",
+    parameters: { type: "object", properties: { kind: { type: "string", enum: ["weekly_status", "business_snapshot"] } }, required: ["kind"] },
+    async run(ws, actor, args) { const { generateReportFile } = await import("./agent-files.ts");
+      const kind = args.kind === "business_snapshot" ? "business_snapshot" : "weekly_status";
+      const row = await generateReportFile(ws, actor, null, kind);
+      return { summary: `Generated ${row.filename} — ${row.headline}. The file is attached to this run; the user can download it from the run's file chip.`, refs: { file_id: row.id, filename: row.filename, file_title: row.title } }; } },
+  draft_document: { name: "draft_document", description: "Create a custom document as a downloadable Word (.docx) file, rendered verbatim from the content you write. Compose the content ONLY from facts and figures returned by tools earlier in this run — never invent a number, date, or name. Use ## for section headings and - for bullets. Good for: customer summaries, internal memos, status letters, job briefs, follow-up documents.", control: "execute",
+    parameters: { type: "object", properties: { title: { type: "string" }, content: { type: "string" } }, required: ["title", "content"] },
+    async run(ws, actor, args) { const { generateDraftFile } = await import("./agent-files.ts");
+      const title = String(args.title || "Document").slice(0, 90); const content = String(args.content || "").slice(0, 14000);
+      if (content.trim().length < 20) throw new Error("document content is too short — compose the full document from the data gathered in this run");
+      const row = await generateDraftFile(ws, actor, null, title, content);
+      return { summary: `Created ${row.filename} ("${title}"). The file is attached to this run for download. Remind the user it is a draft to review before sending.`, refs: { file_id: row.id, filename: row.filename, file_title: row.title } }; } },
 };
 export const TOOL_LIST = Object.values(TOOLS).map(t => ({ name: t.name, description: t.description, control: t.control, parameters: t.parameters }));

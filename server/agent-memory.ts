@@ -19,6 +19,9 @@ export function rememberFact(ws: string, content: string, source: string, by: st
   db.prepare("INSERT INTO agent_memories (id,workspace_id,content,source,created_by,created_at) VALUES (?,?,?,?,?,?)").run(id, ws, clean, source, by, now());
   return { id, duplicate: false };
 }
+export function deleteFact(ws: string, id: string): boolean {
+  return db.prepare("DELETE FROM agent_memories WHERE id=? AND workspace_id=?").run(id, ws).changes > 0;
+}
 export function listFacts(ws: string, limit = 12): any[] {
   return db.prepare("SELECT * FROM agent_memories WHERE workspace_id=? ORDER BY created_at DESC LIMIT ?").all(ws, limit) as any[];
 }

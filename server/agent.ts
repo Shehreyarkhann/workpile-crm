@@ -103,16 +103,20 @@ export async function createTriageExecution(ws: string, userId: string): Promise
   return runExecution(ws, id);
 }
 
-export function insertExecution(ws: string, userId: string, instruction: string, parentId?: string): string {
+export function insertExecution(ws: string, userId: string, instruction: string, parentId?: string, threadId?: string): string {
   const id = uid("exe");
   const ctx = businessContext(ws);
   if (parentId) { const p = db.prepare("SELECT summary, instruction FROM agent_executions WHERE id=? AND workspace_id=?").get(parentId, ws) as any; if (p) (ctx as any).parent = { instruction: p.instruction, summary: p.summary }; }
-  db.prepare("INSERT INTO agent_executions (id,workspace_id,user_id,parent_id,instruction,status,planner,plan,context,created_at,updated_at) VALUES (?,?,?,?,?,'planning','', '[]',?,?,?)").run(id, ws, userId, parentId || null, instruction, JSON.stringify(ctx), now(), now());
+  // v76 Copilot threads: a continuing conversation carries its earlier turns
+  // into the run's context, so "now send that to him" works like a real chat.
+  if (threadId) { const prior = db.prepare("SELECT instruction, summary FROM agent_executions WHERE workspace_id=? AND thread_id=? ORDER BY created_at DESC LIMIT 6").all(ws, threadId) as any[];
+    if (prior.length) (ctx as any).thread = prior.reverse().map(r => ({ instruction: String(r.instruction || "").slice(0, 220), summary: String(r.summary || "").slice(0, 420) })); }
+  db.prepare("INSERT INTO agent_executions (id,workspace_id,user_id,parent_id,thread_id,instruction,status,planner,plan,context,created_at,updated_at) VALUES (?,?,?,?,?,?,'planning','', '[]',?,?,?)").run(id, ws, userId, parentId || null, threadId || null, instruction, JSON.stringify(ctx), now(), now());
   return id;
 }
 
-export async function createExecution(ws: string, userId: string, instruction: string, parentId?: string): Promise<any> {
-  const id = insertExecution(ws, userId, instruction, parentId);
+export async function createExecution(ws: string, userId: string, instruction: string, parentId?: string, threadId?: string): Promise<any> {
+  const id = insertExecution(ws, userId, instruction, parentId, threadId);
   return planAndRunExecution(ws, id);
 }
 
@@ -121,8 +125,8 @@ export async function createExecution(ws: string, userId: string, instruction: s
 // goes (the loop saves after each turn, runExecution after each step), so
 // any client can poll GET /api/agent/executions/:id and watch the work
 // happen — and a dropped connection no longer strands the run.
-export function startExecutionAsync(ws: string, userId: string, instruction: string, parentId?: string): any {
-  const id = insertExecution(ws, userId, instruction, parentId);
+export function startExecutionAsync(ws: string, userId: string, instruction: string, parentId?: string, threadId?: string): any {
+  const id = insertExecution(ws, userId, instruction, parentId, threadId);
   void planAndRunExecution(ws, id).catch(() => { try { db.prepare("UPDATE agent_executions SET status='failed', summary='The run failed before it could start — please try again.', updated_at=? WHERE id=? AND status IN ('planning','executing')").run(now(), id); } catch { /* already final */ } });
   return getExecution(ws, id);
 }
