@@ -98,3 +98,32 @@ for (const st of src.statements) {
 }
 if (badTdz) process.exit(1);
 console.log("TDZ early-return check OK (no effect closure captures a post-return declaration)");
+
+// ---------- Audit 4: no React hooks below a top-level early return ----------
+// The v18/v64 class: a useState/useEffect/useRef declared after `if (!x) return`
+// never runs on the loading render, then runs on the loaded render — React
+// throws "rendered more hooks than during the previous render" and the view
+// blanks. Vite cannot see it; only AST position can.
+let badHooks = 0;
+const isReturnIf = (st) => ts.isIfStatement(st) && st.thenStatement && /return/.test(st.thenStatement.getText());
+const hookCallsIn = (node, compName, retLine) => {
+  const walk = (n) => {
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && /^use[A-Z]/.test(n.expression.text)) { badHooks++; console.error(`UI-SCOPE: ${compName}: hook ${n.expression.text} (line ${line(n.getStart())}) is declared after an early return (line ${retLine}) — it will crash the first data-loaded render. Move all hooks above the return.`); }
+    if (ts.isFunctionDeclaration(n) || ts.isArrowFunction(n) || ts.isFunctionExpression(n)) return; // nested scopes have their own rules
+    n.forEachChild(walk);
+  };
+  walk(node);
+};
+const auditHooks = (body, compName) => {
+  if (!body || !ts.isBlock(body)) return;
+  const stmts = body.statements;
+  const retIdx = stmts.findIndex(isReturnIf);
+  if (retIdx === -1) return;
+  for (let i = retIdx + 1; i < stmts.length; i++) hookCallsIn(stmts[i], compName, line(stmts[retIdx].getStart()));
+};
+for (const st of src.statements) {
+  if (ts.isFunctionDeclaration(st) && st.name && st.body) auditHooks(st.body, st.name.text);
+  if (ts.isVariableStatement(st)) for (const d of st.declarationList.declarations) if (d.initializer && (ts.isArrowFunction(d.initializer) || ts.isFunctionExpression(d.initializer)) && ts.isIdentifier(d.name)) auditHooks(d.initializer.body, d.name.text);
+}
+if (badHooks) process.exit(1);
+console.log("Hooks-order check OK (no hook declared below an early return)");

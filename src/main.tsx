@@ -225,13 +225,50 @@ const WIDGET_DEFS: WDef[] = [
   { id: "inbox_recent", icon: "✉️", title: "Inbox — needs attention", blurb: "The Inbox's priority order: urgent and overdue first, replies already labeled.", defW: 8, minW: 4, maxW: 12, group: "Inbox", multi: true, settings: [{ key: "show", label: "Show", def: "all", options: [{ v: "all", label: "Everything" }, { v: "overdue", label: "Overdue only" }] }] },
   { id: "camp_perf", icon: "📣", title: "Campaign performance", blurb: "Campaigns with their leads, wins, pipeline and revenue.", defW: 8, minW: 4, maxW: 12, group: "Campaigns" },
   { id: "demand_gap", icon: "🔍", title: "Demand gap", blurb: "Services customers ask for that you don't sell yet — and what they're worth.", defW: 4, minW: 3, maxW: 8, group: "Reports" },
+  { id: "dash_insights", icon: "🤖", title: "AI insights", blurb: "The AI's top observations from your live data — dupes, stale leads, leaks.", defW: 12, minW: 6, maxW: 12, group: "Home" },
+  { id: "dash_funnel", icon: "📊", title: "Pipeline funnel", blurb: "Lead counts at every stage with click-through to the filtered list.", defW: 6, minW: 3, maxW: 12, group: "Reports" },
+  { id: "dash_approvals", icon: "✋", title: "Approvals waiting", blurb: "What's sitting in the approvals inbox right now, with tier and age.", defW: 6, minW: 3, maxW: 12, group: "Reports" },
+  { id: "dash_series", icon: "📈", title: "Last 14 days — new vs won", blurb: "Daily new leads against wins for the last two weeks.", defW: 6, minW: 4, maxW: 12, group: "Reports" },
+  { id: "dash_service", icon: "🧰", title: "By service", blurb: "Leads, wins and value per service line — click through to the list.", defW: 6, minW: 4, maxW: 12, group: "Reports" },
+  { id: "dash_team", icon: "🏆", title: "Team leaderboard", blurb: "Active, won and lost per owner, plus field-report compliance.", defW: 6, minW: 4, maxW: 12, group: "Reports" },
+  { id: "dash_events", icon: "⚡", title: "Recent activity", blurb: "The latest events across every lead — stage moves, wins, submissions.", defW: 6, minW: 4, maxW: 12, group: "Reports" },
 ];
 const DEF_BY_ID = new Map(WIDGET_DEFS.map(d => [d.id, d]));
+// ---- Coordinate grid engine (v64) ----
+// Free placement on a 12-column grid: every item carries x/y/w plus a height
+// in row units (1 unit = 10px row + 16px gap = 26px pitch). Heights seed from
+// DEF_H estimates and are corrected by live measurement; vertical compaction
+// (gravity) pulls every component up into the space beneath shorter ones, so
+// no dead space survives next to a tall neighbour.
+const DEF_H: Record<string, number> = { onboarding: 15, setup: 13, stat_pipeline: 6, stat_proposals: 6, stat_fpar: 6, stat_won: 6, finances: 14, goal: 12, agent: 13, calendar: 19, activity: 10, quicklinks: 11, recent: 15, periods: 10, clock: 11, wq_queue: 14, wq_approvals: 13, leads_pipeline: 13, leads_recent: 14, leads_dupes: 8, prop_awaiting: 14, jobs_active: 14, sched_agenda: 14, ops_visits: 12, fin_overdue: 14, fin_ar: 14, fin_payments: 14, inbox_recent: 14, camp_perf: 12, demand_gap: 11, dash_insights: 10, dash_funnel: 16, dash_approvals: 10, dash_series: 10, dash_service: 13, dash_team: 12, dash_events: 14 };
+const hFromPx = (px: number) => Math.max(2, Math.ceil((px + 16) / 26));
+const rectOverlap = (a: any, b: any) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+function compactLayout(list: any[], lockIid?: string): any[] {
+  const placed: any[] = [];
+  const locked = lockIid ? list.filter(i => i.iid === lockIid).map(i => ({ ...i })) : [];
+  placed.push(...locked);
+  const rest = list.filter(i => i.iid !== lockIid).map(i => ({ ...i })).sort((a, b) => (a.y - b.y) || (a.x - b.x));
+  for (const it of rest) { let y = 0; while (placed.some(p => rectOverlap({ ...it, y }, p))) y++; it.y = y; placed.push(it); }
+  const byIid = new Map(placed.map(p => [p.iid, p]));
+  return list.map(it => byIid.get(it.iid) || it);
+}
+function packLayout(list: any[]): any[] {
+  const placed: any[] = []; const out: any[] = [];
+  for (const raw of list) {
+    const it = { ...raw, h: raw.h || DEF_H[raw.wid] || 10 };
+    let done = false;
+    for (let y = 0; !done; y++) for (let x = 0; x + it.w <= 12 && !done; x++) { const cand = { ...it, x, y }; if (!placed.some(p => rectOverlap(cand, p))) { placed.push(cand); out.push(cand); done = true; } }
+  }
+  return out;
+}
+const ensureCoords = (list: any[]): any[] => list.every(it => typeof it.x === "number" && typeof it.y === "number") ? list.map(it => ({ ...it, h: it.h || DEF_H[it.wid] || 10 })) : packLayout(list);
 // The default layout IS today's Home — same components, same order. Customization is opt-in.
 const DEFAULT_LAYOUT: any[] = [
   { wid: "onboarding", w: 12 }, { wid: "stat_pipeline", w: 3 }, { wid: "stat_proposals", w: 3 }, { wid: "stat_fpar", w: 3 }, { wid: "stat_won", w: 3 },
   { wid: "setup", w: 8 }, { wid: "goal", w: 4 }, { wid: "finances", w: 8 }, { wid: "calendar", w: 4 },
   { wid: "agent", w: 8 }, { wid: "quicklinks", w: 4 }, { wid: "activity", w: 8 }, { wid: "periods", w: 4 }, { wid: "recent", w: 8 },
+  { wid: "dash_insights", w: 12 }, { wid: "dash_funnel", w: 6 }, { wid: "dash_approvals", w: 6 }, { wid: "dash_series", w: 6 },
+  { wid: "dash_service", w: 6 }, { wid: "dash_team", w: 6 }, { wid: "dash_events", w: 6 },
 ].map(x => ({ ...x, iid: x.wid }));
 const healLayout = (raw: any): any[] => {
   if (!Array.isArray(raw)) return DEFAULT_LAYOUT.map(x => ({ ...x }));
@@ -248,7 +285,9 @@ const healLayout = (raw: any): any[] => {
     while (seenIid.has(iid)) iid = iid + "x";
     seenIid.add(iid);
     const w = Math.max(def.minW, Math.min(def.maxW, Math.round(Number(it.w) || def.defW)));
-    out.push({ iid, wid: def.id, w, ...(it.settings && typeof it.settings === "object" ? { settings: it.settings } : {}) });
+    const cx = Math.round(Number(it.x)), cy = Math.round(Number(it.y)), ch = Math.round(Number(it.h));
+    const coords = Number.isFinite(cx) && Number.isFinite(cy) && cx >= 0 && cx <= 11 && cy >= 0 ? { x: Math.min(cx, 12 - w), y: cy, ...(Number.isFinite(ch) && ch >= 2 ? { h: ch } : {}) } : {};
+    out.push({ iid, wid: def.id, w, ...coords, ...(it.settings && typeof it.settings === "object" ? { settings: it.settings } : {}) });
   }
   return out;
 };
@@ -439,9 +478,23 @@ function HomeDash({ go, openLead, m, d }: any) {
   const [savedFlash, setSavedFlash] = useState(""); const [removed, setRemoved] = useState<any>(null);
   const [obDone, setObDone] = useState(false); const [setupDone, setSetupDone] = useState(false);
   const [dragId, setDragId] = useState<string | null>(null);
+  const [dragPos, setDragPos] = useState<any>(null); const dragPosRef = useRef<any>(null);
+  const [rszPos, setRszPos] = useState<any>(null); const rszPosRef = useRef<any>(null);
   const [forbidden, setForbidden] = useState<Set<string>>(new Set()); const forbid = (wid: string) => setForbidden(prev => prev.has(wid) ? prev : new Set(prev).add(wid));
   const gridRef = useRef<any>(null); const saveTimer = useRef<any>(null); const dragRef = useRef<any>(null); const rszRef = useRef<any>(null);
-  useEffect(() => { api("/api/home/layout").then(r => { if (Array.isArray(r.layout)) setLayout(healLayout(r.layout)); }).catch(() => {}); api("/api/onboarding").then(r => setObDone(!!r.complete || localStorage.getItem("wp_ob_hide") === "1")).catch(() => {}); api("/api/onboarding/status").then(r => setSetupDone(!!r.complete || localStorage.getItem("wp_setup_hide") === "1")).catch(() => {}); }, []);
+  // Measured-height machinery (v64) — ALL hooks live above the !home early
+  // return (the v18 rule: a hook below it crashes Home the moment data loads).
+  const [hAdj, setHAdj] = useState<Record<string, number>>({}); const hAdjRef = useRef(hAdj); hAdjRef.current = hAdj;
+  const cellEls = useRef(new Map<string, any>()); const roRef = useRef<any>(null); const rafRef = useRef<any>(null); const dispRef = useRef<any[]>([]);
+  useEffect(() => {
+    if (!roRef.current) roRef.current = new ResizeObserver(() => { cancelAnimationFrame(rafRef.current); rafRef.current = requestAnimationFrame(() => {
+      const upd: Record<string, number> = {}; let any = false;
+      for (const it of dispRef.current) { const el = cellEls.current.get(it.iid); if (!el) continue; const h = hFromPx(el.offsetHeight); if (h !== (hAdjRef.current[it.iid] || it.h)) { upd[it.iid] = h; any = true; } }
+      if (any) setHAdj(prev => ({ ...prev, ...upd }));
+    }); });
+    for (const el of cellEls.current.values()) roRef.current.observe(el);
+  });
+  useEffect(() => { api("/api/home/layout").then(r => { if (Array.isArray(r.layout)) setLayout(ensureCoords(healLayout(r.layout))); }).catch(() => {}); api("/api/onboarding").then(r => setObDone(!!r.complete || localStorage.getItem("wp_ob_hide") === "1")).catch(() => {}); api("/api/onboarding/status").then(r => setSetupDone(!!r.complete || localStorage.getItem("wp_setup_hide") === "1")).catch(() => {}); }, []);
   useLive(() => { reloadHome(); api("/api/ai/insights").then(setIns).catch(() => {}); });
   useEffect(() => { if (!removed) return; const t = setTimeout(() => setRemoved(null), 8000); return () => clearTimeout(t); }, [removed]);
   const persist = (next: any[]) => { setLayout(next); if (saveTimer.current) clearTimeout(saveTimer.current); saveTimer.current = setTimeout(() => { api("/api/home/layout", { method: "PUT", body: { items: next } }).then(() => { setSavedFlash("Saved \u2713"); setTimeout(() => setSavedFlash(""), 2200); }).catch(() => { try { localStorage.setItem("wp_home_layout_mirror", JSON.stringify(next)); } catch { /* ignore */ } toast("Couldn't save your layout \u2014 kept on this device, will retry."); }); }, 600); };
@@ -457,9 +510,14 @@ function HomeDash({ go, openLead, m, d }: any) {
   const byDay = new Map<string, any[]>(); for (const u of home.upcoming) { if (!byDay.has(u.date)) byDay.set(u.date, []); byDay.get(u.date)!.push(u); }
   const STC: Record<string, string> = { NEW: "info", WORKING: "warn", QUALIFIED: "info", PROPOSAL: "warn", SENT: "info", FOLLOWUP: "warn", WON: "pass", LOST: "fail", NO_RESPONSE: "warn", CLOSED: "info", JUNK: "fail" };
   // ---- Custom Home rendering (v59) ----
-  const items: any[] = layout === null ? DEFAULT_LAYOUT.map(x => ({ ...x })) : layout;
+  const items: any[] = layout === null ? ensureCoords(DEFAULT_LAYOUT.map(x => ({ ...x }))) : layout;
   const hiddenNow = (wid: string) => (wid === "onboarding" && obDone) || (wid === "setup" && setupDone);
   const visItems = items.filter(it => DEF_BY_ID.has(it.wid) && (editing || (!hiddenNow(it.wid) && !forbidden.has(it.wid))));
+  // Display list (v64): stored layout + measured-height corrections, run
+  // through vertical compaction so every component floats up into free space.
+  const dispItems = compactLayout(visItems.map(it => ({ ...it, h: hAdj[it.iid] || it.h || DEF_H[it.wid] || 10 })));
+  dispRef.current = dispItems;
+  const commit = (nextDisp: any[]) => { const byIid = new Map(nextDisp.map(x => [x.iid, { ...x, h: hAdj[x.iid] || x.h }])); const known = new Set(items.map(i => i.iid)); const base = items.map(it => byIid.get(it.iid) || it); for (const nd of nextDisp) if (!known.has(nd.iid)) base.push(byIid.get(nd.iid)); persist(base); };
   const WIDGET_RENDER: Record<string, () => any> = {
     onboarding: () => <OnboardingCard go={go} />,
     setup: () => <SetupCard go={go} />,
@@ -520,21 +578,18 @@ function HomeDash({ go, openLead, m, d }: any) {
         </div>),
   };
   const moveItem = (arr: any[], from: number, to: number) => { const a = [...arr]; const [x] = a.splice(from, 1); a.splice(Math.max(0, Math.min(a.length, to)), 0, x); return a; };
-  const setItemW = (iid: string, w: number) => { const cur = items.find(x => x.iid === iid); const def = cur && DEF_BY_ID.get(cur.wid); if (!def || !cur) return; const cw = Math.max(def.minW, Math.min(def.maxW, w)); persist(items.map(it => it.iid === iid ? { ...it, w: cw } : it)); };
   const removeItem = (it: any) => { const idx = items.findIndex(x => x.iid === it.iid); setRemoved({ item: it, idx }); persist(items.filter(x => x.iid !== it.iid)); };
   const undoRemove = () => { if (!removed) return; const next = [...items]; next.splice(Math.max(0, Math.min(next.length, removed.idx)), 0, removed.item); setRemoved(null); persist(next); };
   const updateSetting = (it: any, skey: string, val: string) => { persist(items.map(x => x.iid === it.iid ? { ...x, settings: { ...(x.settings || {}), [skey]: val } } : x)); };
   const settingsSummary = (it: any): string => { const def = DEF_BY_ID.get(it.wid); if (!def || !def.settings) return ""; return def.settings.map(sd => { const cur = (it.settings && it.settings[sd.key]) || sd.def; return (sd.options.find(o => o.v === cur) || sd.options[0]).label; }).join(" · "); };
-  const dragStart = (e: any, iid: string) => { if ((e.target as any).closest(".wBtn")) return; e.preventDefault(); try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* noop */ } dragRef.current = { iid }; setDragId(iid); };
-  const dragMove = (e: any) => { const dr = dragRef.current; if (!dr || !gridRef.current) return; const cells = [...gridRef.current.querySelectorAll("[data-iid]")]; let target = visItems.length - 1;
-    for (let i = 0; i < cells.length; i++) { const r = cells[i].getBoundingClientRect(); const cx = r.left + r.width / 2, cy = r.top + r.height / 2; if (e.clientY < cy - 4 || (Math.abs(e.clientY - cy) <= Math.max(30, r.height / 2) && e.clientX < cx)) { target = i; break; } }
-    const from = visItems.findIndex(x => x.iid === dr.iid); if (from === -1 || target === from) return;
-    const order = moveItem(visItems, from, target); const byIid = new Map(order.map((x: any) => [x.iid, x])); persist(items.map(x => byIid.get(x.iid) || x).sort((a: any, b: any) => order.findIndex((o: any) => o.iid === a.iid) - order.findIndex((o: any) => o.iid === b.iid))); };
-  const dragEnd = () => { dragRef.current = null; setDragId(null); };
-  const resizeStart = (e: any, it: any) => { e.preventDefault(); e.stopPropagation(); try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* noop */ } const grid = gridRef.current; const colW = grid ? (grid.clientWidth - 11 * 16) / 12 : 90; rszRef.current = { iid: it.iid, startX: e.clientX, startW: it.w, colW }; };
-  const resizeMove = (e: any) => { const rz = rszRef.current; if (!rz) return; const dw = Math.round((e.clientX - rz.startX) / rz.colW); if (dw !== 0) { const cur = items.find(x => x.iid === rz.iid); const def = cur && DEF_BY_ID.get(cur.wid); if (def && cur && cur.w !== Math.max(def.minW, Math.min(def.maxW, rz.startW + dw))) setItemW(rz.iid, rz.startW + dw); } };
-  const resizeEnd = () => { rszRef.current = null; };
-  const cellKeys = (e: any, idx: number) => { if (!editing) return; const it = visItems[idx]; if (!it) return; if (e.key === "ArrowRight" || e.key === "ArrowDown") { e.preventDefault(); persist(moveItem(items, items.findIndex(x => x.iid === it.iid), items.findIndex(x => x.iid === it.iid) + 1)); } if (e.key === "ArrowLeft" || e.key === "ArrowUp") { e.preventDefault(); persist(moveItem(items, items.findIndex(x => x.iid === it.iid), items.findIndex(x => x.iid === it.iid) - 1)); } if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); removeItem(it); } };
+  const dragStart = (e: any, it: any) => { if ((e.target as any).closest(".wBtn")) return; e.preventDefault(); try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* noop */ } const grid = gridRef.current; dragRef.current = { iid: it.iid, startX: e.clientX, startY: e.clientY, x0: it.x || 0, y0: it.y || 0, w: it.w, pitchX: grid ? grid.clientWidth / 12 : 100 }; dragPosRef.current = { iid: it.iid, x: it.x || 0, y: it.y || 0 }; setDragId(it.iid); setDragPos(dragPosRef.current); };
+  const dragMove = (e: any) => { const dr = dragRef.current; if (!dr) return; const nx = Math.max(0, Math.min(12 - dr.w, dr.x0 + Math.round((e.clientX - dr.startX) / dr.pitchX))); const ny = Math.max(0, dr.y0 + Math.round((e.clientY - dr.startY) / 26)); if (!dragPosRef.current || dragPosRef.current.x !== nx || dragPosRef.current.y !== ny) { dragPosRef.current = { iid: dr.iid, x: nx, y: ny }; setDragPos(dragPosRef.current); } };
+  const dragEnd = () => { const dr = dragRef.current; dragRef.current = null; setDragId(null); if (dr && dragPosRef.current) { const dp = dragPosRef.current; commit(compactLayout(dispItems.map(it => it.iid === dr.iid ? { ...it, x: dp.x, y: dp.y } : it), dr.iid)); } dragPosRef.current = null; setDragPos(null); };
+  const resizeStart = (e: any, it: any) => { e.preventDefault(); e.stopPropagation(); try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* noop */ } const grid = gridRef.current; rszRef.current = { iid: it.iid, startX: e.clientX, w0: it.w, pitchX: grid ? grid.clientWidth / 12 : 100 }; rszPosRef.current = { iid: it.iid, w: it.w }; setRszPos(rszPosRef.current); };
+  const resizeMove = (e: any) => { const rz = rszRef.current; if (!rz) return; const cur = dispItems.find(x => x.iid === rz.iid); const def = cur && DEF_BY_ID.get(cur.wid); if (!def) return; const nw = Math.max(def.minW, Math.min(def.maxW, rz.w0 + Math.round((e.clientX - rz.startX) / rz.pitchX))); if (!rszPosRef.current || rszPosRef.current.w !== nw) { rszPosRef.current = { iid: rz.iid, w: nw }; setRszPos(rszPosRef.current); } };
+  const resizeEnd = () => { const rz = rszRef.current; rszRef.current = null; if (rz && rszPosRef.current) { const w = rszPosRef.current.w; commit(compactLayout(dispItems.map(it => it.iid === rz.iid ? { ...it, w } : it))); } rszPosRef.current = null; setRszPos(null); };
+  const cellKeys = (e: any, it: any) => { if (!editing) return; const cur = dispItems.find(x => x.iid === it.iid); if (!cur) return; const mv = (dx: number, dy: number) => commit(compactLayout(dispItems.map(x => x.iid === it.iid ? { ...x, x: Math.max(0, Math.min(12 - x.w, x.x + dx)), y: Math.max(0, x.y + dy) } : x), it.iid));
+    if (e.key === "ArrowRight") { e.preventDefault(); mv(1, 0); } if (e.key === "ArrowLeft") { e.preventDefault(); mv(-1, 0); } if (e.key === "ArrowDown") { e.preventDefault(); mv(0, 1); } if (e.key === "ArrowUp") { e.preventDefault(); mv(0, -1); } if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); removeItem(cur); } };
   const renderBody = (it: any) => {
     if (hiddenNow(it.wid) || forbidden.has(it.wid)) return <div className="card" style={{ padding: 16, height: "100%" }}><b>{DEF_BY_ID.get(it.wid)?.icon} {DEF_BY_ID.get(it.wid)?.title}</b><p className="muted" style={{ fontSize: 12.5, marginTop: 4 }}>Not shown on your Home right now — it's complete, dismissed, or not part of your role's access. It stays in your layout; remove it if you never want it back.</p></div>;
     const FB = () => forbid(it.wid);
@@ -553,15 +608,27 @@ function HomeDash({ go, openLead, m, d }: any) {
     if (it.wid === "inbox_recent") return <WInboxRecent go={go} openLead={openLead} onForbidden={FB} settings={it.settings} />;
     if (it.wid === "camp_perf") return <WCampaigns go={go} onForbidden={FB} />;
     if (it.wid === "demand_gap") return <WDemandGap go={go} onForbidden={FB} />;
+    if (it.wid === "dash_insights") return (<div className="card"><h3 style={{ marginTop: 0 }}>🤖 AI insights <span className="more" onClick={() => go({ view: "ai" })}>Open AI Assistant →</span></h3>{ins.length === 0 && <p className="muted" style={{ fontSize: 13 }}>Insights appear as the agent finds duplicates, stale leads and leaks.</p>}{ins.slice(0, 3).map((i: any, k: number) => <div key={k} style={{ fontSize: 13, padding: "6px 0", borderTop: k ? "1px solid #eef1ee" : undefined }}>{i.icon} <b>{i.title}</b> — <span className="muted">{i.detail}</span></div>)}</div>);
+    if (it.wid === "dash_funnel") { const maxF = Math.max(1, ...(d?.funnel || []).map((f: any) => f.count)); return (<div className="card funnel"><h3 style={{ marginTop: 0 }}>Pipeline funnel <span className="more" onClick={() => go({ view: "leads" })}>Open leads →</span></h3>{(d?.funnel || []).map((f: any) => <div className="row" key={f.state} onClick={() => go({ view: "leads", leads: { state: f.state } })}><div className="fl">{String(f.state).replaceAll("_", " ")}</div><div className="bar" style={{ width: `${Math.max(2, 100 * f.count / maxF)}%` }} /><div style={{ fontSize: 12.5, whiteSpace: "nowrap" }}><b>{f.count}</b> · {money(f.value)}</div></div>)}</div>); }
+    if (it.wid === "dash_approvals") return (<div className="card"><h3 style={{ marginTop: 0 }}>Approvals waiting <span className="more" onClick={() => go({ view: "approvals" })}>Inbox →</span></h3>{(d?.approvals_pending || []).length === 0 && <p className="muted">Inbox zero. Nothing waiting on you.</p>}{(d?.approvals_pending || []).map((a: any) => <div className="feed" key={a.id}><div className="ev"><b>{a.service_requested}</b> · {money(a.est_value)}<br /><span>{a.tier} tier · submitted {dt(a.submitted_at)}</span></div></div>)}</div>);
+    if (it.wid === "dash_series") { const maxS = Math.max(1, ...(d?.series || []).map((x: any) => x.created + x.won)); return (<div className="card"><h3 style={{ marginTop: 0 }}>Last 14 days — new vs won</h3><div className="bars">{(d?.series || []).map((x: any) => <div className="col" key={x.day}><div className="stk" style={{ height: `${Math.max(3, 100 * (x.created + x.won) / maxS)}px`, background: "#22c55e" }}><div className="c2" style={{ height: `${100 * x.created / Math.max(1, x.created + x.won)}%` }} /></div><div className="dl">{String(x.day).slice(5)}</div></div>)}</div><p className="muted" style={{ fontSize: 12 }}><span style={{ color: "#0ea5e9" }}>■</span> new leads · <span style={{ color: "#22c55e" }}>■</span> won</p></div>); }
+    if (it.wid === "dash_service") return (<div className="card"><h3 style={{ marginTop: 0 }}>By service <span className="more" onClick={() => go({ view: "demand" })}>Demand gap →</span></h3><table><thead><tr><th>Service</th><th>Leads</th><th>Won</th><th>Value</th></tr></thead><tbody>{(d?.by_service || []).map((x: any) => <tr className="clickable" key={x.service} onClick={() => go({ view: "leads", leads: { service: x.service } })}><td>{x.service}</td><td>{num(x.leads)}</td><td>{num(x.won)}</td><td>{money(x.value)}</td></tr>)}</tbody></table></div>);
+    if (it.wid === "dash_team") return (<div className="card"><h3 style={{ marginTop: 0 }}>Team leaderboard</h3><table><thead><tr><th>Owner</th><th>Active</th><th>Won</th><th>Lost</th></tr></thead><tbody>{(m?.by_owner || []).map((o: any, i: number) => <tr key={i}><td>{o.name || "Unassigned"}</td><td>{num(o.active)}</td><td>{num(o.won)}</td><td>{num(o.lost)}</td></tr>)}</tbody></table><p className="muted" style={{ fontSize: 12.5 }}>Field-report compliance: {m?.field_report_compliance_pct ?? "—"}%</p></div>);
+    if (it.wid === "dash_events") return (<div className="card"><h3 style={{ marginTop: 0 }}>Recent activity</h3><div className="feed">{(d?.recent_events || []).map((e: any) => <div className="ev" key={e.id}><b>{e.contact_name || e.service_requested || "Lead"}</b> — {String(e.type).replaceAll("_", " ")}{e.to_state ? ` → ${e.to_state}` : ""}<br /><span>{dt(e.created_at)}</span></div>)}</div></div>);
     if (it.wid === "clock") return <ClockWidget settings={it.settings} tz={home.tz} />;
     const r = WIDGET_RENDER[it.wid]; return r ? r() : null;
   };
   const cell = (it: any, idx: number) => {
     const def = DEF_BY_ID.get(it.wid) as any;
-    if (!editing) return <div key={it.iid} style={{ gridColumn: `span ${it.w}`, minWidth: 0 }}>{renderBody(it)}</div>;
+    const cx = dragPos && dragPos.iid === it.iid ? dragPos.x : (it.x || 0);
+    const cy = dragPos && dragPos.iid === it.iid ? dragPos.y : (it.y || 0);
+    const cw2 = rszPos && rszPos.iid === it.iid ? rszPos.w : it.w;
+    const place: any = { gridColumn: `${cx + 1} / span ${cw2}`, gridRow: `${cy + 1} / span ${it.h || DEF_H[it.wid] || 10}`, alignSelf: "start", minWidth: 0 };
+    const regRef = (el: any) => { if (el) cellEls.current.set(it.iid, el); else cellEls.current.delete(it.iid); };
+    if (!editing) return <div key={it.iid} ref={regRef} style={place}>{renderBody(it)}</div>;
     const summary = settingsSummary(it);
-    return (<div key={it.iid} data-iid={it.iid} tabIndex={0} onKeyDown={e => cellKeys(e, idx)} className={"wCell" + (dragId === it.iid ? " dragging" : "")} style={{ gridColumn: `span ${it.w}`, minWidth: 0 }}>
-      <div className="wBar" onPointerDown={e => dragStart(e, it.iid)} onPointerMove={dragMove} onPointerUp={dragEnd} title="Drag to move">
+    return (<div key={it.iid} ref={regRef} data-iid={it.iid} tabIndex={0} onKeyDown={e => cellKeys(e, it)} className={"wCell" + (dragId === it.iid ? " dragging" : "")} style={place}>
+      <div className="wBar" onPointerDown={e => dragStart(e, it)} onPointerMove={dragMove} onPointerUp={dragEnd} title="Drag to move">
         <span className="wGrip">⠿</span><span className="wTitle">{def.icon} {def.title}{summary ? " · " + summary : ""}</span>
         <span className="wBtns">
           {(def.settings || []).map((sd: any) => { const cur = (it.settings && it.settings[sd.key]) || sd.def; const opt = sd.options.find((o: any) => o.v === cur) || sd.options[0]; const nxt = sd.options[(sd.options.indexOf(opt) + 1) % sd.options.length]; return <button key={sd.key} className="wBtn" onPointerDown={e => e.stopPropagation()} onClick={() => updateSetting(it, sd.key, nxt.v)} title={sd.label + " — tap to change"}>{sd.label}: {opt.label}</button>; })}
@@ -573,12 +640,14 @@ function HomeDash({ go, openLead, m, d }: any) {
     </div>);
   };
   const placedIds = new Set(items.map(x => x.wid));
-  const addWidget = (d: any) => { const used = new Set(items.map(x => x.iid)); let iid = d.id; if (used.has(iid)) { let n = 2; while (used.has(`${d.id}#${n}`)) n++; iid = `${d.id}#${n}`; } const settings = d.settings ? Object.fromEntries(d.settings.map((sd: any) => [sd.key, sd.def])) : undefined; persist([...items, { iid, wid: d.id, w: d.defW, ...(settings ? { settings } : {}) }]); toast(d.title + " added to your Home ✓"); };
+  const addWidget = (d: any) => { const used = new Set(items.map(x => x.iid)); let iid = d.id; if (used.has(iid)) { let n = 2; while (used.has(`${d.id}#${n}`)) n++; iid = `${d.id}#${n}`; } const settings = d.settings ? Object.fromEntries(d.settings.map((sd: any) => [sd.key, sd.def])) : undefined; const ni: any = { iid, wid: d.id, w: d.defW, h: DEF_H[d.id] || 10, ...(settings ? { settings } : {}) };
+    let placedNew: any = null; for (let y = 0; !placedNew; y++) for (let x = 0; x + ni.w <= 12 && !placedNew; x++) { const cand = { ...ni, x, y }; if (!dispItems.some(p => rectOverlap(cand, p))) placedNew = cand; }
+    commit([...dispItems, placedNew]); toast(d.title + " added to your Home ✓"); };
   return (<div>
 {!editing && <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginBottom: 10 }}>{savedFlash && <span style={{ fontSize: 12.5, color: "#157347", fontWeight: 600 }}>{savedFlash}</span>}<button className="btn ghost small" onClick={() => setEditing(true)}>✎ Customize</button></div>}
-    {editing && <div className="editBar"><b>Editing your Home</b><span style={{ opacity: .75 }}>Drag the top bar to move · drag ◢ to resize · changes save automatically</span><span style={{ flex: 1 }} />{savedFlash && <span style={{ color: "#7ED492", fontWeight: 600 }}>{savedFlash}</span>}<button className="btn ghost small" onClick={() => setGallery(true)}>+ Add components</button><button className="btn ghost small" onClick={async () => { await api("/api/home/layout", { method: "DELETE" }).catch(() => {}); setLayout(DEFAULT_LAYOUT.map(x => ({ ...x }))); toast("Default layout restored"); }}>Reset</button><button className="btn small" onClick={() => setEditing(false)}>Done</button></div>}
+    {editing && <div className="editBar"><b>Editing your Home</b><span style={{ opacity: .75 }}>Drag the top bar to move · drag ◢ to resize · changes save automatically</span><span style={{ flex: 1 }} />{savedFlash && <span style={{ color: "#7ED492", fontWeight: 600 }}>{savedFlash}</span>}<button className="btn ghost small" onClick={() => setGallery(true)}>+ Add components</button><button className="btn ghost small" onClick={async () => { await api("/api/home/layout", { method: "DELETE" }).catch(() => {}); setLayout(ensureCoords(DEFAULT_LAYOUT.map(x => ({ ...x })))); toast("Default layout restored"); }}>Reset</button><button className="btn small" onClick={() => setEditing(false)}>Done</button></div>}
     <div className={"dashGrid" + (editing ? " editing" : "")} ref={gridRef}>
-      {visItems.map((it, i) => cell(it, i))}
+      {dispItems.map((it, i) => cell(it, i))}
     </div>
     {visItems.length === 0 && <div className="card" style={{ textAlign: "center", padding: 34 }}><h3 style={{ marginTop: 0 }}>Your Home is clear</h3><p className="muted">Every component was removed — nothing was deleted, they all live in the gallery.</p><button className="btn" onClick={() => { setEditing(true); setGallery(true); }}>+ Add components</button></div>}
     {gallery && <div className="galOverlay" onClick={() => setGallery(false)}><div className="galPanel" onClick={e => e.stopPropagation()}>
@@ -623,8 +692,8 @@ function AgentRunModal({ close, done }: any) {
 }
 
 function Dashboard({ go, openLead }: any) {
-  const [d, setD] = useState<any>(null); const [ins, setIns] = useState<any[]>([]); const [brief, setBrief] = useState<any>(null);
-  const loadDash = () => { api("/api/dashboard").then(setD).catch(() => {}); api("/api/ai/insights").then(setIns).catch(() => {}); api("/api/brief").then(setBrief).catch(() => {}); };
+  const [d, setD] = useState<any>(null); const [brief, setBrief] = useState<any>(null);
+  const loadDash = () => { api("/api/dashboard").then(setD).catch(() => {}); api("/api/brief").then(setBrief).catch(() => {}); };
   useEffect(() => { loadDash(); }, []);
   // The brief, the KPIs and everything HomeDash renders from these props stay
   // live on the same bus as the widgets (v61): a mutation anywhere — including
@@ -632,8 +701,6 @@ function Dashboard({ go, openLead }: any) {
   useLive(loadDash);
   if (!d) return <p className="muted">Loading dashboard…</p>;
   const m = d.metrics;
-  const maxF = Math.max(1, ...d.funnel.map((f: any) => f.count));
-  const maxS = Math.max(1, ...d.series.map((s: any) => s.created + s.won));
   const K = ({ lab, val, hint, onClick, cls }: any) => <div className="kpi" onClick={onClick}><div className="lab">{lab}</div><div className="val">{val}</div><div className="hint">{hint}</div></div>;
   return (<div>
     <h2 className="pt">Dashboard</h2><p className="sub">Every number is live and clickable — drill straight into the records behind it.</p>
@@ -646,38 +713,6 @@ function Dashboard({ go, openLead }: any) {
       <div className="briefSide">{(brief.stuck || []).slice(0, 3).map((t: any, i: number) => <div key={i}>⏰ {t.service_requested} — {t.state.replaceAll("_", " ").toLowerCase()}, overdue</div>)}</div></div>}
     <HomeDash go={go} openLead={openLead} m={m} d={d} />
     <DashboardPins />
-    {ins.length > 0 && <div className="card"><h3>🤖 AI insights <span className="more" onClick={() => go({ view: "ai" })}>Open AI Assistant →</span></h3>{ins.slice(0, 3).map((i: any, k: number) => <div className="insight" key={k}><div className="ic">{i.icon}</div><div><b>{i.title}</b><p>{i.detail}</p></div></div>)}</div>}
-    <div className="grid3">
-      <div className="card funnel"><h3>Pipeline funnel <span className="more" onClick={() => go({ view: "leads" })}>Open leads →</span></h3>
-        {d.funnel.map((f: any) => <div className="row" key={f.state} onClick={() => go({ view: "leads", leads: { state: f.state } })}><div className="fl">{f.state.replaceAll("_", " ")}</div><div className="bar" style={{ width: `${Math.max(2, 100 * f.count / maxF)}%` }} /><div className="fv">{num(f.count)} · {money(f.value)}</div></div>)}
-      </div>
-      <div className="card"><h3>Approvals waiting <span className="more" onClick={() => go({ view: "approvals" })}>Inbox →</span></h3>
-        {d.approvals_pending.length === 0 && <p className="muted">Inbox zero. Nothing waiting on you.</p>}
-        {d.approvals_pending.map((a: any) => <div className="feed" key={a.id}><div className="ev"><b>{a.service_requested}</b> · {money(a.est_value)}<br /><span>{a.tier} tier · submitted {dt(a.submitted_at)}</span></div></div>)}
-      </div>
-    </div>
-    <div className="grid2">
-      <div className="card"><h3>Last 14 days — new vs won</h3>
-        <div className="bars">{d.series.map((s: any) => <div className="col" key={s.day}><div className="stk" style={{ height: `${Math.max(3, 100 * (s.created + s.won) / maxS)}px` }}><div className="c2" style={{ height: `${100 * s.created / Math.max(1, s.created + s.won)}%` }} /><div className="c1" style={{ height: `${100 * s.won / Math.max(1, s.created + s.won)}%` }} /></div><div className="dl">{s.day}</div></div>)}</div>
-        <p className="muted" style={{ fontSize: 12 }}><span style={{ color: "#0ea5e9" }}>■</span> new leads · <span style={{ color: "#22c55e" }}>■</span> won</p>
-      </div>
-      <div className="card"><h3>By service <span className="more" onClick={() => go({ view: "demand" })}>Demand gap →</span></h3>
-        <table><thead><tr><th>Service</th><th>Leads</th><th>Won</th><th>Value</th></tr></thead><tbody>
-          {d.by_service.map((s: any) => <tr className="clickable" key={s.service} onClick={() => go({ view: "leads", leads: { service: s.service } })}><td>{s.service}</td><td>{num(s.leads)}</td><td>{num(s.won)}</td><td>{money(s.value)}</td></tr>)}
-        </tbody></table>
-      </div>
-    </div>
-    <div className="grid2">
-      <div className="card"><h3>Team leaderboard</h3>
-        <table><thead><tr><th>Owner</th><th>Active</th><th>Won</th><th>Lost</th></tr></thead><tbody>
-          {m.by_owner.map((o: any, i: number) => <tr key={i}><td>{o.name || "Unassigned"}</td><td>{num(o.active)}</td><td>{num(o.won)}</td><td>{num(o.lost)}</td></tr>)}
-        </tbody></table>
-        <p className="muted" style={{ fontSize: 12.5 }}>Field-report compliance: {m.field_report_compliance_pct ?? "—"}%</p>
-      </div>
-      <div className="card"><h3>Recent activity</h3><div className="feed">
-        {d.recent_events.map((e: any) => <div className="ev" key={e.id}><b>{e.contact_name || e.service_requested || "Lead"}</b> — {e.type.replaceAll("_", " ")}{e.to_state ? ` → ${e.to_state}` : ""}<br /><span>{dt(e.created_at)}</span></div>)}
-      </div></div>
-    </div>
   </div>);
 }
 

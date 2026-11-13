@@ -681,9 +681,13 @@ export function registerHome(app: any, requireAuth: any) {
       if (seen.has(key)) continue;
       seen.add(key);
       const w = Math.max(2, Math.min(12, Math.round(Number(it.w) || 12)));
+      // Grid coordinates (v64): free placement on the 12-col grid. Absent or
+      // invalid coordinates are dropped — the client packs those items.
+      const coord = (v: any, lo: number, hi: number) => { const n = Math.round(Number(v)); return Number.isFinite(n) && n >= lo && n <= hi ? n : undefined; };
+      const x = coord(it.x, 0, 11), y = coord(it.y, 0, 1000), h = coord(it.h, 2, 200);
       let settings: any = undefined;
       if (it.settings && typeof it.settings === "object" && !Array.isArray(it.settings)) { try { const sj = JSON.stringify(it.settings); if (sj.length <= 2048) settings = JSON.parse(sj); } catch { /* drop bad settings */ } }
-      out.push({ ...(iid ? { iid } : {}), wid, w, ...(settings ? { settings } : {}) });
+      out.push({ ...(iid ? { iid } : {}), wid, w, ...(x !== undefined ? { x } : {}), ...(y !== undefined ? { y } : {}), ...(h !== undefined ? { h } : {}), ...(settings ? { settings } : {}) });
     }
     return out;
   };
