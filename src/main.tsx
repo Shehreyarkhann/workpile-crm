@@ -731,7 +731,7 @@ function Leads({ initial, openLead, users, me }: any) {
   const [bstats, setBstats] = useState<any>(null); const [dragId, setDragId] = useState(""); const [overCol, setOverCol] = useState("");
   const loadBoard = () => { const o: any = {}; Promise.all(BOARD_STAGES.map(([st]) => api(st === "CLOSED" ? `/api/leads?paged=1&bucket=closed&page=1&page_size=25` : `/api/leads?paged=1&state=${st}&page=1&page_size=25`).then(r => { o[st] = r; }))).then(() => setBoard({ ...o })); api("/api/board-stats").then(setBstats).catch(() => {}); };
   useEffect(() => { if (mode === "board") loadBoard(); }, [mode, tickFix]);
-  const dropStage = async (st: string) => { if (!dragId || st === "CLOSED") return; try { await api(`/api/leads/${dragId}/stage`, { method: "POST", body: { to: st } }); } catch (e: any) { if (e.message === "won_needs_confirmation" && confirm("No signed proposal on this lead. Mark WON as a verbal/legacy win and create the job?")) { await api(`/api/leads/${dragId}/stage`, { method: "POST", body: { to: st, confirm_no_proposal: true } }).catch(() => {}); } else if (e.message === "reason_required") { const r = prompt("Reason for closing (price, timing, competitor, unresponsive…):"); if (r) await api(`/api/leads/${dragId}/stage`, { method: "POST", body: { to: "LOST", lost_reason: r } }).catch(() => {}); } }
+  const dropStage = async (st: string) => { if (!dragId || st === "CLOSED") return; try { await api(`/api/leads/${dragId}/stage`, { method: "POST", body: { to: st } }); } catch (e: any) { if (e.message === "won_needs_confirmation" && confirm("No signed proposal on this lead. Mark WON as a verbal/legacy win and create the job?")) { await api(`/api/leads/${dragId}/stage`, { method: "POST", body: { to: st, confirm_no_proposal: true } }).catch(() => {}); } else if (e.message === "proposal_required") { toast("📝 No proposal yet — draft it from the Work Queue; a lead can\u2019t sit in Sent without one."); } else if (e.message === "proposal_not_approved") { toast("✋ Proposal not approved yet — it can\u2019t move to Sent until an approver signs off."); } else if (e.message === "reason_required") { const r = prompt("Reason for closing (price, timing, competitor, unresponsive…):"); if (r) await api(`/api/leads/${dragId}/stage`, { method: "POST", body: { to: "LOST", lost_reason: r } }).catch(() => {}); } }
     setDragId(""); loadBoard(); setTickFix(t => t + 1); };
   const Pager = () => <div className="pager"><span>{num(data.total)} leads · page {data.page} of {num(data.pages)}</span><button className="btn ghost small" disabled={data.page <= 1} onClick={() => setF({ ...f, page: data.page - 1 })}>← Prev</button><button className="btn ghost small" disabled={data.page >= data.pages} onClick={() => setF({ ...f, page: data.page + 1 })}>Next →</button></div>;
   return (<div>
@@ -2839,13 +2839,15 @@ function CallbackForm({ leadId, done }: any) {
 function InboxHandleModal({ item, onClose, onDone, openLead, go }: any) {
   const [full, setFull] = useState<any>(null); const [sug, setSug] = useState<any>(null);
   const [draft, setDraft] = useState(""); const [att, setAtt] = useState<any[]>([]);
-  const [msg, setMsg] = useState(""); const [busy, setBusy] = useState("");
+  const [msg, setMsg] = useState(""); const [busy, setBusy] = useState(""); const [acts, setActs] = useState<any[]>([]); const [actSrc, setActSrc] = useState(""); const [doneActs, setDoneActs] = useState<Set<string>>(new Set()); const [actBusy, setActBusy] = useState("");
   const loadAll = () => { api("/api/inbox").then(rows => { const it = (rows || []).find((r: any) => r.id === item.inbox_id); if (it) setFull(it); }).catch(() => {}); api("/api/inbox/" + item.inbox_id + "/suggestion").then(r => { if (r) { setSug(r); setDraft(r.draft_body || ""); setAtt((r.attachments || []).map((x: any) => ({ kind: x.kind, id: x.id, label: x.label, why: x.why }))); } }).catch(() => {}); };
   useEffect(loadAll, [item.inbox_id]);
+  useEffect(() => { const t = setTimeout(() => { api("/api/inbox/" + item.inbox_id + "/actions", { method: "POST", body: { draft } }).then((r: any) => { setActs(r?.actions || []); setActSrc(r?.source || ""); }).catch(() => {}); }, 700); return () => clearTimeout(t); }, [draft, item.inbox_id]);
   useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); }; window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, []);
   const send = async () => { setBusy("send"); const r = await api("/api/inbox/" + item.inbox_id + "/reply", { method: "POST", body: { body: draft, attachments: att.map(x => ({ kind: x.kind, id: x.id })) } }).catch((e: any) => ({ error: e.message })); setBusy(""); if ((r as any).error) { setMsg("Failed: " + (r as any).error); return; } toast(r.status === "test_mode" ? "Reply recorded (test mode — sending is off until a provider is connected) — item closed ✓" : "Reply sent ✓ — item closed"); onDone(); };
   const doneOnly = async () => { setBusy("done"); await api("/api/inbox/" + item.inbox_id, { method: "PATCH", body: { status: "done" } }).catch(() => {}); setBusy(""); toast("Marked done ✓"); onDone(); };
   const snooze = async () => { setBusy("snooze"); await api("/api/inbox/" + item.inbox_id, { method: "PATCH", body: { snooze_days: 1 } }).catch(() => {}); setBusy(""); toast("Snoozed 1 day ✓"); onDone(); };
+  const runAct = async (a: any) => { setActBusy(a.key); const r: any = await api("/api/inbox/" + item.inbox_id + "/actions/execute", { method: "POST", body: { action: a } }).catch((e: any) => ({ error: e.message })); setActBusy(""); if (r?.error) { setMsg("Action failed: " + r.error); return; } setDoneActs(prev => new Set(prev).add(a.key)); toast(a.kind === "callback" ? "Callback booked ✓" : "Booked ✓ — on the schedule now"); if (r.draft_line && !draft.toLowerCase().includes(r.draft_line.slice(0, 24).toLowerCase())) setDraft(d => (d.trim() ? d.replace(/\s+$/, "") + "\n\n" + r.draft_line : r.draft_line)); };
   const regen = async () => { const r = await api("/api/inbox/" + item.inbox_id + "/suggestion/regenerate", { method: "POST", body: {} }).catch(() => null); if (r) { setSug(r); setDraft(r.draft_body || ""); if (r.source !== "ai") setMsg("No AI provider connected yet — add a key in Automations → AI provider and this writes the reply from the email itself."); } };
   return (<div className="modalOverlay" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
     <div className="card" style={{ maxWidth: 780, width: "100%", maxHeight: "88vh", overflowY: "auto", padding: "18px 20px" }}>
@@ -2856,6 +2858,7 @@ function InboxHandleModal({ item, onClose, onDone, openLead, go }: any) {
         <label className="f">Reply — edit freely, sends from your workspace</label>
         <textarea rows={7} value={draft} onChange={e => setDraft(e.target.value)} />
         {att.length > 0 && <div className="rowflex" style={{ marginTop: 6 }}>{att.map((x: any, ix: number) => <span key={ix} className="chip on">📎 {x.label}{x.why ? ` (${String(x.why).toLowerCase()})` : ""} <button className="wBtn" title="Remove attachment" onClick={() => setAtt(att.filter((_, j) => j !== ix))}>✕</button></span>)}</div>}
+        {acts.length > 0 && <div style={{ marginTop: 10, border: "1px dashed var(--line)", borderRadius: 10, padding: "8px 10px" }}><p style={{ margin: "0 0 6px", fontSize: 12.5 }}><b>⚡ Operator</b> {actSrc === "ai" ? <span className="tinyBadge" style={{ background: "#dcfce7", color: "#166534" }}>✨ AI operator</span> : <span className="tinyBadge">📄 Smart rules — full AI understanding needs the AI key (Settings)</span>} <span className="muted">detected from the email + your reply — tap to do it:</span></p><div className="rowflex">{acts.map((a: any) => doneActs.has(a.key) ? <span key={a.key} className="chip on">✓ {a.label}</span> : <button key={a.key} className="chip" disabled={actBusy === a.key} onClick={() => runAct(a)}>{actBusy === a.key ? "Booking…" : a.label}</button>)}</div></div>}
       </div> : <p className="muted" style={{ marginTop: 10 }}>Loading suggestion…</p>}
       {msg && <div className="note" style={{ marginTop: 8 }}>{msg}</div>}
       <div className="rowflex" style={{ marginTop: 12 }}>
@@ -2912,8 +2915,44 @@ function OverdueHandleModal({ item, onClose, onDone, openLead }: any) {
   </div>);
 }
 
+function ProposalHandleModal({ item, onClose, onDone, openLead }: any) {
+  const [d, setD] = useState<any>(null); const [busy, setBusy] = useState(""); const [note, setNote] = useState(""); const [mode, setMode] = useState(item.type);
+  const load = () => { api(`/api/leads/${item.lead_id}`).then(setD).catch(() => {}); };
+  useEffect(() => { load(); }, []);
+  const lead = d?.lead; const proposals = d?.proposals || [];
+  const p = proposals.length ? [...proposals].sort((a: any, b: any) => (b.version || 0) - (a.version || 0))[0] : null;
+  let lines: any[] = []; try { lines = JSON.parse(p?.line_items || "[]"); } catch { lines = []; }
+  const draft = async () => { setBusy("draft"); const r: any = await api(`/api/leads/${item.lead_id}/proposals/auto-draft`, { method: "POST", body: {} }).catch((e: any) => ({ error: e.message })); setBusy(""); if (r?.error) { setNote("Draft failed: " + r.error); return; } toast(r.priced === "price_book" ? "Drafted from the price book ✓" : "Drafted — review the prices in the lead before sending"); setMode("proposal_review"); load(); };
+  const submit = async () => { if (!p) return; setBusy("submit"); const r: any = await api(`/api/proposals/${p.id}/submit`, { method: "POST", body: {} }).catch((e: any) => ({ error: e.message })); setBusy(""); if (r?.error) { setNote("Submit failed: " + r.error); return; } if (r.state === "not_required") { toast("No approval needed for this one — ready to send"); setMode("proposal_send"); return; } toast("Submitted — the approver was notified ✓"); onDone(); };
+  const send = async () => { if (!p) return; setBusy("send"); const r: any = await api(`/api/proposals/${p.id}/send`, { method: "POST", body: { channel: "email" } }).catch((e: any) => ({ error: e.message })); setBusy(""); if (r?.error) { setNote("Send failed: " + r.error); return; } toast(r.status === "test_mode" ? "Proposal sent ✓ (test mode — no live provider yet)" : `Proposal sent to ${r.to} ✓`); onDone(); };
+  return (<div className="modalOverlay" onClick={onClose}><div className="card modalCard" style={{ maxWidth: 640 }} onClick={e => e.stopPropagation()}>
+    <div className="rowflex"><h3 style={{ margin: 0 }}>📝 Proposal — {lead?.contact_name || "Lead"}</h3><span className="spacer" /><button className="btn ghost small" onClick={onClose}>✕</button></div>
+    {!d ? <p className="muted">Loading…</p> : (<>
+      <p className="muted" style={{ fontSize: 13 }}>{lead?.service_requested || ""}{lead?.est_value ? ` · est. ${money(lead.est_value)}` : ""} · stage: Proposal — nothing moves to Sent until this is approved and sent.</p>
+      {!p && (<><p style={{ fontSize: 13.5 }}>No proposal exists yet. Draft one from the price book — you can fine-tune the lines in the lead before it goes anywhere.</p>
+        <div className="rowflex"><button className="btn" disabled={busy === "draft"} onClick={draft}>{busy === "draft" ? "Drafting…" : "✨ Draft from price book"}</button>
+        <button className="btn ghost" onClick={() => { onClose(); openLead(item.lead_id); }}>Open lead</button></div></>)}
+      {p && (<>
+        <div style={{ border: "1px solid var(--line)", borderRadius: 10, padding: "10px 12px", margin: "8px 0" }}>
+          {lines.length === 0 ? <p className="muted" style={{ margin: 0 }}>No line items.</p> : lines.map((li: any, ix: number) => <div key={ix} className="rowflex" style={{ fontSize: 13.5, padding: "3px 0" }}><span>{li.description}</span><span className="spacer" /><span className="muted">×{li.qty ?? 1}</span><b>{money(li.line_total ?? (li.unit_price || 0) * (li.qty || 1))}</b></div>)}
+          <div className="rowflex" style={{ borderTop: "1px solid var(--line)", marginTop: 6, paddingTop: 6 }}><b>Total</b><span className="spacer" /><b>{money(p.total)}</b></div>
+        </div>
+        {p.approval_state === "pending" && <p className="muted" style={{ fontSize: 13 }}>✋ Waiting on approval{p.approver_name ? ` — ${p.approver_name}` : ""}. The lead stays in Proposal until they decide; you'll get a notification.</p>}
+        {p.approval_state === "approved" && <p style={{ fontSize: 13 }}>✅ Approved{p.approver_name ? ` by ${p.approver_name}` : ""} — ready to send.</p>}
+        {(p.approval_state === "changes" || p.approval_state === "rejected") && <p style={{ fontSize: 13 }}>↩ The approver sent this back ({p.approval_state}). Revise the lines in the lead, then submit again.</p>}
+        <div className="rowflex">
+          {mode === "proposal_review" && p.approval_state !== "pending" && p.approval_state !== "approved" && <button className="btn" disabled={busy === "submit"} onClick={submit}>{busy === "submit" ? "Submitting…" : "✋ Submit for approval"}</button>}
+          {(mode === "proposal_send" || p.approval_state === "approved") && p.approval_state !== "pending" && <button className="btn" disabled={busy === "send"} onClick={send}>{busy === "send" ? "Sending…" : "✉ Send proposal"}</button>}
+          <button className="btn ghost" onClick={() => { onClose(); openLead(item.lead_id); }}>Open lead</button>
+        </div>
+      </>)}
+      {note && <p style={{ color: "var(--risk)", fontSize: 13 }}>{note}</p>}
+    </>)}
+  </div></div>);
+}
+
 function WorkQueue({ openLead, openJob, go, me }: any) {
-  const [q, setQ] = useState<any>(null); const [typeF, setTypeF] = useState("all"); const [focus, setFocus] = useState(0); const [handling, setHandling] = useState<any>(null); const [handlingOver, setHandlingOver] = useState<any>(null);
+  const [q, setQ] = useState<any>(null); const [typeF, setTypeF] = useState("all"); const [focus, setFocus] = useState(0); const [handling, setHandling] = useState<any>(null); const [handlingOver, setHandlingOver] = useState<any>(null); const [handlingProp, setHandlingProp] = useState<any>(null);
   const [sel, setSel] = useState<Set<string>>(new Set()); const [team, setTeam] = useState<any[]>([]); const [bulkMsg, setBulkMsg] = useState("");
   useEffect(() => { api("/api/users").then(setTeam).catch(() => {}); }, []);
   const [keysOn, setKeysOn] = useState(() => { try { return localStorage.getItem("wp_keys") !== "off"; } catch { return true; } });
@@ -2929,11 +2968,11 @@ function WorkQueue({ openLead, openJob, go, me }: any) {
     if (e.key.toLowerCase() === "k") setFocus(f => Math.max(0, f - 1));
     if (e.key === "Enter" && items[focus]) act(items[focus]); };
     window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, [items, focus, keysOn]);
-  const act = (i: any) => { if (i.type === "approval") go({ view: "approvals" }); else if (i.type === "inbox") setHandling(i); else if (i.type === "followup_overdue") setHandlingOver(i); else if (i.job_id && i.type !== "followup_overdue" && i.type !== "lead_untouched" && i.type !== "proposal_cold" && i.type !== "proposal_viewed") openJob(i.job_id); else if (i.type === "field_report" || i.type === "timesheet") go({ view: "ops" }); else if (i.lead_id) openLead(i.lead_id); };
+  const act = (i: any) => { if (i.type === "approval") go({ view: "approvals" }); else if (i.type === "inbox") setHandling(i); else if (i.type === "followup_overdue") setHandlingOver(i); else if (i.type === "proposal_draft" || i.type === "proposal_review" || i.type === "proposal_send") setHandlingProp(i); else if (i.job_id && i.type !== "followup_overdue" && i.type !== "lead_untouched" && i.type !== "proposal_cold" && i.type !== "proposal_viewed") openJob(i.job_id); else if (i.type === "field_report" || i.type === "timesheet") go({ view: "ops" }); else if (i.lead_id) openLead(i.lead_id); };
   const doneQuick = async (i: any) => { if (i.type === "callback") await api(`/api/callbacks/${i.callback_id}/done`, { method: "POST", body: {} }); load(); };
   const assignMine = async (i: any) => { if (!me?.id || !i.lead_id) return; await api("/api/queue/bulk", { method: "POST", body: { lead_ids: [i.lead_id], action: "assign", assignee_id: me.id } }); setQ((prev: any) => prev ? { ...prev, items: prev.items.filter((x: any) => x.id !== i.id), total: Math.max(0, prev.total - 1) } : prev); toast("Assigned to you — it's off the untouched pile ✓"); };
   if (!q) return <p className="muted">Loading your pile…</p>;
-  const LBL: Record<string, string> = { handoff_failed: "⚠ Handoff failed", approval: "✋ Approval", callback: "📞 Callback", followup_overdue: "⏰ Overdue", lead_untouched: "🆕 Untouched", proposal_viewed: "👁 Viewed, unsigned", inbox: "✉ Inbox", proposal_cold: "🧊 Going cold", job_crew: "👷 Needs crew", paperwork: "📄 Paperwork", field_report: "📋 Field report", timesheet: "⏱ Timesheet" };
+  const LBL: Record<string, string> = { proposal_draft: "📝 Proposal", proposal_review: "✋ Proposal approval", proposal_send: "✉ Proposal ready", handoff_failed: "⚠ Handoff failed", approval: "✋ Approval", callback: "📞 Callback", followup_overdue: "⏰ Overdue", lead_untouched: "🆕 Untouched", proposal_viewed: "👁 Viewed, unsigned", inbox: "✉ Inbox", proposal_cold: "🧊 Going cold", job_crew: "👷 Needs crew", paperwork: "📄 Paperwork", field_report: "📋 Field report", timesheet: "⏱ Timesheet" };
   return (<div><h2 className="pt">Work Queue</h2><p className="sub">Everything that needs a human, worst-first — leads, email, approvals, jobs, paperwork. Work it to zero. <span className="muted">Keys: J/K move · Enter open</span></p>
     {selItems.length > 0 && <div className="card" style={{ padding: "10px 14px", marginBottom: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", background: "#f0fdf4" }}><b>{selItems.length} selected</b><select id="bulkAssign" style={{ width: 180 }} defaultValue=""><option value="">Assign to…</option>{team.filter((u: any) => u.permissions?.leads_scope !== "none").map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}</select><button className="btn small" onClick={() => { const v = (document.getElementById("bulkAssign") as HTMLSelectElement).value; if (v) bulk("assign", { assignee_id: v }); else setBulkMsg("Pick a person to assign to first."); }}>Assign</button><button className="btn ghost small" onClick={() => bulk("snooze", { days: 1 })}>Snooze 1d</button><button className="btn ghost small" onClick={() => bulk("snooze", { days: 3 })}>Snooze 3d</button><button className="btn ghost small" onClick={() => bulk("task", { title: "Follow up (bulk from queue)" })}>+ Follow-up task</button><button className="btn ghost small" onClick={() => setSel(new Set())}>Clear</button>{bulkMsg && <span className="muted">{bulkMsg}</span>}</div>}
     <div className="rowflex" style={{ marginBottom: 10 }}><button className={`chip ${typeF === "all" ? "on" : ""}`} onClick={() => setTypeF("all")}>All ({q.total})</button>{Object.entries(q.by_type || {}).map(([t, c]: any) => <button key={t} className={`chip ${typeF === t ? "on" : ""}`} onClick={() => setTypeF(t)}>{LBL[t] || t} ({c})</button>)}<button className="btn ghost small" onClick={load}>↻ Refresh</button><button className="chip" title="Single-key shortcuts in the queue (WCAG 2.1.4 — turn them off any time)" onClick={() => { const v = !keysOn; setKeysOn(v); try { localStorage.setItem("wp_keys", v ? "on" : "off"); } catch { /* private mode */ } }}>⌨ J/K shortcuts: {keysOn ? "on" : "off"}</button></div>
@@ -2944,8 +2983,9 @@ function WorkQueue({ openLead, openJob, go, me }: any) {
       <div className="qTitle"><b>{i.title}</b><span className="muted">{i.subtitle}</span></div>
       <span className="qQuick">{i.type === "callback" ? <button className="btn ghost small qDoneBtn" onClick={() => doneQuick(i)}>✓ Done</button> : i.type === "lead_untouched" ? <button className="btn ghost small qDoneBtn" title="Assign this lead to me — it leaves the untouched pile" onClick={() => assignMine(i)}>👤 Mine</button> : null}</span>
       <button className="btn small qBtn" onClick={() => act(i)}>{i.primary?.label || "Open"}</button></div>)}
-    {handling && <InboxHandleModal item={handling} onClose={() => setHandling(null)} onDone={() => { setHandling(null); load(); }} openLead={openLead} go={go} />}
+    {handling && <InboxHandleModal key={handling.id} item={handling} onClose={() => setHandling(null)} onDone={() => { setHandling(null); load(); }} openLead={openLead} go={go} />}
     {handlingOver && <OverdueHandleModal item={handlingOver} onClose={() => setHandlingOver(null)} onDone={() => { setHandlingOver(null); load(); }} openLead={openLead} />}
+    {handlingProp && <ProposalHandleModal item={handlingProp} onClose={() => setHandlingProp(null)} onDone={() => { setHandlingProp(null); load(); }} openLead={openLead} />}
   </div>);
 }
 
