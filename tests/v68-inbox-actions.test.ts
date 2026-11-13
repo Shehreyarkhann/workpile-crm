@@ -23,9 +23,9 @@ let wsId = ""; let mikeId = ""; let leadId = ""; let itemId = "";
 
 before(async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lf-v68-"));
-  process.env.LEADFLOW_DB = path.join(dir, "t.db"); process.chdir(dir);
+  process.env.LEADFLOW_DB = path.join(dir, "t.db"); process.chdir(dir); process.env.PORT = String(24000 + Math.floor(Math.random() * 8000));
   dbm = await import("../server/db.ts"); dbm.initSchema();
-  const { default: srv } = await import("../server/index.ts"); srv.unref();
+  await import("../server/index.ts"); // side-effect import: boots schema + worker (no default export)
   const appMod = await import("../server/app.ts");
   await new Promise<void>((res) => { const s = appMod.app.listen(0, () => { base = `http://127.0.0.1:${(s.address() as any).port}`; s.unref(); res(); }); });
   const reg = await call("POST", "/api/auth/register", { name: "Olive Owner", email: "owner68@demo.test", password: ["v68", "pw", "2202"].join("-"), business_name: "V68 Environmental" });

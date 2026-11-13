@@ -229,8 +229,10 @@ export function setStage(workspaceId: string, actor: string, lead: any, toRaw: s
     const alreadySent = prop.status === "sent" || !!prop.sent_at || !!prop.signed_at;
     if (!alreadySent) {
       const actorRole = (db.prepare("SELECT role FROM users WHERE id=?").get(actor) as any)?.role;
-      if (approvalRequiredFor(workspaceId, prop.total || 0, actorRole) && !approvedApprovalFor(workspaceId, prop.id))
-        return { error: "The proposal is drafted but not approved yet — it can't be marked Sent until an approver signs off. Send it from the proposal once approved.", code: "proposal_not_approved", status: 422 };
+      const appr = approvedApprovalFor(workspaceId, prop.id);
+      const apprStale = !!appr && !!appr.content_hash && appr.content_hash !== proposalContentHash(prop);
+      if (approvalRequiredFor(workspaceId, prop.total || 0, actorRole) && (!appr || apprStale))
+        return { error: apprStale ? "The proposal was edited after it was approved — it needs a fresh approval before it can be marked Sent." : "The proposal is drafted but not approved yet — it can't be marked Sent until an approver signs off. Send it from the proposal once approved.", code: "proposal_not_approved", status: 422 };
     }
   }
   if (toState === "QUALIFIED" && !lead.qualified_at) extra.qualified_at = now();
@@ -441,11 +443,14 @@ app.get("/api/leads/:id", requireAuth, (req: any, res) => {
   res.json({ lead: leadView(l), events, tasks, proposals, documents: docs, site_visits: visits, activities, approvals, next_step, job_id: jobsOfLead[0]?.id || null });
 });
 app.post("/api/leads/:id/transition", requireAuth, (req: any, res) => { // v2 route name, v3 engine.
-  // This compat/system route forces (internal flows, automations, older clients);
-  // interactive finals discipline (reason / WON confirmation) is enforced on /stage, the UI's route.
+  // Compat route name only — since v69 it enforces exactly the same discipline
+  // as /stage (it previously passed force:true, which let any signed-in user
+  // bypass the finals rules AND the v68 Sent gate). In-process callers use the
+  // transition() function directly and are unaffected.
   const l = db.prepare("SELECT * FROM leads WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!l) return res.status(404).json({ error: { code: "not_found" } });
-  const extra: any = { force: true };
+  if (scopeOwn(req.user) && !mine(req.user, l)) return res.status(404).json({ error: { code: "not_found" } });
+  const extra: any = {};
   for (const k of ["lost_reason", "outcome_reason_detail", "competitor", "hold_reason", "pm_id", "owner_id", "approver_id", "confirm_no_proposal", "note"]) if (req.body[k] !== undefined) extra[k] = req.body[k];
   const r: any = setStage(req.user.workspace_id, req.user.id, l, req.body.to_state, extra);
   if (r.error) return res.status(r.status || 400).json({ error: { code: r.code || "stage_failed", message: r.error }, missing: r.missing });
@@ -1390,6 +1395,7 @@ export function ingestBatch(ws: string, actorId: string, emails: any[]): { resul
       const r = createLead(ws, "inbox", { contact: { name: e.from_name || "", phone: parsed.phone, email: e.from_email || "" }, service_requested: "", message: `${e.subject || ""}\n${e.body || ""}`, source: "email-inbox", created_at: e.received_at, bulk: true });
       if (r.duplicate) duplicates++; else leads_created++;
       results.push({ category: "lead", lead_id: r.lead.id, duplicate: r.duplicate });
+      if (!r.duplicate) { try { db.prepare("INSERT INTO activities (id,lead_id,workspace_id,user_id,type,body,outcome,created_at) VALUES (?,?,?,?,?,?,?,?)").run(uid("act"), r.lead.id, ws, actorId, "email_in", `${e.from_name || ""} <${e.from_email || ""}>: ${e.subject || "(no subject)"} — ${String(e.body || "").slice(0, 240)}`, "", now()); } catch { /* logging never blocks ingest */ } }
     } else {
       // Known senders NEVER route to lead creation (a reply is not a new lead) —
       // their mail lands as a lead-linked inbox item so every downstream
@@ -1398,6 +1404,7 @@ export function ingestBatch(ws: string, actorId: string, emails: any[]): { resul
       db.prepare("INSERT INTO inbox_items (id,workspace_id,category,from_name,from_email,subject,body,owner_id,next_action_due_at,received_at,created_at,lead_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
         .run(id, ws, parsed.category, e.from_name || "", e.from_email || "", e.subject || "", e.body || "", ops?.id || actorId, new Date(Date.now() + 86400000).toISOString(), e.received_at || now(), now(), knownLeadId);
       results.push({ category: parsed.category, inbox_item_id: id, lead_id: knownLeadId || undefined });
+      if (knownLeadId) { try { db.prepare("INSERT INTO activities (id,lead_id,workspace_id,user_id,type,body,outcome,created_at) VALUES (?,?,?,?,?,?,?,?)").run(uid("act"), knownLeadId, ws, actorId, "email_in", `${e.from_name || ""} <${e.from_email || ""}>: ${e.subject || "(no subject)"} — ${String(e.body || "").slice(0, 240)}`, "", now()); } catch { /* logging never blocks ingest */ } }
       if (["client_active_job", "proposal"].includes(parsed.category)) important.push({ category: parsed.category, subject: e.subject || "(no subject)", from: e.from_name || e.from_email || "unknown" });
     }
   }
@@ -1870,7 +1877,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-export const APP_VERSION = "v68";
+export const APP_VERSION = "v70";
 app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: APP_VERSION, jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {
@@ -2386,6 +2393,7 @@ app.post("/api/proposals/:id/submit", requireAuth, (req: any, res) => {
   const p = db.prepare("SELECT * FROM proposals WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!p) return res.status(404).json({ error: { code: "not_found" } });
   const l = db.prepare("SELECT * FROM leads WHERE id=?").get(p.lead_id) as any;
+  if (scopeOwn(req.user) && !mine(req.user, l)) return res.status(404).json({ error: { code: "not_found" } });
   if (!approvalRequiredFor(req.user.workspace_id, p.total || 0, req.user.role)) return res.json({ state: "not_required" });
   const ap: any = maybeRequestApproval(req.user.workspace_id, req.user.id, l, p);
   res.json({ state: ap?.decision === "approved" ? "approved" : "pending", approval_id: ap?.id || null, approver_id: ap?.approver_id || null });
@@ -2394,6 +2402,7 @@ app.post("/api/proposals/:id/send", requireAuth, async (req: any, res) => {
   const p = db.prepare("SELECT * FROM proposals WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!p) return res.status(404).json({ error: { code: "not_found" } });
   const l = db.prepare("SELECT * FROM leads WHERE id=?").get(p.lead_id) as any; const v = leadView(l);
+  if (scopeOwn(req.user) && !mine(req.user, l)) return res.status(404).json({ error: { code: "not_found" } });
   // v3 §4.4: the only hard send-gate left is a policy-required approval that hasn't happened
   if (approvalRequiredFor(req.user.workspace_id, p.total || 0, req.user.role) && !approvedApprovalFor(req.user.workspace_id, p.id)) {
     const pend = maybeRequestApproval(req.user.workspace_id, req.user.id, l, p);

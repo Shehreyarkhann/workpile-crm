@@ -52,7 +52,7 @@ test("cadence: sending a proposal enrolls; the due step sends; finalizing stops 
   const msgs = await J(`/api/leads/${leadId}/messages`, {}, { Cookie: cookie });
   assert.ok(msgs.j.some((m: any) => String(m.body).includes("is ready")), "nudge body should be in the outbox history");
   // finalize WON via the real transition: enrollments stop + review email queued
-  const won = await J(`/api/leads/${leadId}/transition`, { method: "POST", body: { to_state: "WON" } }, { Cookie: cookie });
+  const won = await J(`/api/leads/${leadId}/transition`, { method: "POST", body: { to_state: "WON", confirm_no_proposal: true } }, { Cookie: cookie }); // v69: /transition enforces the same finals discipline as /stage — WON needs the explicit no-proposal confirmation
   assert.equal(won.status, 200);
   const fups2 = await J(`/api/leads/${leadId}/followups`, {}, { Cookie: cookie });
   assert.equal(fups2.j[0].status, "stopped"); assert.equal(fups2.j[0].stop_reason, "finalized");

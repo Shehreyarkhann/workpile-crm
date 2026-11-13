@@ -78,6 +78,7 @@ export async function sendInboxReply(wsId: string, item: any, body?: string, sub
   const refs = attachments === undefined ? validateAttachRefs(wsId, suggestAttachments(wsId, item)) : validateAttachRefs(wsId, attachments);
   const msg: any = await queueAndDeliver(wsId, { lead_id: item.lead_id || undefined, channel: "email", to: item.from_email, subject: String(subject || fb.draft_subject || ""), body: String(body || fb.draft_body || ""), attachments: refs });
   db.prepare("UPDATE inbox_items SET status='done', completed_at=? WHERE id=?").run(now(), item.id);
+  if (item.lead_id) { try { db.prepare("INSERT INTO activities (id,lead_id,workspace_id,user_id,type,body,outcome,created_at) VALUES (?,?,?,?,?,?,?,?)").run(uid("act"), item.lead_id, wsId, item.owner_id || "", "email_out", `Reply to ${item.from_email}: ${String(subject || fb.draft_subject || "")} — ${String(body || fb.draft_body || "").slice(0, 240)}`, String(msg.status || ""), now()); } catch { /* logging never blocks the send */ } }
   return { status: msg.status };
 }
 
