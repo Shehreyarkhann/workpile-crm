@@ -4,6 +4,7 @@
 // calendar, global search, favorites, report builder + dashboard pins.
 // Everything here works on the real tables — no dummy data paths.
 import { db, uid, now, audit, withTx } from "./db.ts";
+import { listSections, ensureSectionLibrary } from "./sections.ts";
 import { VERTICAL_PACKS } from "./templates.ts";
 import { storagePut, storageGet, storageDelete } from "./storage.ts";
 import { financialSummary, financeDrill } from "./metrics.ts";
@@ -602,6 +603,7 @@ export function ensureDocTemplates(workspaceId: string) {
   db.exec("CREATE TABLE IF NOT EXISTS doc_templates (id TEXT PRIMARY KEY, workspace_id TEXT, name TEXT, intro_html TEXT, terms_html TEXT, footer TEXT, include_logo INTEGER DEFAULT 1, is_default INTEGER DEFAULT 0, applies_to TEXT, kind TEXT DEFAULT 'proposal', created_at TEXT, updated_at TEXT)");
   try { db.exec("ALTER TABLE doc_templates ADD COLUMN applies_to TEXT"); } catch { /* already there */ }
   try { db.exec("ALTER TABLE doc_templates ADD COLUMN kind TEXT DEFAULT 'proposal'"); } catch { /* already there */ }
+  try { db.exec("ALTER TABLE doc_templates ADD COLUMN sections TEXT"); } catch { /* already there */ }
   // Defaults are PER KIND (v39): a workspace has a default proposal template
   // AND a default invoice template; they never clear each other.
   const nP = (db.prepare("SELECT COUNT(*) c FROM doc_templates WHERE workspace_id=? AND (kind IS NULL OR kind='proposal')").get(workspaceId) as any).c;
@@ -628,9 +630,18 @@ export function registerDocTemplates(app: any, requireAuth: any, needPerm: any =
   app.patch("/api/doc-templates/:id", requireAuth, settingsGuard, (req: any, res: any) => { const b = req.body || {}; const cur = db.prepare("SELECT * FROM doc_templates WHERE id=? AND workspace_id=?").get(req.params.id, ws(req)) as any; if (!cur) return err(res, 404, "not found");
     if (b.is_default) db.prepare("UPDATE doc_templates SET is_default=0 WHERE workspace_id=? AND (kind IS NULL OR kind=?)").run(ws(req), cur.kind || "proposal");
     const newDefault = b.is_default === undefined ? cur.is_default : (b.is_default ? 1 : 0);
-    db.prepare("UPDATE doc_templates SET name=?, intro_html=?, terms_html=?, footer=?, include_logo=?, is_default=?, applies_to=?, updated_at=? WHERE id=?")
-      .run((b.name ?? cur.name).slice(0, 120), sanitizeHtml(b.intro_html ?? cur.intro_html), sanitizeHtml(b.terms_html ?? cur.terms_html), String(b.footer ?? cur.footer).slice(0, 500), b.include_logo === undefined ? cur.include_logo : (b.include_logo ? 1 : 0), newDefault, b.applies_to === undefined ? cur.applies_to : (String(b.applies_to).slice(0, 120) || null), now(), req.params.id);
+    db.prepare("UPDATE doc_templates SET name=?, intro_html=?, terms_html=?, footer=?, include_logo=?, is_default=?, applies_to=?, sections=?, updated_at=? WHERE id=?")
+      .run((b.name ?? cur.name).slice(0, 120), sanitizeHtml(b.intro_html ?? cur.intro_html), sanitizeHtml(b.terms_html ?? cur.terms_html), String(b.footer ?? cur.footer).slice(0, 500), b.include_logo === undefined ? cur.include_logo : (b.include_logo ? 1 : 0), newDefault, b.applies_to === undefined ? cur.applies_to : (String(b.applies_to).slice(0, 120) || null), b.sections === undefined ? (cur.sections ?? null) : JSON.stringify((Array.isArray(b.sections) ? b.sections : []).map((x: any) => String(x)).slice(0, 40)), now(), req.params.id);
     res.json(db.prepare("SELECT * FROM doc_templates WHERE id=?").get(req.params.id)); });
+  // v79: numbered proposal section library — templates compose sections by number.
+  app.get("/api/template-sections", requireAuth, (req: any, res: any) => { res.json(listSections(ws(req))); });
+  app.post("/api/template-sections", requireAuth, settingsGuard, (req: any, res: any) => { const b = req.body || {}; ensureSectionLibrary(ws(req)); const next = Number((db.prepare("SELECT COALESCE(MAX(number),0) m FROM template_sections WHERE workspace_id=?").get(ws(req)) as any).m) + 1; const id = uid("sect");
+    db.prepare("INSERT INTO template_sections (id,workspace_id,number,title,body_html,created_at,updated_at) VALUES (?,?,?,?,?,?,?)").run(id, ws(req), Number(b.number) || next, String(b.title || "New section").slice(0, 120), sanitizeHtml(String(b.body_html || "")), now(), now());
+    res.status(201).json(db.prepare("SELECT * FROM template_sections WHERE id=?").get(id)); });
+  app.patch("/api/template-sections/:id", requireAuth, settingsGuard, (req: any, res: any) => { const b = req.body || {}; const cur = db.prepare("SELECT * FROM template_sections WHERE id=? AND workspace_id=?").get(req.params.id, ws(req)) as any; if (!cur) return err(res, 404, "not found");
+    db.prepare("UPDATE template_sections SET number=?, title=?, body_html=?, updated_at=? WHERE id=?").run(b.number === undefined ? cur.number : Number(b.number) || cur.number, (b.title ?? cur.title).slice(0, 120), sanitizeHtml(b.body_html ?? cur.body_html), now(), cur.id);
+    res.json(db.prepare("SELECT * FROM template_sections WHERE id=?").get(cur.id)); });
+  app.delete("/api/template-sections/:id", requireAuth, settingsGuard, (req: any, res: any) => { db.prepare("DELETE FROM template_sections WHERE id=? AND workspace_id=?").run(req.params.id, ws(req)); res.json({ ok: true }); });
   app.delete("/api/doc-templates/:id", requireAuth, settingsGuard, (req: any, res: any) => { const target = db.prepare("SELECT kind FROM doc_templates WHERE id=? AND workspace_id=?").get(req.params.id, ws(req)) as any; const rows = db.prepare("SELECT id, is_default FROM doc_templates WHERE workspace_id=? AND (kind IS NULL OR kind=?)").all(ws(req), target?.kind || "proposal") as any[]; if (rows.length <= 1) return err(res, 422, "Keep at least one template of this kind");
     const gone = rows.find(r => r.id === req.params.id); db.prepare("DELETE FROM doc_templates WHERE id=? AND workspace_id=?").run(req.params.id, ws(req));
     if (gone?.is_default) { const rest = db.prepare("SELECT id FROM doc_templates WHERE workspace_id=? ORDER BY created_at").get(ws(req)) as any; if (rest) db.prepare("UPDATE doc_templates SET is_default=1 WHERE id=?").run(rest.id); }

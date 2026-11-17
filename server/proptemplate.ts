@@ -2,6 +2,7 @@
 // One template per workspace: company header, rich-text intro + terms, footer.
 // Proposals render from it three ways: print/PDF page, DOCX, and the sign page data.
 import { db } from "./db.ts";
+import { sectionsForProposal } from "./sections.ts";
 
 const ALLOWED = new Set(["p", "br", "b", "strong", "i", "em", "u", "h3", "h4", "ul", "ol", "li", "div", "span", "img"]);
 export function sanitizeHtml(html: string): string {
@@ -100,6 +101,7 @@ export function proposalDocument(proposalId: string) {
     workspace_id: p.workspace_id,
     ref, proposal: { id: p.id, version: p.version, status: p.status, total: p.total, created_at: p.created_at, expires_at: p.expires_at || null, deposit_pct: p.deposit_pct || null, deposit_amount: p.deposit_amount || null, options: (() => { try { return JSON.parse(p.options || "null"); } catch { return null; } })(), selected_option: p.selected_option || null },
     items: JSON.parse(p.line_items || "[]"),
+    sections: sectionsForProposal(p),
     lead: { service_requested: lead?.service_requested, location: lead?.location, notes: lead?.notes },
     contact: { name: contact?.name, email: contact?.email, phone: contact?.phone },
     workspace_name: ws?.name,

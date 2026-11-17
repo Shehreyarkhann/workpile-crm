@@ -110,6 +110,7 @@ export function initSchema() {
     "ALTER TABLE inbox_items ADD COLUMN ai_attach TEXT",
     "ALTER TABLE inbox_items ADD COLUMN job_id TEXT",
     "ALTER TABLE proposals ADD COLUMN number INTEGER",
+    "ALTER TABLE proposals ADD COLUMN sections_snapshot TEXT",
     "ALTER TABLE workspaces ADD COLUMN reply_email TEXT",
     "ALTER TABLE inbox_items ADD COLUMN escalated_at TEXT",
     "ALTER TABLE jobs ADD COLUMN requires_site_visit INTEGER DEFAULT 0",

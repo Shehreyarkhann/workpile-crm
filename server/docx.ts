@@ -97,6 +97,7 @@ export async function proposalDocx(proposalId: string): Promise<{ buffer: Buffer
     new Table({ rows: investRows, width: { size: 100, type: WidthType.PERCENTAGE } }),
     ...(optionsTable ? [P("Options offered — the total above reflects the selected option.", { size: 18, color: GRAY, before: 140, after: 60 }), optionsTable] : []),
     ...(deposit ? [P(deposit, { before: 140 })] : []),
+    ...(d.sections || []).flatMap((sec: any) => [H(`Section ${sec.number} — ${sec.title}`), ...htmlToParagraphs(sec.body_html || "").map((x: any) => new Paragraph(x))]),
     H("Terms & Conditions"),
     ...htmlToParagraphs(t.terms_html).map(x => new Paragraph(x)),
     H("Acceptance"),

@@ -1620,6 +1620,7 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any)
   const [tab, setTab] = useState("workspace");
   const [s, setS] = useState<any>(null); const [msg, setMsg] = useState("");
   const [tpls, setTpls] = useState<any[]>([]); const [svcs, setSvcs] = useState<any[]>([]);
+  const [lib, setLib] = useState<any[]>([]); const [addPick, setAddPick] = useState("");
   const [keys, setKeys] = useState<any[]>([]); const [newKey, setNewKey] = useState(""); const [hooks, setHooks] = useState<any[]>([]); const [flags, setFlags] = useState<any>({}); const [oauth, setOauth] = useState<any>(null); const [catalog, setCatalog] = useState<any[]>([]); const [cfg, setCfg] = useState<string | null>(null); const [cfgMsg, setCfgMsg] = useState(""); const [syncRange, setSyncRange] = useState("30");
   useEffect(() => { api("/api/integrations").then(r => setCatalog(r.integrations)).catch(() => {}); }, []);
   const [nb, setNb] = useState<any>({ name: "", unit: "job", standard_price: "", floor_price: "" });
@@ -1657,7 +1658,7 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any)
     </tbody></table>
       <div className="rowflex" style={{ marginTop: 12 }}><input style={{ flex: 2 }} placeholder="New item name" value={nb.name} onChange={e => setNb({ ...nb, name: e.target.value })} /><input style={{ width: 90 }} placeholder="unit" value={nb.unit} onChange={e => setNb({ ...nb, unit: e.target.value })} /><input style={{ width: 120 }} type="number" placeholder="standard $" value={nb.standard_price} onChange={e => setNb({ ...nb, standard_price: e.target.value })} /><input style={{ width: 120 }} type="number" placeholder="floor $" value={nb.floor_price} onChange={e => setNb({ ...nb, floor_price: e.target.value })} /><button className="btn" onClick={async () => { await api("/api/price-book", { method: "POST", body: { ...nb, standard_price: Number(nb.standard_price) || 0, floor_price: Number(nb.floor_price) || 0 } }); setNb({ name: "", unit: "job", standard_price: "", floor_price: "" }); loadAll(); }}>Add item</button></div>
       <p className="muted">Proposals can only price from this book — the floor is the margin guardrail the Approval Gate enforces.</p></div>}
-    {tab === "templates" && canSettings && <div className="card"><VerticalPacksCard /><DocTemplatesEditor /><h3>Message templates</h3>{tpls.map(t => <div key={t.id} style={{ borderBottom: "1px solid #eef2f7", padding: "10px 0" }}><b>{t.name}</b> <span className="muted">· {t.kind} · v{t.version} · {t.active ? "active" : "inactive"}</span>{tplEdit?.id === t.id ? <><textarea rows={5} value={tplEdit.body} onChange={e => setTplEdit({ ...tplEdit, body: e.target.value })} /><span className="rowflex" style={{ marginTop: 6 }}><button className="btn small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "PATCH", body: { body: tplEdit.body } }); setTplEdit(null); loadAll(); }}>Save</button><button className="btn ghost small" onClick={() => setTplEdit(null)}>Cancel</button></span></> : <><p className="muted" style={{ whiteSpace: "pre-wrap" }}>{t.body}</p><button className="btn ghost small" onClick={() => setTplEdit({ id: t.id, body: t.body })}>Edit</button></>} <button className="btn ghost small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></div>)}
+    {tab === "templates" && canSettings && <div className="card"><VerticalPacksCard /><DocTemplatesEditor /><SectionLibraryManager /><h3>Message templates</h3>{tpls.map(t => <div key={t.id} style={{ borderBottom: "1px solid #eef2f7", padding: "10px 0" }}><b>{t.name}</b> <span className="muted">· {t.kind} · v{t.version} · {t.active ? "active" : "inactive"}</span>{tplEdit?.id === t.id ? <><textarea rows={5} value={tplEdit.body} onChange={e => setTplEdit({ ...tplEdit, body: e.target.value })} /><span className="rowflex" style={{ marginTop: 6 }}><button className="btn small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "PATCH", body: { body: tplEdit.body } }); setTplEdit(null); loadAll(); }}>Save</button><button className="btn ghost small" onClick={() => setTplEdit(null)}>Cancel</button></span></> : <><p className="muted" style={{ whiteSpace: "pre-wrap" }}>{t.body}</p><button className="btn ghost small" onClick={() => setTplEdit({ id: t.id, body: t.body })}>Edit</button></>} <button className="btn ghost small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></div>)}
       <div className="formgrid" style={{ marginTop: 12 }}><div><label className="f">New template name</label><input value={nt.name} onChange={e => setNt({ ...nt, name: e.target.value })} /></div><div className="full"><label className="f">Body (merge fields: {"{{contact_name}} {{service}} {{total}}"})</label><textarea rows={4} value={nt.body} onChange={e => setNt({ ...nt, body: e.target.value })} /></div></div>
       <button className="btn" style={{ marginTop: 10 }} onClick={async () => { await api("/api/templates", { method: "POST", body: nt }); setNt({ name: "", body: "" }); loadAll(); }}>Add template</button></div>}
     {tab === "services" && canSettings && <ServicesConsole svcs={svcs} reload={loadAll} />}
@@ -2552,15 +2553,43 @@ function RichText({ value, onChange, minH }: any) {
   </div>);
 }
 
+// v79 — the numbered proposal section library: templates compose these by number.
+function SectionLibraryManager() {
+  const [lib, setLib] = useState<any[]>([]); const [editId, setEditId] = useState(""); const [draft, setDraft] = useState<any>(null); const [msg, setMsg] = useState("");
+  const load = () => { api("/api/template-sections").then((l: any) => setLib(Array.isArray(l) ? l : [])).catch(() => {}); };
+  useEffect(load, []);
+  const save = async () => { if (!draft) return; try { if (draft.id) await api("/api/template-sections/" + draft.id, { method: "PATCH", body: draft }); else await api("/api/template-sections", { method: "POST", body: draft }); setEditId(""); setDraft(null); setMsg("Section saved ✓"); load(); } catch (e: any) { setMsg(e.message); } };
+  return <div style={{ marginTop: 22 }}><h3>📚 Proposal section library</h3>
+    <p className="muted">Your numbered building blocks. Each template picks the sections it needs — by number — in the order they should print: header → line items → your sections → terms → footer. Edit the words once here and every NEW proposal uses them; proposals already issued keep the sections they were built with.</p>
+    {msg && <div className="ok">{msg}</div>}
+    {lib.map((sec: any) => <div key={sec.id} style={{ borderBottom: "1px solid #eef2f7", padding: "8px 0" }}>
+      <div className="rowflex"><b style={{ color: "#0E5C3A", minWidth: 86 }}>Section {sec.number}</b><b style={{ flex: 1 }}>{sec.title}</b>
+      <button className="btn ghost small" onClick={() => { setEditId(sec.id); setDraft({ id: sec.id, number: sec.number, title: sec.title, body_html: sec.body_html || "" }); }}>Edit</button>
+      <button className="btn ghost small" onClick={async () => { if (!confirm(`Delete Section ${sec.number} — ${sec.title}? Templates that use it will simply skip it.`)) return; await api("/api/template-sections/" + sec.id, { method: "DELETE" }); load(); }}>Delete</button></div>
+      {editId === sec.id && draft && <div style={{ marginTop: 8 }}>
+        <div className="rowflex"><label className="f" style={{ width: 110 }}>Number<input type="number" value={draft.number} onChange={e => setDraft({ ...draft, number: Number(e.target.value) || 0 })} /></label>
+        <label className="f" style={{ flex: 1 }}>Title<input value={draft.title} onChange={e => setDraft({ ...draft, title: e.target.value })} /></label></div>
+        <RichText value={draft.body_html} onChange={(v: string) => setDraft({ ...draft, body_html: v })} />
+        <div className="rowflex" style={{ marginTop: 6 }}><button className="btn small" onClick={save}>Save section</button><button className="btn ghost small" onClick={() => { setEditId(""); setDraft(null); }}>Cancel</button></div>
+      </div>}
+    </div>)}
+    {editId === "new" && draft ? <div style={{ marginTop: 10 }}>
+      <div className="rowflex"><label className="f" style={{ width: 110 }}>Number<input type="number" value={draft.number} onChange={e => setDraft({ ...draft, number: Number(e.target.value) || 0 })} /></label>
+      <label className="f" style={{ flex: 1 }}>Title<input value={draft.title} onChange={e => setDraft({ ...draft, title: e.target.value })} /></label></div>
+      <RichText value={draft.body_html} onChange={(v: string) => setDraft({ ...draft, body_html: v })} />
+      <div className="rowflex" style={{ marginTop: 6 }}><button className="btn small" onClick={save}>Add section</button><button className="btn ghost small" onClick={() => { setEditId(""); setDraft(null); }}>Cancel</button></div>
+    </div> : <button className="btn ghost small" style={{ marginTop: 10 }} onClick={() => { const next = (lib.reduce((m: number, x: any) => Math.max(m, x.number || 0), 0) || 0) + 1; setEditId("new"); setDraft({ number: next, title: "", body_html: "" }); }}>+ Add section</button>}
+  </div>;
+}
 function DocTemplatesEditor() {
   const [list, setList] = useState<any[]>([]); const [selId, setSelId] = useState(""); const [form, setForm] = useState<any>(null);
   const [head, setHead] = useState<any>(null); const [msg, setMsg] = useState(""); const [showPrev, setShowPrev] = useState(false);
   const [kind, setKind] = useState("proposal");
-  const formOf = (t: any) => ({ name: t.name, intro_html: t.intro_html, terms_html: t.terms_html, footer: t.footer, include_logo: !!t.include_logo, applies_to: t.applies_to || "" });
+  const formOf = (t: any) => ({ name: t.name, intro_html: t.intro_html, terms_html: t.terms_html, footer: t.footer, include_logo: !!t.include_logo, applies_to: t.applies_to || "", sections: (() => { try { const v = JSON.parse(t.sections || "[]"); return Array.isArray(v) ? v : []; } catch { return []; } })() });
   const load = async (keep?: string, k?: string) => { const l = await api("/api/doc-templates").catch(() => []); setList(l); const kk = k || kind; const fl = l.filter((t: any) => (t.kind || "proposal") === kk); const pick = fl.find((t: any) => t.id === (keep || selId)) || fl.find((t: any) => t.is_default) || fl[0]; if (pick) { setSelId(pick.id); setForm(formOf(pick)); } };
   const switchKind = (k: string) => { setKind(k); const fl = list.filter((t: any) => (t.kind || "proposal") === k); const pick = fl.find((t: any) => t.is_default) || fl[0]; if (pick) { setSelId(pick.id); setForm(formOf(pick)); } };
   const [svcs, setSvcs] = useState<any[]>([]);
-  useEffect(() => { load(); api("/api/proposal-template").then(setHead).catch(() => {}); api("/api/services").then(setSvcs).catch(() => {}); }, []);
+  useEffect(() => { load(); api("/api/proposal-template").then(setHead).catch(() => {}); api("/api/services").then(setSvcs).catch(() => {}); api("/api/template-sections").then((l: any) => setLib(Array.isArray(l) ? l : [])).catch(() => {}); }, []);
   const sel = list.find(t => t.id === selId);
   const sample = (h: string) => String(h || "").replaceAll("{customer}", "Angela Ruiz").replaceAll("{service}", "Mold remediation").replaceAll("{total}", "$4,800.00").replaceAll("{date}", "Nov 10, 2026").replaceAll("{ref}", "PROP-1001").replaceAll("{business}", head?.company || "Your Company").replaceAll("{location}", "Bay Shore, NY");
   const pickFile = (cb: (d: string) => void, maxW = 480) => { const inp = document.createElement("input"); inp.type = "file"; inp.accept = "image/*"; inp.onchange = () => { const f = inp.files?.[0]; if (!f) return; const img = new Image(); img.onload = () => { const c = document.createElement("canvas"); const sc = Math.min(1, maxW / img.width); c.width = Math.round(img.width * sc); c.height = Math.round(img.height * sc); c.getContext("2d")?.drawImage(img, 0, 0, c.width, c.height); cb(c.toDataURL("image/png")); }; img.src = URL.createObjectURL(f); }; inp.click(); };
@@ -2594,6 +2623,16 @@ function DocTemplatesEditor() {
       <div><label className="f">Logo on this template</label><label className="check" style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}><input type="checkbox" style={{ width: "auto" }} checked={!!form.include_logo} onChange={e => setForm({ ...form, include_logo: e.target.checked })} /> Print the company logo at the top</label></div>
       <div className="full"><label className="f">Intro — above the line items</label><RichText value={form.intro_html} onChange={(v: string) => setForm({ ...form, intro_html: v })} /></div>
       <div className="full"><label className="f">Terms & conditions — below the total</label><RichText value={form.terms_html} onChange={(v: string) => setForm({ ...form, terms_html: v })} /></div>
+      {kind === "proposal" && <div className="full"><label className="f">Sections in this template — printed between the line items and the terms, in this order</label>
+        {(form.sections || []).length === 0 && <p className="muted" style={{ margin: "2px 0 6px" }}>No sections yet — this template prints header, line items, terms, footer only. Add the numbered sections it should carry:</p>}
+        {(form.sections || []).map((sid: string, ix: number) => { const sec = lib.find((x: any) => x.id === sid); return <div key={sid + ix} className="rowflex" style={{ padding: "4px 0", borderBottom: "1px dashed #E3EAE5" }}><b style={{ color: "#0E5C3A", minWidth: 86 }}>Section {sec?.number ?? "?"}</b><span style={{ flex: 1 }}>{sec?.title || "(deleted from library)"}</span>
+          <button className="btn ghost small" disabled={ix === 0} onClick={() => { const arr = [...form.sections]; [arr[ix - 1], arr[ix]] = [arr[ix], arr[ix - 1]]; setForm({ ...form, sections: arr }); }}>↑</button>
+          <button className="btn ghost small" disabled={ix === form.sections.length - 1} onClick={() => { const arr = [...form.sections]; [arr[ix + 1], arr[ix]] = [arr[ix], arr[ix + 1]]; setForm({ ...form, sections: arr }); }}>↓</button>
+          <button className="btn ghost small" onClick={() => setForm({ ...form, sections: form.sections.filter((_: string, i: number) => i !== ix) })}>✕</button></div>; })}
+        <div className="rowflex" style={{ marginTop: 6 }}><select value={addPick} onChange={e => setAddPick(e.target.value)}><option value="">Add a section…</option>{lib.filter((x: any) => !(form.sections || []).includes(x.id)).map((x: any) => <option key={x.id} value={x.id}>Section {x.number} — {x.title}</option>)}</select>
+        <button className="btn ghost small" onClick={() => { if (!addPick) return; setForm({ ...form, sections: [...(form.sections || []), addPick] }); setAddPick(""); }}>+ Add</button>
+        <span className="muted" style={{ fontSize: 12 }}>Manage the words in the Section library below ↓</span></div>
+      </div>}
       <div className="full"><label className="f">Footer</label><input value={form.footer} onChange={e => setForm({ ...form, footer: e.target.value })} /></div>
     </div>
     <div className="rowflex" style={{ marginTop: 10 }}>
