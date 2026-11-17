@@ -3,6 +3,7 @@
 // otherwise a clearly flagged ESTIMATE line from the lead value — never an invented price.
 import { db, uid, now } from "./db.ts";
 import { resolveDocTemplateId } from "./proptemplate.ts";
+import { assignQuoteNo } from "./numbering.ts";
 
 // v52: a newer version supersedes every older unsigned one — stale versions
 // are withdrawn so they can never be signed at a stale price, and their
@@ -23,6 +24,7 @@ export function draftProposalForLead(ws: string, lead: any): { proposal_id: stri
   const pnum = (db.prepare("SELECT COALESCE(MAX(number),1000) m FROM proposals WHERE workspace_id=?").get(ws) as any).m + 1;
   db.prepare("INSERT INTO proposals (id,workspace_id,lead_id,template_id,version,status,line_items,total,margin_band,win_prob_band,options,expires_at,created_at,number) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
     .run(id, ws, lead.id, resolveDocTemplateId(ws, lead.service_requested), count + 1, "draft", JSON.stringify([line]), line.line_total, "in_band", (line.line_total || 0) > 25000 ? "review" : "standard", null, new Date(Date.now() + 30 * 86400000).toISOString(), now(), pnum);
+  assignQuoteNo(ws, id);
   supersedePriorVersions(ws, lead.id, id);
   return { proposal_id: id, total: line.line_total, priced: pb ? "price_book" : "estimate" };
 }

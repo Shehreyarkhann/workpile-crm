@@ -255,6 +255,14 @@ export function initSchema() {
     "ALTER TABLE inbox_items ADD COLUMN claimed_at TEXT",
     "ALTER TABLE change_orders ADD COLUMN job_id TEXT",
     "ALTER TABLE documents ADD COLUMN job_id TEXT",
+    // v77 chain numbering (docs/CHAIN-MODEL.md)
+    "ALTER TABLE leads ADD COLUMN lead_no TEXT",
+    "ALTER TABLE proposals ADD COLUMN quote_no TEXT",
+    "ALTER TABLE jobs ADD COLUMN project_no TEXT",
+    "ALTER TABLE jobs ADD COLUMN project_serial INTEGER",
+    "ALTER TABLE jobs ADD COLUMN project_iter INTEGER DEFAULT 0",
+    // v78 work orders ride the job schedule when set
+    "ALTER TABLE job_schedule ADD COLUMN work_order_id TEXT",
   ]) { try { db.exec(stmt); } catch { /* already present */ } }
   // ---- v3 stage migration (idempotent): v2 states -> v3 stages; ON_HOLD becomes a flag ----
   try {
