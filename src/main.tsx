@@ -1620,7 +1620,6 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any)
   const [tab, setTab] = useState("workspace");
   const [s, setS] = useState<any>(null); const [msg, setMsg] = useState("");
   const [tpls, setTpls] = useState<any[]>([]); const [svcs, setSvcs] = useState<any[]>([]);
-  const [lib, setLib] = useState<any[]>([]); const [addPick, setAddPick] = useState("");
   const [keys, setKeys] = useState<any[]>([]); const [newKey, setNewKey] = useState(""); const [hooks, setHooks] = useState<any[]>([]); const [flags, setFlags] = useState<any>({}); const [oauth, setOauth] = useState<any>(null); const [catalog, setCatalog] = useState<any[]>([]); const [cfg, setCfg] = useState<string | null>(null); const [cfgMsg, setCfgMsg] = useState(""); const [syncRange, setSyncRange] = useState("30");
   useEffect(() => { api("/api/integrations").then(r => setCatalog(r.integrations)).catch(() => {}); }, []);
   const [nb, setNb] = useState<any>({ name: "", unit: "job", standard_price: "", floor_price: "" });
@@ -2589,6 +2588,7 @@ function DocTemplatesEditor() {
   const load = async (keep?: string, k?: string) => { const l = await api("/api/doc-templates").catch(() => []); setList(l); const kk = k || kind; const fl = l.filter((t: any) => (t.kind || "proposal") === kk); const pick = fl.find((t: any) => t.id === (keep || selId)) || fl.find((t: any) => t.is_default) || fl[0]; if (pick) { setSelId(pick.id); setForm(formOf(pick)); } };
   const switchKind = (k: string) => { setKind(k); const fl = list.filter((t: any) => (t.kind || "proposal") === k); const pick = fl.find((t: any) => t.is_default) || fl[0]; if (pick) { setSelId(pick.id); setForm(formOf(pick)); } };
   const [svcs, setSvcs] = useState<any[]>([]);
+  const [lib, setLib] = useState<any[]>([]); const [addPick, setAddPick] = useState("");
   useEffect(() => { load(); api("/api/proposal-template").then(setHead).catch(() => {}); api("/api/services").then(setSvcs).catch(() => {}); api("/api/template-sections").then((l: any) => setLib(Array.isArray(l) ? l : [])).catch(() => {}); }, []);
   const sel = list.find(t => t.id === selId);
   const sample = (h: string) => String(h || "").replaceAll("{customer}", "Angela Ruiz").replaceAll("{service}", "Mold remediation").replaceAll("{total}", "$4,800.00").replaceAll("{date}", "Nov 10, 2026").replaceAll("{ref}", "PROP-1001").replaceAll("{business}", head?.company || "Your Company").replaceAll("{location}", "Bay Shore, NY");
