@@ -9,6 +9,8 @@ import { db, uid, now } from "./db.ts";
 import { touchLead } from "./touch.ts";
 import { queueAndDeliver, notify } from "./comms.ts";
 import { draftProposalForLead } from "./proposals-core.ts";
+import { assignProjectNo } from "./numbering.ts";
+import { ensureDefaultWorkOrder } from "./work-orders.ts";
 import { inboxSuggestion, sendInboxReply, convertInboxItem } from "./inbox-ai.ts";
 import { suggestInboxAction } from "./inbox.ts";
 
@@ -120,7 +122,7 @@ export const TOOLS: Record<string, ToolDef> = {
     run(ws, _a, args) { const l = leadOf(ws, args.lead_id); if (!l) throw new Error("lead not found in this workspace");
       if (l.state !== "WON") throw new Error(`lead is ${l.state}, not WON — job creation refused`);
       const ex = db.prepare("SELECT id FROM jobs WHERE lead_id=?").get(l.id) as any; if (ex) return { summary: "Job already exists for this lead.", refs: { lead_id: l.id, job_id: ex.id } };
-      const id = uid("job"); db.prepare("INSERT INTO jobs (id,workspace_id,lead_id,proposal_id,stage,value,created_at,updated_at) VALUES (?,?,?,?,?,'AWAITING_SCHEDULING',?,?,?)").run(id, ws, l.id, (db.prepare("SELECT id FROM proposals WHERE lead_id=? AND status='signed' ORDER BY version DESC LIMIT 1").get(l.id) as any)?.id || null, l.est_value || 0, now(), now());
+      const id = uid("job"); assignProjectNo(ws, id); ensureDefaultWorkOrder(ws, db.prepare("SELECT * FROM jobs WHERE id=?").get(id)); db.prepare("INSERT INTO jobs (id,workspace_id,lead_id,proposal_id,stage,value,created_at,updated_at) VALUES (?,?,?,?,?,'AWAITING_SCHEDULING',?,?,?)").run(id, ws, l.id, (db.prepare("SELECT id FROM proposals WHERE lead_id=? AND status='signed' ORDER BY version DESC LIMIT 1").get(l.id) as any)?.id || null, l.est_value || 0, now(), now());
       return { summary: `Job created for ${l.service_requested} (${money(l.est_value)}).`, refs: { lead_id: l.id, job_id: id } }; } },
   schedule_job: { name: "schedule_job", description: "Put a lead's job on the calendar for a work date (defaults to tomorrow). Reports a conflict instead of double-booking the same person.", control: "execute",
     parameters: { type: "object", properties: { lead_id: { type: "string" }, work_date: { type: "string", description: "YYYY-MM-DD" }, user_id: { type: "string" } }, required: ["lead_id"] },
