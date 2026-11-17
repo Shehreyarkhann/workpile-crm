@@ -6,6 +6,7 @@ import { triageLead, packetCheck, demandGap, demandPool, injectionScan } from ".
 import { assignLeadNo, assignQuoteNo, assignProjectNo, bumpProjectIteration, ensureNumbers } from "./numbering.ts";
 import { WO_STATUSES, createWorkOrder, listWorkOrders, decorateWO, ensureDefaultWorkOrder } from "./work-orders.ts";
 import { snapshotForTemplate } from "./sections.ts";
+import { BUILTIN_ROLES, EDITABLE_BUILTINS, getCustomRole, listCustomRoles, isAssignableRole, createCustomRole } from "./custom-roles.ts";
 import { metrics, morningBrief } from "./metrics.ts";
 import { parseEmail, parseMbox, parseEmailCsv, suggestInboxAction, inboxPriority } from "./inbox.ts";
 import { proposalDocx, invoiceDocx } from "./docx.ts";
@@ -200,7 +201,11 @@ export function maybeRequestApproval(workspaceId: string, actor: string, lead: a
   if (pend) return pend;
   const appr = approvedApprovalFor(workspaceId, proposal.id);
   if (appr) return appr;
-  const approver = lead.approver_id || (db.prepare("SELECT id FROM users WHERE workspace_id=? AND role IN ('OWNER','OPS_ADMIN','APPROVER') ORDER BY CASE role WHEN 'OWNER' THEN 0 WHEN 'OPS_ADMIN' THEN 1 ELSE 2 END LIMIT 1").get(workspaceId) as any)?.id;
+  let approver = lead.approver_id || (db.prepare("SELECT id FROM users WHERE workspace_id=? AND role IN ('OWNER','OPS_ADMIN','APPROVER') ORDER BY CASE role WHEN 'OWNER' THEN 0 WHEN 'OPS_ADMIN' THEN 1 ELSE 2 END LIMIT 1").get(workspaceId) as any)?.id;
+  if (!approver) { // v80: a custom role with can_approve is an approver too
+    const members = db.prepare("SELECT * FROM users WHERE workspace_id=? AND active=1 ORDER BY created_at").all(workspaceId) as any[];
+    approver = members.find(u => { try { return permsOf(u).can_approve; } catch { return false; } })?.id;
+  }
   const id = uid("apr");
   db.prepare("INSERT INTO approvals (id,workspace_id,lead_id,proposal_id,submitted_by,approver_id,tier,submitted_at) VALUES (?,?,?,?,?,?,?,?)")
     .run(id, workspaceId, lead.id, proposal.id, actor, approver, (proposal.total || 0) > 25000 ? "ceo" : "manager", now());
@@ -354,7 +359,10 @@ export function roleTemplate(wsId: string, role: string): Perms | null {
   const key = wsId + ":" + role; const hit = roleTplCache.get(key);
   if (hit && Date.now() - hit.at < 30000) return hit.perms;
   let perms: Perms | null = null;
-  try { const row = db.prepare("SELECT perms FROM role_perms WHERE workspace_id=? AND role=?").get(wsId, role) as any; if (row?.perms) { const p = JSON.parse(row.perms); perms = { ...defaultPermsFor(role), ...p, modules: { ...mods("none"), ...(defaultPermsFor(role).modules || {}), ...(p.modules || {}) } }; } } catch { perms = null; }
+  // v80: a custom role's defaults are its base role's defaults.
+  const baseRole = getCustomRole(wsId, role)?.base_role || role;
+  try { const row = db.prepare("SELECT perms FROM role_perms WHERE workspace_id=? AND role=?").get(wsId, role) as any; if (row?.perms) { const p = JSON.parse(row.perms); perms = { ...defaultPermsFor(baseRole), ...p, modules: { ...mods("none"), ...(defaultPermsFor(baseRole).modules || {}), ...(p.modules || {}) } }; } } catch { perms = null; }
+  if (!perms && baseRole !== role) perms = defaultPermsFor(baseRole);
   roleTplCache.set(key, { at: Date.now(), perms }); return perms;
 }
 export function clearRoleTplCache(wsId?: string) { if (!wsId) { roleTplCache.clear(); return; } for (const k of [...roleTplCache.keys()]) if (k.startsWith(wsId + ":")) roleTplCache.delete(k); }
@@ -1990,7 +1998,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-export const APP_VERSION = "v79";
+export const APP_VERSION = "v80";
 app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: APP_VERSION, jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {
@@ -2235,7 +2243,7 @@ app.post("/api/change-orders", requireAuth, (req: any, res) => {
 app.post("/api/change-orders/:id/decide", requireAuth, (req: any, res) => {
   const co = db.prepare("SELECT * FROM change_orders WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!co || co.status !== "pending_approval") return res.status(404).json({ error: { code: "not_found_or_decided" } });
-  if (!["OWNER", "APPROVER", "ADMIN"].includes(req.user.role)) return res.status(403).json({ error: { code: "not_approver" } });
+  if (!["OWNER", "APPROVER", "ADMIN"].includes(req.user.role) && !permsOf(req.user).can_approve) return res.status(403).json({ error: { code: "not_approver" } });
   const decision = req.body.decision === "approved" ? "approved" : "rejected";
   if (decision === "rejected" && !req.body.reason_code) return res.status(422).json({ error: { code: "reason_required" } });
   db.prepare("UPDATE change_orders SET status=? WHERE id=?").run(decision, co.id);
@@ -2730,8 +2738,8 @@ app.patch("/api/services/:id", requireAuth, needPerm("can_settings"), (req: any,
 // Team CRUD
 app.post("/api/users", requireAuth, (req: any, res) => { if (!["OWNER", "ADMIN"].includes(req.user.role)) return res.status(403).json({ error: { code: "owner_or_admin" } });
   const sc = seatCheck(req.user.workspace_id);
-  if (!sc.ok) return res.status(422).json({ error: { code: "seat_limit", message: `Your ${sc.plan} plan includes ${sc.limit} office user${sc.limit === 1 ? "" : "s"} and all ${sc.used} are in use. Upgrade the plan in Billing to add more people — field crew on the roster never count.` } }); const id = uid("usr"); db.prepare("INSERT INTO users (id,workspace_id,name,email,password_hash,role,approval_limit) VALUES (?,?,?,?,?,?,?)").run(id, req.user.workspace_id, req.body.name, req.body.email, hashPassword(req.body.password || "changeme123"), req.body.role || "LEAD_OWNER", req.body.approval_limit || 0); res.status(201).json({ id, name: req.body.name, email: req.body.email, role: req.body.role || "LEAD_OWNER" }); });
-app.patch("/api/users/:id", requireAuth, (req: any, res) => { if (!["OWNER", "ADMIN"].includes(req.user.role)) return res.status(403).json({ error: { code: "owner_or_admin" } }); db.prepare("UPDATE users SET role=COALESCE(?,role), approval_limit=COALESCE(?,approval_limit), active=COALESCE(?,active) WHERE id=? AND workspace_id=?").run(req.body.role ?? null, req.body.approval_limit ?? null, req.body.active === undefined ? null : (req.body.active ? 1 : 0), req.params.id, req.user.workspace_id); res.json({ ok: true }); });
+  if (!sc.ok) return res.status(422).json({ error: { code: "seat_limit", message: `Your ${sc.plan} plan includes ${sc.limit} office user${sc.limit === 1 ? "" : "s"} and all ${sc.used} are in use. Upgrade the plan in Billing to add more people — field crew on the roster never count.` } }); if (req.body.role && !isAssignableRole(req.user.workspace_id, req.body.role)) return res.status(422).json({ error: { code: "bad_role" } }); const id = uid("usr"); db.prepare("INSERT INTO users (id,workspace_id,name,email,password_hash,role,approval_limit) VALUES (?,?,?,?,?,?,?)").run(id, req.user.workspace_id, req.body.name, req.body.email, hashPassword(req.body.password || "changeme123"), req.body.role || "LEAD_OWNER", req.body.approval_limit || 0); res.status(201).json({ id, name: req.body.name, email: req.body.email, role: req.body.role || "LEAD_OWNER" }); });
+app.patch("/api/users/:id", requireAuth, (req: any, res) => { if (!["OWNER", "ADMIN"].includes(req.user.role)) return res.status(403).json({ error: { code: "owner_or_admin" } }); if (req.body.role && !isAssignableRole(req.user.workspace_id, req.body.role)) return res.status(422).json({ error: { code: "bad_role" } }); db.prepare("UPDATE users SET role=COALESCE(?,role), approval_limit=COALESCE(?,approval_limit), active=COALESCE(?,active) WHERE id=? AND workspace_id=?").run(req.body.role ?? null, req.body.approval_limit ?? null, req.body.active === undefined ? null : (req.body.active ? 1 : 0), req.params.id, req.user.workspace_id); res.json({ ok: true }); });
 
 // Workspace settings
 const WS_DTO = ["id","name","vertical","timezone","tz","plan","logo_data","agent_level","autonomy_level","quiet_start","quiet_end","deposit_pct","trial_ends_at","booking_slug","booking_enabled","from_name","from_email","reply_email","approval_policy","approval_threshold","business_hours","created_at","last_sync_at","sync_enabled","auto_score","auto_assign","auto_dedupe","auto_reactivate","followup_enabled","followup_steps","cadence_paused","review_url","review_on_won","missed_call_text","pt_company","pt_tagline","pt_intro","pt_terms","pt_footer","pt_contact","pt_address","pt_version","pt_at","llm_provider","llm_model"];
@@ -2915,14 +2923,16 @@ app.post("/api/public/book", async (req: any, res) => {
 });
 app.get("/api/roles", requireAuth, needPerm("can_manage_team"), (req: any, res) => {
   const ws = req.user.workspace_id;
-  const roles = ["OWNER", "ADMIN", "OPS_ADMIN", "APPROVER", "LEAD_OWNER", "PM"].map(role => ({ role, defaults: defaultPermsFor(role), template: roleTemplate(ws, role), effective: role === "OWNER" ? defaultPermsFor("OWNER") : (roleTemplate(ws, role) || defaultPermsFor(role)) }));
+  const roles: any[] = BUILTIN_ROLES.map(role => ({ role, defaults: defaultPermsFor(role), template: roleTemplate(ws, role), effective: role === "OWNER" ? defaultPermsFor("OWNER") : (roleTemplate(ws, role) || defaultPermsFor(role)) }));
+  for (const cr of listCustomRoles(ws)) roles.push({ role: cr.id, name: cr.name, title: cr.title, is_custom: true, base_role: cr.base_role, defaults: defaultPermsFor(cr.base_role), template: roleTemplate(ws, cr.id), effective: roleTemplate(ws, cr.id) || defaultPermsFor(cr.base_role) });
   res.json({ roles, modules: MODULES });
 });
 app.put("/api/roles/:role", requireAuth, (req: any, res) => {
   if (req.user.role !== "OWNER") return res.status(403).json({ error: { code: "owner_only", message: "Only the owner can change role templates." } });
   const role = String(req.params.role);
-  if (!["ADMIN", "OPS_ADMIN", "APPROVER", "LEAD_OWNER", "PM"].includes(role)) return res.status(422).json({ error: { code: "bad_role", message: "The OWNER role is always full access and cannot be edited." } });
-  const clean = sanitizePerms(req.body?.perms || {}, roleTemplate(req.user.workspace_id, role) || defaultPermsFor(role));
+  const custom = getCustomRole(req.user.workspace_id, role);
+  if (!EDITABLE_BUILTINS.includes(role) && !custom) return res.status(422).json({ error: { code: "bad_role", message: "The OWNER role is always full access and cannot be edited." } });
+  const clean = sanitizePerms(req.body?.perms || {}, roleTemplate(req.user.workspace_id, role) || defaultPermsFor(custom?.base_role || role));
   db.prepare("INSERT INTO role_perms (workspace_id, role, perms, updated_by, updated_at) VALUES (?,?,?,?,?) ON CONFLICT(workspace_id, role) DO UPDATE SET perms=excluded.perms, updated_by=excluded.updated_by, updated_at=excluded.updated_at").run(req.user.workspace_id, role, JSON.stringify(clean), req.user.id, now());
   clearRoleTplCache(req.user.workspace_id);
   audit(req.user.workspace_id, req.user.id, "roles.template_change", "role", role, clean);
@@ -2934,12 +2944,51 @@ app.delete("/api/roles/:role", requireAuth, (req: any, res) => {
   clearRoleTplCache(req.user.workspace_id);
   res.json({ ok: true, defaults: defaultPermsFor(String(req.params.role)) });
 });
+// v80: custom role lifecycle (owner-only). Permissions themselves are edited
+// through PUT /api/roles/:role — the custom id is a first-class role there.
+app.post("/api/roles/custom", requireAuth, (req: any, res) => {
+  if (req.user.role !== "OWNER") return res.status(403).json({ error: { code: "owner_only", message: "Only the owner can create roles." } });
+  const b = req.body || {};
+  const name = String(b.name || "").trim().slice(0, 60); const title = String(b.title || "").trim().slice(0, 80);
+  const base = EDITABLE_BUILTINS.includes(b.base_role) ? b.base_role : "LEAD_OWNER";
+  if (!name) return res.status(422).json({ error: { code: "name_required", message: "Give the role a name." } });
+  if (listCustomRoles(req.user.workspace_id).some(r => r.name.toLowerCase() === name.toLowerCase())) return res.status(422).json({ error: { code: "name_taken", message: "A custom role with that name already exists." } });
+  const cr = createCustomRole(req.user.workspace_id, req.user.id, name, title, base);
+  const startPerms = roleTemplate(req.user.workspace_id, base) || defaultPermsFor(base);
+  db.prepare("INSERT INTO role_perms (workspace_id, role, perms, updated_by, updated_at) VALUES (?,?,?,?,?) ON CONFLICT(workspace_id, role) DO UPDATE SET perms=excluded.perms, updated_by=excluded.updated_by, updated_at=excluded.updated_at").run(req.user.workspace_id, cr.id, JSON.stringify(startPerms), req.user.id, now());
+  clearRoleTplCache(req.user.workspace_id);
+  audit(req.user.workspace_id, req.user.id, "roles.custom_create", "role", cr.id, { name, title, base_role: base });
+  res.status(201).json({ role: cr.id, name: cr.name, title: cr.title, is_custom: true, base_role: base, effective: startPerms });
+});
+app.patch("/api/roles/custom/:id", requireAuth, (req: any, res) => {
+  if (req.user.role !== "OWNER") return res.status(403).json({ error: { code: "owner_only" } });
+  const cr = getCustomRole(req.user.workspace_id, req.params.id);
+  if (!cr) return res.status(404).json({ error: { code: "not_found" } });
+  const b = req.body || {};
+  const name = b.name === undefined ? cr.name : String(b.name).trim().slice(0, 60);
+  const title = b.title === undefined ? cr.title : String(b.title).trim().slice(0, 80);
+  if (!name) return res.status(422).json({ error: { code: "name_required" } });
+  db.prepare("UPDATE custom_roles SET name=?, title=?, updated_at=? WHERE id=?").run(name, title, now(), cr.id);
+  res.json(db.prepare("SELECT * FROM custom_roles WHERE id=?").get(cr.id));
+});
+app.delete("/api/roles/custom/:id", requireAuth, (req: any, res) => {
+  if (req.user.role !== "OWNER") return res.status(403).json({ error: { code: "owner_only" } });
+  const cr = getCustomRole(req.user.workspace_id, req.params.id);
+  if (!cr) return res.status(404).json({ error: { code: "not_found" } });
+  const used = Number((db.prepare("SELECT COUNT(*) c FROM users WHERE workspace_id=? AND role=?").get(req.user.workspace_id, cr.id) as any).c);
+  if (used > 0) return res.status(422).json({ error: { code: "role_in_use", message: `${used} team member${used === 1 ? "" : "s"} still hold${used === 1 ? "s" : ""} the "${cr.name}" role — reassign them first, then delete it.` } });
+  db.prepare("DELETE FROM custom_roles WHERE id=? AND workspace_id=?").run(cr.id, req.user.workspace_id);
+  db.prepare("DELETE FROM role_perms WHERE workspace_id=? AND role=?").run(req.user.workspace_id, cr.id);
+  clearRoleTplCache(req.user.workspace_id);
+  audit(req.user.workspace_id, req.user.id, "roles.custom_delete", "role", cr.id, { name: cr.name });
+  res.json({ ok: true });
+});
 app.patch("/api/team/:id", requireAuth, needPerm("can_manage_team"), (req: any, res) => {
   const t = db.prepare("SELECT * FROM users WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!t) return res.status(404).json({ error: { code: "not_found" } });
   if (t.role === "OWNER" && req.user.role !== "OWNER") return res.status(403).json({ error: { code: "owner_immutable" } });
   if (req.body.role !== undefined) {
-    if (!["OWNER", "ADMIN", "OPS_ADMIN", "APPROVER", "LEAD_OWNER", "PM"].includes(req.body.role)) return res.status(422).json({ error: { code: "bad_role" } });
+    if (!isAssignableRole(req.user.workspace_id, req.body.role)) return res.status(422).json({ error: { code: "bad_role" } });
     if (req.body.role === "OWNER" && req.user.role !== "OWNER") return res.status(403).json({ error: { code: "only_owner_grants_owner" } });
     db.prepare("UPDATE users SET role=? WHERE id=?").run(req.body.role, t.id);
   }
@@ -3012,7 +3061,7 @@ app.get("/api/myday", requireAuth, (req: any, res) => {
   const overdue_tasks = db.prepare(`SELECT t.*, c.name contact_name, l.service_requested FROM tasks t JOIN leads l ON l.id=t.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE t.workspace_id=? AND t.assignee_id=? AND t.status='open' AND t.due_at<? ORDER BY t.due_at LIMIT 12`).all(ws, me, start.toISOString());
   const today_tasks = db.prepare(`SELECT t.*, c.name contact_name, l.service_requested FROM tasks t JOIN leads l ON l.id=t.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE t.workspace_id=? AND t.assignee_id=? AND t.status='open' AND t.due_at>=? AND t.due_at<? ORDER BY t.due_at LIMIT 12`).all(ws, me, start.toISOString(), tomorrow);
   const my_leads_due = db.prepare(`SELECT l.*, c.name contact_name FROM leads l LEFT JOIN contacts c ON c.id=l.contact_id WHERE l.workspace_id=? AND l.owner_id=? AND l.state NOT IN ('WON','LOST','NO_RESPONSE','UNSERVICEABLE','JUNK','DUPLICATE') AND l.next_action_due_at IS NOT NULL AND l.next_action_due_at<? ORDER BY l.next_action_due_at LIMIT 12`).all(ws, me, tomorrow);
-  const canApprove = ["OWNER", "APPROVER", "ADMIN"].includes(req.user.role);
+  const canApprove = ["OWNER", "APPROVER", "ADMIN"].includes(req.user.role) || permsOf(req.user).can_approve;
   const approvals_waiting = canApprove ? db.prepare(`SELECT a.id, a.lead_id, a.submitted_at, a.tier, c.name contact_name, l.service_requested, l.est_value FROM approvals a JOIN leads l ON l.id=a.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE a.workspace_id=? AND a.decision IS NULL ORDER BY a.submitted_at LIMIT 6`).all(ws) : [];
   const followups_due = db.prepare(`SELECT f.*, c.name contact_name, l.service_requested FROM followup_enrollments f JOIN leads l ON l.id=f.lead_id LEFT JOIN contacts c ON c.id=l.contact_id WHERE f.workspace_id=? AND f.status='active' AND f.next_due_at<? ORDER BY f.next_due_at LIMIT 6`).all(ws, tomorrow);
   const wins = db.prepare(`SELECT COUNT(*) c, COALESCE(SUM(est_value),0) v FROM leads WHERE workspace_id=? AND state='WON' AND updated_at>=?`).get(ws, new Date(Date.now() - 7 * 86400000).toISOString()) as any;
