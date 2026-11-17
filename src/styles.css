@@ -767,26 +767,30 @@ aside.rail button.on .nshort { background:#ffffff22; }
 .copComposer{border-top:1px solid #e2e8f0;padding:12px 14px}
 @media (max-width:900px){.copGrid{grid-template-columns:1fr}.copRail{position:static}}
 
-/* v83: top-bar navigation — 56px bar, one baseline, 8pt spacing system */
+/* v84: top-bar navigation — attached menus, one baseline, quiet type */
 .topLayout { flex-direction: column; }
 .topLayout main { width: 100%; }
 .topLayout .topbar { position: static; }
 .tnScrim { position: fixed; inset: 0; z-index: 44; background: transparent; }
-.topnav { position: sticky; top: 0; z-index: 45; height: 56px; display: flex; align-items: center; gap: 8px; padding: 0 20px; background: rgba(255,255,255,.94); backdrop-filter: saturate(1.4) blur(8px); border-bottom: 1px solid var(--line); flex-wrap: nowrap; }
-.tnBrand { display: flex; align-items: center; flex: none; margin-right: 20px; }
+.topnav { position: sticky; top: 0; z-index: 45; height: 56px; display: flex; align-items: center; gap: 8px; padding: 0 20px; background: #fff; border-bottom: 1px solid var(--line); flex-wrap: nowrap; }
+.tnBrand { display: flex; align-items: center; flex: none; }
 .tnBrand .ltxt { font-size: 16.5px; }
+.tnBrandDiv { width: 1px; height: 24px; background: var(--line); flex: none; margin: 0 14px 0 18px; }
 .tnGroups { display: flex; align-items: center; gap: 2px; flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .tnGroups::-webkit-scrollbar { display: none; }
 .tnGroup { position: relative; flex: none; }
-.tnBtn { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px; background: none; border: 0; border-radius: 8px; font: inherit; font-size: 12px; font-weight: 650; letter-spacing: .07em; color: #43534A; cursor: pointer; white-space: nowrap; transition: background .12s ease, color .12s ease; }
+.tnBtn { position: relative; display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px; background: none; border: 0; border-radius: 9px; font: inherit; font-size: 13.5px; font-weight: 550; letter-spacing: .01em; color: #3D4A42; cursor: pointer; white-space: nowrap; transition: background .12s ease, color .12s ease; }
 .tnBtn:hover { background: #F2F6F3; color: var(--ink); }
-.tnBtn.open { background: #EDF3EE; color: var(--ink); }
-.tnBtn.on { color: var(--pine); background: #E9F4EC; }
-.tnCaret { flex: none; opacity: .55; transition: transform .15s ease; }
+.tnBtn.on { color: var(--pine); background: #E9F4EC; font-weight: 600; }
+.tnBtn:focus-visible, .tnItem:focus-visible, .tnProfile:focus-visible { outline: 2px solid var(--pine); outline-offset: 2px; }
+.tnBtn.open { background: #fff; color: var(--ink); box-shadow: inset 0 0 0 1px #E0E8E1; border-radius: 10px 10px 0 0; z-index: 61; }
+.tnBtn.open::after { content: ""; position: absolute; left: 1px; right: 1px; bottom: -2px; height: 3px; background: #fff; }
+.tnBtn.open.on { background: #fff; }
+.tnCaret { flex: none; opacity: .5; transition: transform .15s ease; }
 .tnBtn.open .tnCaret { transform: rotate(180deg); }
-.tnPanel { min-width: 232px; background: #fff; border: 1px solid #E3EAE4; border-radius: 12px; box-shadow: 0 4px 12px rgba(16,22,19,.05), 0 16px 40px rgba(16,22,19,.13); padding: 6px; z-index: 60; animation: tnIn .13s ease; }
-@keyframes tnIn { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
-.tnItem { display: flex; align-items: center; gap: 9px; width: 100%; height: 34px; padding: 0 10px; background: none; border: 0; border-radius: 8px; font: inherit; font-size: 13.5px; font-weight: 500; color: #22302A; text-align: left; cursor: pointer; transition: background .1s ease; }
+.tnPanel { min-width: 248px; background: #fff; border: 1px solid #E0E8E1; border-radius: 4px 14px 14px 14px; box-shadow: 0 1px 2px rgba(16,22,19,.05), 0 16px 36px rgba(16,22,19,.13); padding: 6px; z-index: 60; animation: tnIn .12s ease; }
+@keyframes tnIn { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; transform: none; } }
+.tnItem { display: flex; align-items: center; gap: 9px; width: 100%; height: 36px; padding: 0 10px; background: none; border: 0; border-radius: 8px; font: inherit; font-size: 13.5px; font-weight: 500; color: #22302A; text-align: left; cursor: pointer; transition: background .1s ease; }
 .tnItem:hover { background: #F2F6F3; }
 .tnItem.on { background: #E9F4EC; color: var(--pine); font-weight: 600; }
 .tnDot { width: 6px; height: 6px; border-radius: 99px; background: var(--pine); flex: none; opacity: 0; }
@@ -794,7 +798,7 @@ aside.rail button.on .nshort { background:#ffffff22; }
 .tnCnt { margin-left: auto; background: #DC2626; color: #fff; border-radius: 99px; font-size: 11px; line-height: 1; padding: 3px 7px; font-weight: 700; }
 .tnSpacer { flex: 1 1 auto; min-width: 8px; }
 .tnDivider { width: 1px; height: 24px; background: var(--line); flex: none; margin: 0 8px; }
-.tnWs { height: 36px; max-width: 190px; margin: 0; padding: 0 8px; border: 1px solid var(--line); border-radius: 8px; background: #fff; font-size: 13px; font-weight: 500; color: var(--ink); text-overflow: ellipsis; }
+.tnWs { height: 36px; max-width: 190px; margin: 0; padding: 0 8px; border: 1px solid var(--line); border-radius: 8px; background: #fff; font-size: 13px; font-weight: 550; color: var(--ink); text-overflow: ellipsis; cursor: pointer; }
 .tnProfile { display: flex; align-items: center; gap: 10px; height: 40px; padding: 4px 10px 4px 4px; background: none; border: 0; border-radius: 10px; cursor: pointer; font: inherit; text-align: left; flex: none; transition: background .12s ease; }
 .tnProfile:hover { background: #F2F6F3; }
 .tnProfile .pcMeta { display: flex; flex-direction: column; line-height: 1.15; }
@@ -802,8 +806,8 @@ aside.rail button.on .nshort { background:#ffffff22; }
 .tnProfile .pcMeta span { font-size: 10.5px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--slate); }
 @media (max-width: 760px) {
   .topnav { padding: 0 12px; gap: 4px; }
-  .tnBrand { margin-right: 8px; }
   .tnBrand .ltxt { display: none; }
+  .tnBrandDiv { margin: 0 6px; }
   .tnBtn { padding: 0 9px; }
   .tnWs { max-width: 128px; }
   .tnProfile { padding: 4px; }
