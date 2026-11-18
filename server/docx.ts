@@ -120,6 +120,9 @@ export async function invoiceDocx(invoiceId: string, payUrl: string): Promise<{ 
   const job = inv.job_id ? db.prepare("SELECT * FROM jobs WHERE id=?").get(inv.job_id) as any : null;
   const lines = JSON.parse(inv.lines || "[]") as any[];
   const balance = Math.round(((inv.total || 0) - (inv.paid_amount || 0)) * 100) / 100;
+  const depCredit = Math.round((((db.prepare("SELECT COALESCE(SUM(amount),0) v FROM payments WHERE invoice_id=? AND kind='deposit_credit' AND status='applied'").get(inv.id) as any)?.v || 0)) * 100) / 100;
+  const depTaken = inv.lead_id ? (db.prepare("SELECT p.amount, p.paid_at, p.created_at, pr.quote_no, pr.number FROM payments p JOIN proposals pr ON pr.id=p.proposal_id WHERE p.workspace_id=? AND pr.lead_id=? AND p.status='paid' AND (p.kind='deposit' OR p.kind IS NULL) ORDER BY p.paid_at").all(inv.workspace_id, inv.lead_id) as any[]) : [];
+  const otherPaid = Math.round(((inv.paid_amount || 0) - depCredit) * 100) / 100;
   const money = (n: any) => "$" + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   let logoPara: Paragraph | null = null;
   if (t.logo && /^data:image\/(png|jpeg|jpg);base64,/.test(t.logo)) {
@@ -149,7 +152,8 @@ export async function invoiceDocx(invoiceId: string, payUrl: string): Promise<{ 
     new TableRow({ children: [head("DESCRIPTION", 52), head("QTY", 10, true), head("UNIT PRICE", 18, true), head("AMOUNT", 20, true)] }),
     ...lines.map((l: any) => new TableRow({ children: [td2(String(l.description || l.name || "Service"), 52), td2(String(l.qty ?? 1), 10, { right: true }), td2(money(l.unit_price), 18, { right: true }), td2(money(l.line_total ?? (Number(l.unit_price || 0) * (l.qty || 1))), 20, { right: true })] })),
     new TableRow({ children: [td2("", 52), td2("", 10), td2("TOTAL", 18, { right: true, bold: true }), td2(money(inv.total), 20, { right: true, bold: true })] }),
-    ...(Number(inv.paid_amount || 0) > 0 ? [new TableRow({ children: [td2("", 52), td2("", 10), td2("PAID", 18, { right: true }), td2(money(inv.paid_amount), 20, { right: true })] })] : []),
+    ...(depCredit > 0 ? [new TableRow({ children: [td2("", 52), td2("", 10), td2("DEPOSIT APPLIED", 18, { right: true }), td2("-" + money(depCredit), 20, { right: true })] })] : []),
+    ...(otherPaid > 0 ? [new TableRow({ children: [td2("", 52), td2("", 10), td2("PAID", 18, { right: true }), td2(money(otherPaid), 20, { right: true })] })] : []),
     new TableRow({ children: [new TableCell({ width: { size: 80, type: WidthType.PERCENTAGE }, shading: shade(PINE), borders: cellBorders(PINE), children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: "BALANCE DUE", bold: true, size: 20, color: "FFFFFF", font: "Calibri" })] })] }), new TableCell({ width: { size: 20, type: WidthType.PERCENTAGE }, shading: shade(PINE), borders: cellBorders(PINE), children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: money(balance), bold: true, size: 20, color: "FFFFFF", font: "Calibri" })] })] })] }),
   ] });
   const footer = new Footer({ children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: `${t.company} · Invoice ${inv.number} · Page `, size: 16, color: GRAY, font: "Calibri" }), new TextRun({ size: 16, color: GRAY, font: "Calibri", children: [PageNumber.CURRENT] })] })] });
@@ -160,6 +164,7 @@ export async function invoiceDocx(invoiceId: string, payUrl: string): Promise<{ 
     meta,
     H("Charges"),
     itemsTable,
+    ...(depCredit > 0 ? [P(`Deposit: ${depTaken.map((t: any) => `${money(t.amount)} collected on ${new Date(t.paid_at || t.created_at).toLocaleDateString()} (${t.quote_no || "PROP-" + t.number})`).join("; ")} — ${money(depCredit)} has been applied to this invoice. Remaining balance: ${money(balance)}.`, { before: 140 })] : []),
     ...htmlToParagraphs(t.intro_html || "").map((s: string) => P(s)),
     ...(balance > 0 ? [H("Payment"), P(`Please pay the balance of ${money(balance)}${inv.due_at ? " by " + new Date(inv.due_at).toLocaleDateString() : ""}. You can pay online here: ${payUrl}`)] : [H("Payment"), P("Paid in full — thank you. This invoice is settled.")]),
     H("Terms"), ...htmlToParagraphs(t.terms_html || "").map((s: string) => P(s)),

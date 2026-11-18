@@ -15,6 +15,8 @@ export async function createDeposit(proposalId: string, baseUrl: string): Promis
   const p = db.prepare("SELECT * FROM proposals WHERE id=?").get(proposalId) as any;
   if (!p) return null;
   const ws = db.prepare("SELECT * FROM workspaces WHERE id=?").get(p.workspace_id) as any;
+  const pending = db.prepare("SELECT * FROM payments WHERE proposal_id=? AND kind='deposit' AND status='pending' ORDER BY created_at DESC").get(p.id) as any;
+  if (pending) return pending;
   const pct = ws.deposit_pct ?? 25;
   const amount = Math.round(p.total * pct) / 100;
   const id = uid("pay");
