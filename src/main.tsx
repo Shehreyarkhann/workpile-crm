@@ -1058,6 +1058,9 @@ function Imports() {
   useEffect(load, []);
   const run = async () => { try { const r = await api("/api/imports/csv", { method: "POST", body: { csv, filename: "web-import.csv", format } }); setRes(r); load(); } catch (e: any) { setMsg(e.message); } };
   const onFile = (f: File) => f.text().then(t => setCsv(t));
+  const [xFile, setXFile] = useState<any>(null); const [xPlan, setXPlan] = useState<any>(null); const [xRes, setXRes] = useState<any>(null); const [xBusy, setXBusy] = useState(false);
+  const onSheet = (f: File) => { const rd = new FileReader(); rd.onload = async () => { const b64 = String(rd.result || "").split(",")[1] || ""; setXFile({ name: f.name, b64 }); setXRes(null); setXPlan(null); setXBusy(true); try { setXPlan(await api("/api/imports/spreadsheet", { method: "POST", body: { filename: f.name, data_base64: b64, dry_run: true } })); } catch (e: any) { setMsg(e.message); } setXBusy(false); }; rd.readAsDataURL(f); };
+  const runSheet = async () => { if (!xFile) return; setXBusy(true); try { const r = await api("/api/imports/spreadsheet", { method: "POST", body: { filename: xFile.name, data_base64: xFile.b64 } }); setXRes(r); setXPlan(null); load(); } catch (e: any) { setMsg(e.message); } setXBusy(false); };
   const [eFmt, setEFmt] = useState("mbox"); const [eContent, setEContent] = useState(""); const [eRes, setERes] = useState<any>(null); const [eBusy, setEBusy] = useState(false);
   const [bands, setBands] = useState<any>(null); const [cPrev, setCPrev] = useState<any>(null); const [cActs, setCActs] = useState<any>({ dedupe: true, spam: true, score: true, assign: false }); const [cRes, setCRes] = useState<any>(null);
   const loadBands = () => { api("/api/backlog/bands").then(setBands).catch(() => {}); };
@@ -1074,7 +1077,23 @@ function Imports() {
       <details className="srcGuide"><summary>📧 Company email (@yourcompany.com)</summary><ol><li>History: export the mailbox (Gmail Takeout .mbox / Outlook export) and drop it in step 2 below — every message is triaged into leads and owned inbox items.</li><li>Live sync that works today: a Zapier/Make automation — Trigger: new email in the company inbox → Action: Webhooks POST to <span className="mono">{location.origin}/v1/inbox</span> with your API key (full recipe in Settings → Integrations → Gmail + Outlook).</li><li>Once mail flows, prioritization is automatic: proposal and active-job mail is ⚡ HOT, urgent language or overdue follow-ups are 🔥 URGENT, and hot mail that waits too long ESCALATES to the owners with a bell alert.</li><li>One-click native Gmail/Outlook connect is built but waiting on platform app registration — the status in Integrations says so honestly rather than faking a connection.</li></ol></details>
       <details className="srcGuide"><summary>📄 Just a spreadsheet / CSV file</summary><ol><li>Use step 1 below — headers auto-map (name, phone, email, service, value, location).</li><li>Test with 10 rows first, verify created/duplicates, then run the full file.</li><li>Then run Backlog health (bottom of this page) to score and clean the pile.</li></ol></details>
     </div>
-    <div className="card"><h3>1 · Choose file or paste CSV</h3>
+    <div className="card"><h3 style={{ marginTop: 0 }}>1 · Client spreadsheet (Excel / CSV) — stages mapped for you</h3>
+      <p className="muted" style={{ marginTop: 0 }}>Drop the tracker as-is — headers like <b>STATUS, LEAD/QUOTE/SURVEY, CLIENT NAME, SERVICE REQUESTED, ASSIGNED TO, PROJECT TYPE, SERVICE LOCATION, FOLLOW-UP NOTES, FOLLOW-UP DATE, RECOMMENDED STATUS</b> are recognized. <b>Lead → New, Survey → Working, Quote → Proposal stage, Sent Quote → Sent</b> (Won, Lost and the rest map too). Assignees match your team by name; follow-up notes become the next step, follow-up dates become its due date; Project Type, Recommended Status and Lead/Quote/Survey are kept as fields on the lead. You see the full mapping before anything is created.</p>
+      <input type="file" accept=".xlsx,.xls,.csv" onChange={e => e.target.files && e.target.files[0] && onSheet(e.target.files[0])} />
+      {xBusy && <p className="muted">Reading the sheet…</p>}
+      {xPlan && <div style={{ marginTop: 10 }}>
+        <p style={{ margin: "4px 0" }}><b>{xPlan.total_rows} rows</b> in <b>{xFile?.name}</b> — they'll land in these stages:</p>
+        <div className="rowflex">{Object.entries(xPlan.by_stage).map(([k, v]: any) => <span className="st info" key={k}>{k}: {v}</span>)}</div>
+        <table style={{ marginTop: 8 }}><thead><tr><th>Client</th><th>Service</th><th>Status in sheet → stage</th><th>Assigned</th><th>Follow-up</th></tr></thead><tbody>
+          {xPlan.sample.map((r: any, i: number) => <tr key={i}><td>{r.client_name || "—"}</td><td>{r.service || "—"}</td><td>{r.stage_raw || "—"} → <b>{r.stage}</b></td><td>{r.assignee_raw || "—"}{r.assignee_raw && !r.assignee_id ? " (no match)" : ""}</td><td>{r.follow_due ? dt(r.follow_due) : "—"}</td></tr>)}
+        </tbody></table>
+        {xPlan.unmapped_statuses.length > 0 && <p className="muted">Unrecognized statuses land as <b>New</b> leads (nothing is dropped): {xPlan.unmapped_statuses.map((u: any) => `${u.value} × ${u.count}`).join(" · ")}</p>}
+        {xPlan.unmatched_assignees.length > 0 && <p className="muted">Assignees with no team match (they'll import unassigned — add them in Settings → Team, or the name must match exactly): {xPlan.unmatched_assignees.map((u: any) => `${u.name} × ${u.count}`).join(" · ")}</p>}
+        <div className="rowflex" style={{ marginTop: 8 }}><button className="btn" disabled={xBusy} onClick={runSheet}>Import {xPlan.total_rows} rows</button><button className="btn ghost" onClick={() => { setXPlan(null); setXFile(null); }}>Cancel</button></div>
+      </div>}
+      {xRes && <p className="ok">Imported {xRes.created} leads · {xRes.duplicates} duplicates skipped — by stage: {Object.entries(xRes.by_stage).map(([k, v]: any) => `${k} ${v}`).join(" · ")}</p>}
+    </div>
+    <div className="card"><h3>1b · …or paste CSV</h3>
       <div className="rowflex" style={{ marginBottom: 8 }}><label className="f" style={{ margin: 0 }}>This export came from</label><select style={{ width: 230 }} value={format} onChange={e => setFormat(e.target.value)}><option value="generic">Generic CSV</option><option value="jobber">Jobber</option><option value="housecallpro">Housecall Pro</option><option value="servicetitan">ServiceTitan</option><option value="salesforce">Salesforce</option></select><span className="muted">Vendor exports import as-is — no column surgery in Excel first.</span></div>
       <input type="file" accept=".csv" onChange={e => e.target.files && onFile(e.target.files[0])} />
       <textarea rows={9} style={{ marginTop: 10 }} value={csv} onChange={e => setCsv(e.target.value)} />
