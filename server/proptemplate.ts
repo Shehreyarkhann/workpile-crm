@@ -91,7 +91,7 @@ export function proposalDocument(proposalId: string) {
   // by created_at order, so a printed reference never changes afterwards.
   let pnum = p.number as number | null;
   if (!pnum) { pnum = ((db.prepare("SELECT COALESCE(MAX(number),1000) m FROM proposals WHERE workspace_id=?").get(p.workspace_id) as any).m || 1000) + 1; try { db.prepare("UPDATE proposals SET number=? WHERE id=? AND number IS NULL").run(pnum, p.id); } catch { /* read-only replica safety */ } }
-  const ref = "PROP-" + pnum;
+  const ref = p.quote_no || "PROP-" + pnum; // v87: the Q number is the quote identity (v77 chain); PROP-#### remains only as the legacy fallback
   const ctx: Record<string, string> = {
     customer: contact?.name || "", business: tpl.company, service: lead?.service_requested || "",
     total: "$" + Number(p.total || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
