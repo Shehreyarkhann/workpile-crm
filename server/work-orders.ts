@@ -23,7 +23,9 @@ export function decorateWO(ws: string, wo: any, job?: any): any {
     LEFT JOIN workers w ON w.id = c.worker_id LEFT JOIN users u ON u.id = c.user_id WHERE c.work_order_id=?`).all(wo.id);
   const photos = Number((db.prepare("SELECT COUNT(*) c FROM attachments WHERE workspace_id=? AND entity_type='work_order' AND entity_id=?").get(ws, wo.id) as any).c);
   const pm = wo.pm_id ? (db.prepare("SELECT name FROM users WHERE id=?").get(wo.pm_id) as any)?.name || null : null;
-  return { ...wo, display_no: woDisplayNo(j, wo.seq), crew, photo_count: photos, pm_name: pm };
+  let insp = { total: 0, open: 0, failed: 0 };
+  try { const r = db.prepare("SELECT COUNT(*) t, SUM(CASE WHEN status IN ('scheduled','in_progress','submitted') THEN 1 ELSE 0 END) o, SUM(CASE WHEN status='closed' AND result='failed' THEN 1 ELSE 0 END) f FROM inspections WHERE workspace_id=? AND work_order_id=?").get(ws, wo.id) as any; insp = { total: r?.t || 0, open: r?.o || 0, failed: r?.f || 0 }; } catch { /* inspections module not loaded in this context */ }
+  return { ...wo, display_no: woDisplayNo(j, wo.seq), crew, photo_count: photos, pm_name: pm, inspections: insp };
 }
 export function listWorkOrders(ws: string, jobId: string): any[] {
   const job = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(jobId, ws) as any;

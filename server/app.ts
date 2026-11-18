@@ -5,6 +5,7 @@ import { db, uid, now, hashPassword, verifyPassword, apiKeyHash, logEvent, audit
 import { triageLead, packetCheck, demandGap, demandPool, injectionScan } from "./agents.ts";
 import { assignLeadNo, assignQuoteNo, assignProjectNo, bumpProjectIteration, ensureNumbers } from "./numbering.ts";
 import { WO_STATUSES, createWorkOrder, listWorkOrders, decorateWO, ensureDefaultWorkOrder } from "./work-orders.ts";
+import { ensureInspTemplates, createInspection, decorateInsp, inspProgress, inspectionGateForWO, photoRequiredMissing, logInspEvent, parseSections, INSP_RESULTS } from "./inspections.ts";
 import { snapshotForTemplate } from "./sections.ts";
 import { BUILTIN_ROLES, EDITABLE_BUILTINS, getCustomRole, listCustomRoles, isAssignableRole, createCustomRole } from "./custom-roles.ts";
 import { parseSheet, planSheetImport, STAGE_NEXT_ACTION } from "./sheet-import.ts";
@@ -1191,7 +1192,8 @@ app.get("/api/projects", requireAuth, modGate("jobs"), (req: any, res) => {
     .filter((j: any) => jobVisible(req.user, j)).map((j: any) => {
       const v = jobView(j);
       const wo = db.prepare("SELECT COUNT(*) t, SUM(CASE WHEN status NOT IN ('completed','cancelled') THEN 1 ELSE 0 END) o, MIN(CASE WHEN status NOT IN ('completed','cancelled') THEN scheduled_start END) nxt FROM work_orders WHERE job_id=?").get(j.id) as any;
-      return { ...v, wo_total: wo?.t || 0, wo_open: wo?.o || 0, wo_next: wo?.nxt || null };
+      const ins = (() => { try { return db.prepare("SELECT COUNT(*) t, SUM(CASE WHEN status IN ('scheduled','in_progress','submitted') THEN 1 ELSE 0 END) o, SUM(CASE WHEN status='closed' AND result='failed' THEN 1 ELSE 0 END) f FROM inspections WHERE job_id=?").get(j.id) as any; } catch { return null; } })();
+      return { ...v, wo_total: wo?.t || 0, wo_open: wo?.o || 0, wo_next: wo?.nxt || null, insp_total: ins?.t || 0, insp_open: ins?.o || 0, insp_failed: ins?.f || 0 };
     });
   res.json(rows);
 });
@@ -1219,6 +1221,14 @@ app.patch("/api/work-orders/:id", requireAuth, modGate("jobs", "edit"), (req: an
   if (!wo) return res.status(404).json({ error: { code: "not_found" } });
   const b = req.body || {};
   const status = b.status !== undefined ? (WO_STATUSES.includes(b.status) ? b.status : wo.status) : wo.status;
+  if (status === "completed" && wo.status !== "completed") {
+    const gate = inspectionGateForWO(req.user.workspace_id, wo.id);
+    if (gate.blocked) {
+      const reason = String(b.override_reason || "").trim();
+      if (!(["OWNER", "OPS_ADMIN"].includes(req.user.role) && reason)) return res.status(422).json({ error: { code: "inspections_open", message: `This work order has ${gate.open} open inspection(s)${gate.failed ? ` and ${gate.failed} failed inspection(s)` : ""}. Close or pass them first, or an owner/ops admin can complete it with an override reason.`, open: gate.open, failed: gate.failed } });
+      audit(req.user.workspace_id, req.user.id, "wo_complete_override", "work_order", wo.id, { reason: reason.slice(0, 300), open: gate.open, failed: gate.failed });
+    }
+  }
   db.prepare("UPDATE work_orders SET title=?, description=?, status=?, pm_id=?, scheduled_start=?, scheduled_end=?, location=?, notes=?, completed_at=?, updated_at=? WHERE id=?")
     .run(b.title !== undefined ? String(b.title).slice(0, 160) : wo.title, b.description !== undefined ? String(b.description) : wo.description, status,
       b.pm_id !== undefined ? (b.pm_id || null) : wo.pm_id, b.scheduled_start !== undefined ? (b.scheduled_start || null) : wo.scheduled_start,
@@ -1239,6 +1249,115 @@ app.delete("/api/work-orders/:id/crew/:crewId", requireAuth, modGate("jobs", "ed
   const wo = db.prepare("SELECT * FROM work_orders WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!wo) return res.status(404).json({ error: { code: "not_found" } });
   res.json(decorateWO(req.user.workspace_id, wo));
+});
+// ---------- v88: inspections on work orders (INSPECTIONS-SCOPE T1) ----------
+const inspRow = (req: any) => db.prepare("SELECT * FROM inspections WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+app.get("/api/work-orders/:id/inspections", requireAuth, modGate("jobs"), (req: any, res) => {
+  const wo = db.prepare("SELECT * FROM work_orders WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!wo) return res.status(404).json({ error: { code: "not_found" } });
+  const job = db.prepare("SELECT * FROM jobs WHERE id=?").get(wo.job_id) as any;
+  res.json((db.prepare("SELECT * FROM inspections WHERE workspace_id=? AND work_order_id=? ORDER BY seq").all(req.user.workspace_id, wo.id) as any[]).map(x => decorateInsp(req.user.workspace_id, x, wo, job)));
+});
+app.post("/api/work-orders/:id/inspections", requireAuth, modGate("jobs", "edit"), (req: any, res) => {
+  const wo = db.prepare("SELECT * FROM work_orders WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!wo) return res.status(404).json({ error: { code: "not_found" } });
+  res.status(201).json(createInspection(req.user.workspace_id, wo, req.user.id, req.body || {}));
+});
+app.get("/api/inspections/:id", requireAuth, modGate("jobs"), (req: any, res) => {
+  const insp = inspRow(req); if (!insp) return res.status(404).json({ error: { code: "not_found" } });
+  const ws = req.user.workspace_id;
+  const wo = db.prepare("SELECT * FROM work_orders WHERE id=?").get(insp.work_order_id) as any;
+  const job = wo ? db.prepare("SELECT * FROM jobs WHERE id=?").get(wo.job_id) as any : null;
+  const withNames = (rows: any[]) => rows.map(r => ({ ...r, user_name: r.user_id ? (db.prepare("SELECT name FROM users WHERE id=?").get(r.user_id) as any)?.name || null : null }));
+  res.json({
+    inspection: decorateInsp(ws, insp, wo, job), sections: parseSections(insp.template_snapshot),
+    notes: withNames(db.prepare("SELECT * FROM inspection_notes WHERE inspection_id=? ORDER BY created_at").all(insp.id) as any[]),
+    comments: withNames(db.prepare("SELECT * FROM inspection_comments WHERE inspection_id=? ORDER BY created_at").all(insp.id) as any[]),
+    events: withNames(db.prepare("SELECT * FROM inspection_events WHERE inspection_id=? ORDER BY created_at").all(insp.id) as any[]),
+    photos: db.prepare("SELECT id,entity_type,entity_id,name,mime,size,doc_type,item_key,tag,created_at FROM attachments WHERE workspace_id=? AND entity_type='inspection' AND entity_id=? ORDER BY created_at").all(ws, insp.id),
+    job_id: insp.job_id, job_title: job ? (job.title || job.service_requested || null) : null,
+  });
+});
+app.patch("/api/inspections/:id", requireAuth, modGate("jobs", "edit"), (req: any, res) => {
+  const insp = inspRow(req); if (!insp) return res.status(404).json({ error: { code: "not_found" } });
+  const b = req.body || {};
+  let answers = insp.answers; let answersChanged = false;
+  if (b.answers && typeof b.answers === "object") { let cur: any = {}; try { cur = JSON.parse(insp.answers || "{}"); } catch { /* noop */ } answers = JSON.stringify({ ...cur, ...b.answers }); answersChanged = true; }
+  const inspectorName = b.inspector_id !== undefined ? (b.inspector_id ? (db.prepare("SELECT name FROM users WHERE id=? AND workspace_id=?").get(b.inspector_id, req.user.workspace_id) as any)?.name || null : null) : insp.inspector_name;
+  db.prepare("UPDATE inspections SET title=?, inspector_id=?, inspector_name=?, license_no=?, scheduled_start=?, scheduled_end=?, summary=?, conditions=?, answers=?, updated_at=? WHERE id=?")
+    .run(b.title !== undefined ? String(b.title).slice(0, 160) : insp.title, b.inspector_id !== undefined ? (b.inspector_id || null) : insp.inspector_id, inspectorName,
+      b.license_no !== undefined ? (b.license_no ? String(b.license_no).slice(0, 60) : null) : insp.license_no,
+      b.scheduled_start !== undefined ? (b.scheduled_start || null) : insp.scheduled_start, b.scheduled_end !== undefined ? (b.scheduled_end || null) : insp.scheduled_end,
+      b.summary !== undefined ? String(b.summary).slice(0, 4000) : insp.summary, b.conditions !== undefined ? String(b.conditions).slice(0, 4000) : insp.conditions,
+      answers, now(), insp.id);
+  if (answersChanged) logInspEvent(req.user.workspace_id, insp.id, req.user.id, "answers", `${inspProgress(db.prepare("SELECT * FROM inspections WHERE id=?").get(insp.id)).pct}% complete`);
+  const wo = db.prepare("SELECT * FROM work_orders WHERE id=?").get(insp.work_order_id) as any;
+  res.json(decorateInsp(req.user.workspace_id, db.prepare("SELECT * FROM inspections WHERE id=?").get(insp.id), wo));
+});
+app.post("/api/inspections/:id/start", requireAuth, modGate("jobs", "edit"), (req: any, res) => {
+  const insp = inspRow(req); if (!insp) return res.status(404).json({ error: { code: "not_found" } });
+  if (insp.status !== "scheduled") return res.status(422).json({ error: { code: "bad_state", message: "Only a scheduled inspection can be started." } });
+  db.prepare("UPDATE inspections SET status='in_progress', started_at=?, updated_at=? WHERE id=?").run(now(), now(), insp.id);
+  logInspEvent(req.user.workspace_id, insp.id, req.user.id, "started");
+  res.json(decorateInsp(req.user.workspace_id, db.prepare("SELECT * FROM inspections WHERE id=?").get(insp.id)));
+});
+app.post("/api/inspections/:id/submit", requireAuth, modGate("jobs", "edit"), (req: any, res) => {
+  const insp = inspRow(req); if (!insp) return res.status(404).json({ error: { code: "not_found" } });
+  if (!["scheduled", "in_progress"].includes(insp.status)) return res.status(422).json({ error: { code: "bad_state", message: "This inspection has already been submitted." } });
+  const missing = photoRequiredMissing(req.user.workspace_id, insp);
+  if (missing.length) return res.status(422).json({ error: { code: "photo_required", message: "Photos are required before submitting: " + missing.join("; "), missing } });
+  db.prepare("UPDATE inspections SET status='submitted', started_at=COALESCE(started_at,?), submitted_at=?, updated_at=? WHERE id=?").run(now(), now(), now(), insp.id);
+  logInspEvent(req.user.workspace_id, insp.id, req.user.id, "submitted", `${inspProgress(insp).pct}% complete`);
+  res.json(decorateInsp(req.user.workspace_id, db.prepare("SELECT * FROM inspections WHERE id=?").get(insp.id)));
+});
+app.post("/api/inspections/:id/decide", requireAuth, modGate("jobs", "edit"), (req: any, res) => {
+  const insp = inspRow(req); if (!insp) return res.status(404).json({ error: { code: "not_found" } });
+  const result = String((req.body || {}).result || "");
+  if (!INSP_RESULTS.includes(result)) return res.status(422).json({ error: { code: "bad_result" } });
+  if (insp.status !== "submitted") return res.status(422).json({ error: { code: "not_submitted", message: "The inspection must be submitted before a result can be recorded." } });
+  db.prepare("UPDATE inspections SET status='closed', result=?, reviewer_id=?, decided_at=?, review_note=?, updated_at=? WHERE id=?")
+    .run(result, req.user.id, now(), String((req.body || {}).note || "").slice(0, 1000) || null, now(), insp.id);
+  logInspEvent(req.user.workspace_id, insp.id, req.user.id, "decided", result);
+  res.json(decorateInsp(req.user.workspace_id, db.prepare("SELECT * FROM inspections WHERE id=?").get(insp.id)));
+});
+app.post("/api/inspections/:id/reinspect", requireAuth, modGate("jobs", "edit"), (req: any, res) => {
+  const insp = inspRow(req); if (!insp) return res.status(404).json({ error: { code: "not_found" } });
+  const wo = db.prepare("SELECT * FROM work_orders WHERE id=? AND workspace_id=?").get(insp.work_order_id, req.user.workspace_id) as any;
+  if (!wo) return res.status(404).json({ error: { code: "not_found" } });
+  const created = createInspection(req.user.workspace_id, wo, req.user.id, { template_id: insp.template_id, title: insp.title + " — re-inspection", inspector_id: insp.inspector_id, license_no: insp.license_no, reinspection_of: insp.id });
+  logInspEvent(req.user.workspace_id, insp.id, req.user.id, "reinspection_created", created.display_no);
+  res.status(201).json(created);
+});
+app.post("/api/inspections/:id/notes", requireAuth, modGate("jobs", "edit"), (req: any, res) => {
+  const insp = inspRow(req); if (!insp) return res.status(404).json({ error: { code: "not_found" } });
+  const body = String((req.body || {}).body || "").trim(); if (!body) return res.status(422).json({ error: { code: "empty" } });
+  const id = uid("inote"); db.prepare("INSERT INTO inspection_notes (id,workspace_id,inspection_id,user_id,body,created_at) VALUES (?,?,?,?,?,?)").run(id, req.user.workspace_id, insp.id, req.user.id, body.slice(0, 4000), now());
+  logInspEvent(req.user.workspace_id, insp.id, req.user.id, "note");
+  res.status(201).json({ id, body, user_name: req.user.name, created_at: now() });
+});
+app.post("/api/inspections/:id/comments", requireAuth, modGate("jobs", "edit"), (req: any, res) => {
+  const insp = inspRow(req); if (!insp) return res.status(404).json({ error: { code: "not_found" } });
+  const body = String((req.body || {}).body || "").trim(); if (!body) return res.status(422).json({ error: { code: "empty" } });
+  const id = uid("icmt"); db.prepare("INSERT INTO inspection_comments (id,workspace_id,inspection_id,user_id,body,client_visible,created_at) VALUES (?,?,?,?,?,?,?)").run(id, req.user.workspace_id, insp.id, req.user.id, body.slice(0, 4000), (req.body || {}).client_visible ? 1 : 0, now());
+  res.status(201).json({ id, body, client_visible: (req.body || {}).client_visible ? 1 : 0, user_name: req.user.name, created_at: now() });
+});
+app.get("/api/inspection-templates", requireAuth, (req: any, res) => { res.json(ensureInspTemplates(req.user.workspace_id).map((t: any) => ({ ...t, sections: parseSections(t.sections) }))); });
+app.post("/api/inspection-templates", requireAuth, (req: any, res) => {
+  if (!permsOf(req.user).can_settings) return res.status(403).json({ error: { code: "forbidden" } });
+  const b = req.body || {}; const id = uid("itpl");
+  db.prepare("INSERT INTO inspection_templates (id,workspace_id,name,kind,standard_ref,sections,active,sort,created_at,updated_at) VALUES (?,?,?,?,?,?,1,0,?,?)")
+    .run(id, req.user.workspace_id, String(b.name || "Inspection template").slice(0, 120), String(b.kind || "custom").slice(0, 40), String(b.standard_ref || "").slice(0, 200), JSON.stringify(Array.isArray(b.sections) ? b.sections : []), now(), now());
+  res.status(201).json({ ...db.prepare("SELECT * FROM inspection_templates WHERE id=?").get(id), sections: b.sections || [] });
+});
+app.patch("/api/inspection-templates/:id", requireAuth, (req: any, res) => {
+  if (!permsOf(req.user).can_settings) return res.status(403).json({ error: { code: "forbidden" } });
+  const t = db.prepare("SELECT * FROM inspection_templates WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!t) return res.status(404).json({ error: { code: "not_found" } });
+  const b = req.body || {};
+  db.prepare("UPDATE inspection_templates SET name=?, kind=?, standard_ref=?, sections=?, active=?, updated_at=? WHERE id=?")
+    .run(b.name !== undefined ? String(b.name).slice(0, 120) : t.name, b.kind !== undefined ? String(b.kind).slice(0, 40) : t.kind, b.standard_ref !== undefined ? String(b.standard_ref).slice(0, 200) : t.standard_ref,
+      b.sections !== undefined ? JSON.stringify(Array.isArray(b.sections) ? b.sections : []) : t.sections, b.active !== undefined ? (b.active ? 1 : 0) : t.active, now(), t.id);
+  res.json({ ...db.prepare("SELECT * FROM inspection_templates WHERE id=?").get(t.id), sections: parseSections((db.prepare("SELECT * FROM inspection_templates WHERE id=?").get(t.id) as any).sections) });
 });
 app.get("/api/jobs/:id", requireAuth, (req: any, res) => {
   const j = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
@@ -2056,7 +2175,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-export const APP_VERSION = "v87";
+export const APP_VERSION = "v88";
 app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: APP_VERSION, jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {

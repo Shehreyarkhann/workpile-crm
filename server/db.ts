@@ -69,7 +69,7 @@ export function initSchema() {
   CREATE TABLE IF NOT EXISTS suppressions (id TEXT PRIMARY KEY, workspace_id TEXT, kind TEXT, value TEXT, reason TEXT, source TEXT, created_by TEXT, created_at TEXT, UNIQUE(workspace_id, kind, value));
   CREATE TABLE IF NOT EXISTS merge_snapshots (id TEXT PRIMARY KEY, workspace_id TEXT, survivor_id TEXT, dupe_id TEXT, snapshot TEXT, created_by TEXT, created_at TEXT, reversed_at TEXT);
   CREATE TABLE IF NOT EXISTS audit_requests (id TEXT PRIMARY KEY, email TEXT, rows_count INTEGER, recoverable_value REAL, recoverable_count INTEGER, created_at TEXT);
-  CREATE TABLE IF NOT EXISTS attachments (id TEXT PRIMARY KEY, workspace_id TEXT, entity_type TEXT, entity_id TEXT, name TEXT, mime TEXT, size INTEGER, storage_key TEXT, uploaded_by TEXT, created_at TEXT);
+  CREATE TABLE IF NOT EXISTS attachments (id TEXT PRIMARY KEY, workspace_id TEXT, entity_type TEXT, entity_id TEXT, name TEXT, mime TEXT, size INTEGER, storage_key TEXT, uploaded_by TEXT, created_at TEXT, doc_type TEXT, item_key TEXT, tag TEXT);
   CREATE TABLE IF NOT EXISTS price_overrides (id TEXT PRIMARY KEY, workspace_id TEXT, proposal_id TEXT, lead_id TEXT, item_id TEXT, item_name TEXT, prev_price REAL, new_price REAL, reason TEXT, user_id TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS feature_flags (workspace_id TEXT, flag TEXT, enabled INTEGER DEFAULT 0, updated_at TEXT, PRIMARY KEY (workspace_id, flag));
   CREATE TABLE IF NOT EXISTS subscriptions (id TEXT PRIMARY KEY, workspace_id TEXT, plan TEXT, status TEXT DEFAULT 'trialing', stripe_customer_id TEXT, stripe_subscription_id TEXT, current_period_end TEXT, created_at TEXT, updated_at TEXT);
@@ -265,6 +265,9 @@ export function initSchema() {
     "ALTER TABLE jobs ADD COLUMN project_iter INTEGER DEFAULT 0",
     // v78 work orders ride the job schedule when set
     "ALTER TABLE job_schedule ADD COLUMN work_order_id TEXT",
+    "ALTER TABLE attachments ADD COLUMN doc_type TEXT",
+    "ALTER TABLE attachments ADD COLUMN item_key TEXT",
+    "ALTER TABLE attachments ADD COLUMN tag TEXT",
   ]) { try { db.exec(stmt); } catch { /* already present */ } }
   // ---- v3 stage migration (idempotent): v2 states -> v3 stages; ON_HOLD becomes a flag ----
   try {

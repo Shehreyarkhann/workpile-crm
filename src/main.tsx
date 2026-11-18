@@ -1683,7 +1683,7 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any)
     </tbody></table>
       <div className="rowflex" style={{ marginTop: 12 }}><input style={{ flex: 2 }} placeholder="New item name" value={nb.name} onChange={e => setNb({ ...nb, name: e.target.value })} /><input style={{ width: 90 }} placeholder="unit" value={nb.unit} onChange={e => setNb({ ...nb, unit: e.target.value })} /><input style={{ width: 120 }} type="number" placeholder="standard $" value={nb.standard_price} onChange={e => setNb({ ...nb, standard_price: e.target.value })} /><input style={{ width: 120 }} type="number" placeholder="floor $" value={nb.floor_price} onChange={e => setNb({ ...nb, floor_price: e.target.value })} /><button className="btn" onClick={async () => { await api("/api/price-book", { method: "POST", body: { ...nb, standard_price: Number(nb.standard_price) || 0, floor_price: Number(nb.floor_price) || 0 } }); setNb({ name: "", unit: "job", standard_price: "", floor_price: "" }); loadAll(); }}>Add item</button></div>
       <p className="muted">Proposals can only price from this book — the floor is the margin guardrail the Approval Gate enforces.</p></div>}
-    {tab === "templates" && canSettings && <div className="card"><VerticalPacksCard /><DocTemplatesEditor /><SectionLibraryManager /><h3>Message templates</h3>{tpls.map(t => <div key={t.id} style={{ borderBottom: "1px solid #eef2f7", padding: "10px 0" }}><b>{t.name}</b> <span className="muted">· {t.kind} · v{t.version} · {t.active ? "active" : "inactive"}</span>{tplEdit?.id === t.id ? <><textarea rows={5} value={tplEdit.body} onChange={e => setTplEdit({ ...tplEdit, body: e.target.value })} /><span className="rowflex" style={{ marginTop: 6 }}><button className="btn small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "PATCH", body: { body: tplEdit.body } }); setTplEdit(null); loadAll(); }}>Save</button><button className="btn ghost small" onClick={() => setTplEdit(null)}>Cancel</button></span></> : <><p className="muted" style={{ whiteSpace: "pre-wrap" }}>{t.body}</p><button className="btn ghost small" onClick={() => setTplEdit({ id: t.id, body: t.body })}>Edit</button></>} <button className="btn ghost small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></div>)}
+    {tab === "templates" && canSettings && <div className="card"><VerticalPacksCard /><DocTemplatesEditor /><SectionLibraryManager /><InspectionTemplatesEditor /><h3>Message templates</h3>{tpls.map(t => <div key={t.id} style={{ borderBottom: "1px solid #eef2f7", padding: "10px 0" }}><b>{t.name}</b> <span className="muted">· {t.kind} · v{t.version} · {t.active ? "active" : "inactive"}</span>{tplEdit?.id === t.id ? <><textarea rows={5} value={tplEdit.body} onChange={e => setTplEdit({ ...tplEdit, body: e.target.value })} /><span className="rowflex" style={{ marginTop: 6 }}><button className="btn small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "PATCH", body: { body: tplEdit.body } }); setTplEdit(null); loadAll(); }}>Save</button><button className="btn ghost small" onClick={() => setTplEdit(null)}>Cancel</button></span></> : <><p className="muted" style={{ whiteSpace: "pre-wrap" }}>{t.body}</p><button className="btn ghost small" onClick={() => setTplEdit({ id: t.id, body: t.body })}>Edit</button></>} <button className="btn ghost small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></div>)}
       <div className="formgrid" style={{ marginTop: 12 }}><div><label className="f">New template name</label><input value={nt.name} onChange={e => setNt({ ...nt, name: e.target.value })} /></div><div className="full"><label className="f">Body (merge fields: {"{{contact_name}} {{service}} {{total}}"})</label><textarea rows={4} value={nt.body} onChange={e => setNt({ ...nt, body: e.target.value })} /></div></div>
       <button className="btn" style={{ marginTop: 10 }} onClick={async () => { await api("/api/templates", { method: "POST", body: nt }); setNt({ name: "", body: "" }); loadAll(); }}>Add template</button></div>}
     {tab === "services" && canSettings && <ServicesConsole svcs={svcs} reload={loadAll} />}
@@ -3266,6 +3266,163 @@ function PacketModal({ jobId, close, onSent }: any) {
 // v78 — Work orders inside a project + the dedicated Projects tab (docs/CHAIN-MODEL.md).
 const WO_STATUSES: [string, string][] = [["planned", "Planned"], ["scheduled", "Scheduled"], ["in_progress", "In progress"], ["on_hold", "On hold"], ["completed", "Completed"], ["cancelled", "Cancelled"]];
 const woPill = (st: string) => ({ planned: "#E2E8F0|#334155", scheduled: "#DBEAFE|#1E40AF", in_progress: "#DCFCE7|#166534", on_hold: "#FEF3C7|#92400E", completed: "#0E5C3A|#FFFFFF", cancelled: "#FEE2E2|#991B1B" } as any)[st] || "#E2E8F0|#334155";
+function inspChip(i: any): [string, string, string] {
+  if (i.status === "closed") return i.result === "passed" ? ["Passed", "#E7F2EB", "#0E5C3A"] : i.result === "failed" ? ["Failed", "#FDECEC", "#991B1B"] : ["Passed w/ conditions", "#FEF3C7", "#92400E"];
+  return i.status === "submitted" ? ["Awaiting decision", "#FEF3C7", "#92400E"] : i.status === "in_progress" ? ["In progress", "#E0EFFF", "#1D4ED8"] : ["Scheduled", "#EEF2EF", "#5B6B62"];
+}
+function InspectionView({ id, users, onBack, onSwitch }: any) {
+  const [d, setD] = useState<any>(null); const [tab, setTab] = useState("overview"); const [msg, setMsg] = useState("");
+  const [answers, setAnswers] = useState<any>({}); const [noteText, setNoteText] = useState(""); const [cmtText, setCmtText] = useState(""); const [cmtVis, setCmtVis] = useState(false);
+  const [decide, setDecide] = useState<any>({ result: "passed", note: "" }); const [tag, setTag] = useState("during");
+  const [ov, setOv] = useState<any>({});
+  const load = () => { api("/api/inspections/" + id).then((r: any) => { setD(r); try { setAnswers(JSON.parse(r.inspection.answers || "{}")); } catch { setAnswers({}); } setOv({ inspector_id: r.inspection.inspector_id || "", license_no: r.inspection.license_no || "", scheduled_start: r.inspection.scheduled_start ? String(r.inspection.scheduled_start).slice(0, 16) : "", scheduled_end: r.inspection.scheduled_end ? String(r.inspection.scheduled_end).slice(0, 16) : "", conditions: r.inspection.conditions || "", summary: r.inspection.summary || "" }); }).catch(() => {}); };
+  useEffect(load, [id]);
+  if (!d) return <div className="muted" style={{ padding: 8 }}>Loading inspection…</div>;
+  const insp = d.inspection; const [chipLabel, chipBg, chipFg] = inspChip(insp);
+  const items: any[] = []; (d.sections || []).forEach((s: any) => (s.items || []).forEach((it: any) => items.push({ ...it, section: s.title })));
+  const answered = items.filter(it => answers[it.key] && answers[it.key].v !== undefined && answers[it.key].v !== "").length;
+  const pct = items.length ? Math.round((answered / items.length) * 100) : 0;
+  const oor = (it: any) => { const a = answers[it.key]; if (!a || it.type !== "reading" || a.v === "" || a.v === undefined) return false; const n = Number(a.v); if (Number.isNaN(n)) return false; return (it.min !== undefined && it.min !== null && it.min !== "" && n < Number(it.min)) || (it.max !== undefined && it.max !== null && it.max !== "" && n > Number(it.max)); };
+  const itemPhotos = (key: string) => (d.photos || []).filter((p: any) => p.item_key === key);
+  const missingPhotos = items.filter(it => it.photo_required && itemPhotos(it.key).length === 0);
+  const saveAnswer = async (key: string, patchA: any) => { const next = { ...(answers[key] || {}), ...patchA }; const all = { ...answers, [key]: next }; setAnswers(all); try { await api("/api/inspections/" + id, { method: "PATCH", body: { answers: { [key]: next } } }); } catch (e: any) { setMsg(e.message); } };
+  const act = async (path: string, body?: any) => { setMsg(""); try { await api("/api/inspections/" + id + path, { method: "POST", body: body || {} }); load(); } catch (e: any) { setMsg(e.message); } };
+  const submit = () => { if (missingPhotos.length) { setMsg("Photos required before submitting: " + missingPhotos.map((i: any) => i.label).join("; ")); return; } act("/submit"); };
+  const uploadPhoto = (f: File, itemKey?: string) => { const r = new FileReader(); r.onload = async () => { try { const b64 = String(r.result || "").split(",")[1] || ""; await api("/api/attachments", { method: "POST", body: { entity_type: "inspection", entity_id: id, name: f.name, mime: f.type || "application/octet-stream", data_base64: b64, item_key: itemKey || null, tag: itemKey ? undefined : tag } }); load(); } catch (e: any) { setMsg(e.message); } }; r.readAsDataURL(f); };
+  const saveOverview = async () => { try { await api("/api/inspections/" + id, { method: "PATCH", body: { inspector_id: ov.inspector_id || null, license_no: ov.license_no || null, scheduled_start: ov.scheduled_start ? new Date(ov.scheduled_start).toISOString() : null, scheduled_end: ov.scheduled_end ? new Date(ov.scheduled_end).toISOString() : null, conditions: ov.conditions, summary: ov.summary } }); setMsg("Saved."); load(); } catch (e: any) { setMsg(e.message); } };
+  const TABS = [["overview", "Overview"], ["checklist", "Checklist"], ["photos", `Photos (${(d.photos || []).length})`], ["notes", `Notes (${(d.notes || []).length})`], ["comments", `Comments (${(d.comments || []).length})`], ["progress", "Progress"]];
+  return <div style={{ border: "1px solid #CFE0D4", borderRadius: 10, padding: 10, marginTop: 8, background: "#FBFCFB" }}>
+    <div className="rowflex" style={{ gap: 8, flexWrap: "wrap" }}>
+      <button className="btn ghost small" onClick={onBack}>← Work order</button>
+      <b style={{ color: "#0E5C3A" }}>{insp.display_no}</b><span style={{ flex: 1, minWidth: 120 }}>{insp.title}</span>
+      <span className="tinyBadge" style={{ background: chipBg, color: chipFg }}>{chipLabel}</span>
+      <span className="muted" style={{ fontSize: 12 }}>{pct}% complete</span>
+    </div>
+    {msg && <p className="muted" style={{ color: "#991B1B" }}>{msg}</p>}
+    <div className="rowflex" style={{ gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+      {insp.status === "scheduled" && <button className="btn small" onClick={() => act("/start")}>▶ Start inspection</button>}
+      {(insp.status === "scheduled" || insp.status === "in_progress") && <button className="btn small" onClick={submit}>Submit for decision</button>}
+      {insp.status === "submitted" && <span className="rowflex" style={{ gap: 6 }}>
+        <select value={decide.result} onChange={e => setDecide({ ...decide, result: e.target.value })} style={{ width: "auto" }}><option value="passed">Passed</option><option value="passed_with_conditions">Passed w/ conditions</option><option value="failed">Failed</option></select>
+        <input placeholder="Decision note" value={decide.note} onChange={e => setDecide({ ...decide, note: e.target.value })} style={{ width: 180 }} />
+        <button className="btn small" onClick={() => act("/decide", decide)}>Record result</button></span>}
+      {insp.status === "closed" && insp.result === "failed" && <button className="btn small" onClick={async () => { try { const c = await api("/api/inspections/" + id + "/reinspect", { method: "POST", body: {} }); if (c?.id && onSwitch) onSwitch(c.id); else onBack(); } catch (e: any) { setMsg(e.message); } }}>↻ Schedule re-inspection</button>}
+    </div>
+    <div className="rowflex" style={{ gap: 4, marginTop: 10, flexWrap: "wrap" }}>{TABS.map(([k, l]) => <button key={k} className={`chip ${tab === k ? "on" : ""}`} onClick={() => setTab(k)}>{l}</button>)}</div>
+    {tab === "overview" && <div style={{ marginTop: 10 }}>
+      <div className="rowflex"><label className="f" style={{ flex: 1 }}>Inspector<select value={ov.inspector_id} onChange={e => setOv({ ...ov, inspector_id: e.target.value })}><option value="">—</option>{(users || []).map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}</select></label>
+      <label className="f" style={{ flex: 1 }}>License / cert no.<input value={ov.license_no} onChange={e => setOv({ ...ov, license_no: e.target.value })} /></label></div>
+      <div className="rowflex"><label className="f" style={{ flex: 1 }}>Scheduled start<input type="datetime-local" value={ov.scheduled_start} onChange={e => setOv({ ...ov, scheduled_start: e.target.value })} /></label>
+      <label className="f" style={{ flex: 1 }}>Scheduled end<input type="datetime-local" value={ov.scheduled_end} onChange={e => setOv({ ...ov, scheduled_end: e.target.value })} /></label></div>
+      <label className="f">Conditions observed<textarea rows={2} value={ov.conditions} onChange={e => setOv({ ...ov, conditions: e.target.value })} /></label>
+      <label className="f">Inspector's summary / conclusion<textarea rows={3} value={ov.summary} onChange={e => setOv({ ...ov, summary: e.target.value })} /></label>
+      <button className="btn small" onClick={saveOverview}>Save overview</button>
+      {(insp.started_at || insp.submitted_at || insp.decided_at) && <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>{insp.started_at ? "Started " + String(insp.started_at).slice(0, 16).replace("T", " ") + " · " : ""}{insp.submitted_at ? "Submitted " + String(insp.submitted_at).slice(0, 16).replace("T", " ") + " · " : ""}{insp.decided_at ? "Decided " + String(insp.decided_at).slice(0, 16).replace("T", " ") : ""}{insp.review_note ? " — " + insp.review_note : ""}</p>}
+    </div>}
+    {tab === "checklist" && <div style={{ marginTop: 10 }}>
+      {(d.sections || []).map((s: any, si: number) => <div key={si} style={{ marginBottom: 12 }}>
+        <b style={{ fontSize: 13 }}>{s.title}</b>
+        {(s.items || []).map((it: any) => { const a = answers[it.key] || {}; const out = oor(it); return <div key={it.key} style={{ borderLeft: `3px solid ${a.v === "fail" ? "#DC2626" : a.v !== undefined && a.v !== "" ? "#22C55E" : "#E3EAE5"}`, padding: "6px 8px", margin: "6px 0", background: "#fff", borderRadius: 6 }}>
+          <div className="rowflex" style={{ gap: 6, flexWrap: "wrap" }}><span style={{ flex: 1, minWidth: 160, fontSize: 13 }}>{it.label}{it.critical ? <span className="tinyBadge" style={{ background: "#FDECEC", color: "#991B1B", marginLeft: 6 }}>critical</span> : null}{it.photo_required ? <span className="tinyBadge" style={{ background: "#FEF3C7", color: "#92400E", marginLeft: 4 }}>📷 required</span> : null}</span>
+          {it.type === "passfail" && <span className="rowflex" style={{ gap: 4 }}>{[["pass", "Pass"], ["fail", "Fail"], ["na", "N/A"]].map(([v, l]) => <button key={v} className={`chip ${a.v === v ? "on" : ""}`} onClick={() => saveAnswer(it.key, { v })}>{l}</button>)}</span>}
+          {it.type === "yesno" && <span className="rowflex" style={{ gap: 4 }}>{[["yes", "Yes"], ["no", "No"], ["na", "N/A"]].map(([v, l]) => <button key={v} className={`chip ${a.v === v ? "on" : ""}`} onClick={() => saveAnswer(it.key, { v })}>{l}</button>)}</span>}
+          {it.type === "reading" && <span className="rowflex" style={{ gap: 4 }}><input type="number" style={{ width: 110 }} defaultValue={a.v ?? ""} onBlur={e => saveAnswer(it.key, { v: e.target.value })} placeholder="Reading" /><span className="muted" style={{ fontSize: 12 }}>{it.unit || ""}{(it.min !== undefined && it.min !== "" && it.min !== null) || (it.max !== undefined && it.max !== "" && it.max !== null) ? ` · acceptable ${it.min ?? "…"} – ${it.max ?? "…"}` : ""}</span>{out ? <span className="tinyBadge" style={{ background: "#FDECEC", color: "#991B1B" }}>out of range</span> : null}</span>}
+          {it.type === "text" && <input style={{ flex: 1, minWidth: 160 }} defaultValue={a.v ?? ""} onBlur={e => saveAnswer(it.key, { v: e.target.value })} placeholder="Record…" />}
+          </div>
+          <div className="rowflex" style={{ gap: 6, marginTop: 4 }}>
+            <input style={{ flex: 1, fontSize: 12 }} defaultValue={a.note || ""} onBlur={e => saveAnswer(it.key, { note: e.target.value })} placeholder="Item note (optional)" />
+            <span className="muted" style={{ fontSize: 12 }}>📷 {itemPhotos(it.key).length}</span>
+            <label className="btn ghost small">+ Photo<input type="file" accept="image/*" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) uploadPhoto(f, it.key); e.target.value = ""; }} /></label>
+          </div>
+        </div>; })}
+      </div>)}
+      {items.length === 0 && <p className="muted">This template has no checklist items.</p>}
+    </div>}
+    {tab === "photos" && <div style={{ marginTop: 10 }}>
+      <div className="rowflex" style={{ gap: 6 }}>
+        <select value={tag} onChange={e => setTag(e.target.value)} style={{ width: "auto" }}><option value="before">Before</option><option value="during">During</option><option value="after">After</option></select>
+        <label className="btn small">+ Upload photo<input type="file" accept="image/*" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) uploadPhoto(f); e.target.value = ""; }} /></label>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(130px,1fr))", gap: 8, marginTop: 10 }}>
+        {(d.photos || []).map((p: any) => <div key={p.id} style={{ border: "1px solid #E3EAE5", borderRadius: 8, overflow: "hidden" }}>
+          {String(p.mime || "").startsWith("image/") ? <img src={`/api/attachments/${p.id}/download?inline=1`} alt={p.name} style={{ width: "100%", height: 92, objectFit: "cover", display: "block" }} /> : <div style={{ height: 92, display: "flex", alignItems: "center", justifyContent: "center" }}>📄</div>}
+          <div style={{ padding: "4px 6px", fontSize: 11 }}><div style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div><span className="muted">{p.tag || (p.item_key ? "checklist" : "—")} · {String(p.created_at).slice(0, 10)}</span> <a href={`/api/attachments/${p.id}/download`} target="_blank" rel="noreferrer">Open</a></div>
+        </div>)}
+      </div>
+      {(d.photos || []).length === 0 && <p className="muted">No photos yet.</p>}
+    </div>}
+    {tab === "notes" && <div style={{ marginTop: 10 }}>
+      {(d.notes || []).map((n: any) => <div key={n.id} style={{ borderBottom: "1px solid #EEF2EF", padding: "6px 0" }}><span style={{ fontSize: 13 }}>{n.body}</span><div className="muted" style={{ fontSize: 11 }}>{n.user_name || ""} · {String(n.created_at).slice(0, 16).replace("T", " ")}</div></div>)}
+      <div className="rowflex" style={{ marginTop: 8 }}><input style={{ flex: 1 }} placeholder="Add a field note…" value={noteText} onChange={e => setNoteText(e.target.value)} /><button className="btn small" onClick={async () => { if (!noteText.trim()) return; await api("/api/inspections/" + id + "/notes", { method: "POST", body: { body: noteText } }); setNoteText(""); load(); }}>Add note</button></div>
+    </div>}
+    {tab === "comments" && <div style={{ marginTop: 10 }}>
+      {(d.comments || []).map((c: any) => <div key={c.id} style={{ borderBottom: "1px solid #EEF2EF", padding: "6px 0" }}><span style={{ fontSize: 13 }}>{c.body}</span>{c.client_visible ? <span className="tinyBadge" style={{ background: "#E7F2EB", color: "#0E5C3A", marginLeft: 6 }}>client-visible</span> : null}<div className="muted" style={{ fontSize: 11 }}>{c.user_name || ""} · {String(c.created_at).slice(0, 16).replace("T", " ")}</div></div>)}
+      <div className="rowflex" style={{ marginTop: 8 }}><input style={{ flex: 1 }} placeholder="Comment for the team…" value={cmtText} onChange={e => setCmtText(e.target.value)} /><label className="muted" style={{ fontSize: 12 }}><input type="checkbox" checked={cmtVis} onChange={e => setCmtVis(e.target.checked)} /> client-visible</label><button className="btn small" onClick={async () => { if (!cmtText.trim()) return; await api("/api/inspections/" + id + "/comments", { method: "POST", body: { body: cmtText, client_visible: cmtVis } }); setCmtText(""); load(); }}>Comment</button></div>
+    </div>}
+    {tab === "progress" && <div style={{ marginTop: 10 }}>
+      <div style={{ background: "#EEF2EF", borderRadius: 999, height: 10, overflow: "hidden" }}><div style={{ width: pct + "%", background: "#22C55E", height: "100%" }} /></div>
+      <p className="muted" style={{ fontSize: 12 }}>{answered} of {items.length} items answered · {items.filter(it => answers[it.key]?.v === "fail").length} failed · {items.filter(it => oor(it)).length} readings out of range · {(d.photos || []).length} photos</p>
+      {(d.events || []).map((ev: any) => <div key={ev.id} className="rowflex" style={{ gap: 8, padding: "5px 0", borderBottom: "1px solid #EEF2EF", fontSize: 12.5 }}><span className="tinyBadge" style={{ background: "#EEF2EF", color: "#334155" }}>{ev.kind}</span><span style={{ flex: 1 }}>{ev.detail || ""}</span><span className="muted">{ev.user_name || ""} · {String(ev.created_at).slice(0, 16).replace("T", " ")}</span></div>)}
+    </div>}
+  </div>;
+}
+function WOInspections({ woId, users }: any) {
+  const [list, setList] = useState<any[]>([]); const [tpls, setTpls] = useState<any[]>([]); const [openId, setOpenId] = useState(""); const [form, setForm] = useState<any>({ template_id: "", title: "", inspector_id: "" }); const [msg, setMsg] = useState("");
+  const load = () => { api("/api/work-orders/" + woId + "/inspections").then(setList).catch(() => {}); };
+  useEffect(load, [woId]);
+  useEffect(() => { api("/api/inspection-templates").then((t: any) => { setTpls(Array.isArray(t) ? t : []); if (Array.isArray(t) && t[0]) setForm((f: any) => ({ ...f, template_id: f.template_id || t[0].id })); }).catch(() => {}); }, []);
+  const create = async () => { try { const c = await api("/api/work-orders/" + woId + "/inspections", { method: "POST", body: { template_id: form.template_id || undefined, title: form.title || undefined, inspector_id: form.inspector_id || undefined } }); setForm({ ...form, title: "" }); load(); if (c?.id) setOpenId(c.id); } catch (e: any) { setMsg(e.message); } };
+  return <div style={{ marginTop: 10 }}>
+    <b style={{ fontSize: 13 }}>🔍 Inspections ({list.length})</b>
+    {msg && <p className="muted" style={{ color: "#991B1B" }}>{msg}</p>}
+    {list.map((i: any) => { const [l, bg, fg] = inspChip(i); return <div key={i.id}>
+      <div className="rowflex" style={{ gap: 8, padding: "5px 0", cursor: "pointer" }} onClick={() => setOpenId(openId === i.id ? "" : i.id)}>
+        <b style={{ color: "#0E5C3A", fontSize: 12.5 }}>{i.display_no}</b><span style={{ flex: 1, fontSize: 13 }}>{i.title}</span>
+        <span className="muted" style={{ fontSize: 12 }}>{i.progress?.pct ?? 0}% · 📷 {i.photo_count}</span>
+        <span className="tinyBadge" style={{ background: bg, color: fg }}>{l}</span>
+      </div>
+      {openId === i.id && <InspectionView id={i.id} users={users} onBack={() => { setOpenId(""); load(); }} onSwitch={(nid: string) => { load(); setOpenId(nid); }} />}
+    </div>; })}
+    <div className="rowflex" style={{ gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+      <select value={form.template_id} onChange={e => setForm({ ...form, template_id: e.target.value })} style={{ width: "auto" }}>{tpls.map((t: any) => <option key={t.id} value={t.id}>{t.name}</option>)}</select>
+      <input placeholder="Title (optional)" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} style={{ flex: 1, minWidth: 130 }} />
+      <select value={form.inspector_id} onChange={e => setForm({ ...form, inspector_id: e.target.value })} style={{ width: "auto" }}><option value="">Inspector…</option>{(users || []).map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}</select>
+      <button className="btn ghost small" onClick={create}>+ Add inspection</button>
+    </div>
+  </div>;
+}
+function InspectionTemplatesEditor() {
+  const [tpls, setTpls] = useState<any[]>([]); const [edit, setEdit] = useState<any>(null); const [msg, setMsg] = useState("");
+  const load = () => { api("/api/inspection-templates").then((t: any) => setTpls(Array.isArray(t) ? t : [])).catch(() => {}); };
+  useEffect(load, []);
+  const startEdit = (t: any) => setEdit(JSON.parse(JSON.stringify({ id: t.id || "", name: t.name || "", standard_ref: t.standard_ref || "", sections: t.sections || [] })));
+  const save = async () => { try { if (edit.id) await api("/api/inspection-templates/" + edit.id, { method: "PATCH", body: edit }); else await api("/api/inspection-templates", { method: "POST", body: edit }); setEdit(null); setMsg("Saved."); load(); } catch (e: any) { setMsg(e.message); } };
+  const updItem = (si: number, ii: number, patchI: any) => { const s = [...edit.sections]; s[si] = { ...s[si], items: s[si].items.map((it: any, j: number) => j === ii ? { ...it, ...patchI } : it) }; setEdit({ ...edit, sections: s }); };
+  return <div style={{ marginTop: 18 }}>
+    <h3>Inspection templates</h3>
+    <p className="muted" style={{ fontSize: 12.5 }}>Checklists that inspections run against. An inspection freezes its template when created — edits here never rewrite an issued inspection.</p>
+    {msg && <p className="muted">{msg}</p>}
+    {tpls.map(t => <div key={t.id} className="rowflex" style={{ padding: "6px 0", borderBottom: "1px solid #EEF2EF" }}><span style={{ flex: 1 }}><b>{t.name}</b> <span className="muted">· {(t.sections || []).reduce((n: number, s: any) => n + (s.items || []).length, 0)} items{t.standard_ref ? " · " + t.standard_ref : ""}</span></span><button className="btn ghost small" onClick={() => startEdit(t)}>Edit</button></div>)}
+    {!edit && <button className="btn ghost small" style={{ marginTop: 8 }} onClick={() => setEdit({ id: "", name: "", standard_ref: "", sections: [{ title: "Section 1", items: [] }] })}>+ New template</button>}
+    {edit && <div className="card" style={{ padding: 10, marginTop: 8 }}>
+      <div className="rowflex"><label className="f" style={{ flex: 1 }}>Name<input value={edit.name} onChange={e => setEdit({ ...edit, name: e.target.value })} /></label>
+      <label className="f" style={{ flex: 1 }}>Standard / reference<input value={edit.standard_ref} onChange={e => setEdit({ ...edit, standard_ref: e.target.value })} placeholder="e.g. OSHA 29 CFR 1926.1101" /></label></div>
+      {edit.sections.map((s: any, si: number) => <div key={si} style={{ border: "1px solid #E3EAE5", borderRadius: 8, padding: 8, marginTop: 8 }}>
+        <div className="rowflex"><input style={{ flex: 1, fontWeight: 700 }} value={s.title} onChange={e => { const ss = [...edit.sections]; ss[si] = { ...ss[si], title: e.target.value }; setEdit({ ...edit, sections: ss }); }} /><button className="btn ghost small" onClick={() => setEdit({ ...edit, sections: edit.sections.filter((_: any, j: number) => j !== si) })}>✕ section</button></div>
+        {(s.items || []).map((it: any, ii: number) => <div key={ii} className="rowflex" style={{ gap: 5, marginTop: 5, flexWrap: "wrap" }}>
+          <input style={{ flex: 2, minWidth: 170 }} value={it.label} placeholder="Checklist item" onChange={e => updItem(si, ii, { label: e.target.value, key: it.key || ("item_" + si + "_" + ii) })} />
+          <select style={{ width: "auto" }} value={it.type || "passfail"} onChange={e => updItem(si, ii, { type: e.target.value })}><option value="passfail">Pass/Fail</option><option value="yesno">Yes/No</option><option value="reading">Reading</option><option value="text">Text</option></select>
+          {it.type === "reading" && <><input style={{ width: 64 }} placeholder="Unit" value={it.unit || ""} onChange={e => updItem(si, ii, { unit: e.target.value })} /><input style={{ width: 64 }} placeholder="Min" value={it.min ?? ""} onChange={e => updItem(si, ii, { min: e.target.value })} /><input style={{ width: 64 }} placeholder="Max" value={it.max ?? ""} onChange={e => updItem(si, ii, { max: e.target.value })} /></>}
+          <label className="muted" style={{ fontSize: 12 }}><input type="checkbox" checked={!!it.critical} onChange={e => updItem(si, ii, { critical: e.target.checked })} /> critical</label>
+          <label className="muted" style={{ fontSize: 12 }}><input type="checkbox" checked={!!it.photo_required} onChange={e => updItem(si, ii, { photo_required: e.target.checked })} /> 📷 req</label>
+          <button className="btn ghost small" onClick={() => { const ss = [...edit.sections]; ss[si] = { ...ss[si], items: ss[si].items.filter((_: any, j: number) => j !== ii) }; setEdit({ ...edit, sections: ss }); }}>✕</button>
+        </div>)}
+        <button className="btn ghost small" style={{ marginTop: 6 }} onClick={() => { const ss = [...edit.sections]; ss[si] = { ...ss[si], items: [...(ss[si].items || []), { key: "item_" + si + "_" + (ss[si].items || []).length + "_" + Math.floor(Math.random() * 9999), label: "", type: "passfail" }] }; setEdit({ ...edit, sections: ss }); }}>+ Item</button>
+      </div>)}
+      <div className="rowflex" style={{ marginTop: 8 }}><button className="btn ghost small" onClick={() => setEdit({ ...edit, sections: [...edit.sections, { title: "New section", items: [] }] })}>+ Section</button><span style={{ flex: 1 }} /><button className="btn small" onClick={save}>Save template</button><button className="btn ghost small" onClick={() => setEdit(null)}>Cancel</button></div>
+    </div>}
+  </div>;
+}
 function JobWorkOrders({ jobId, users }: any) {
   const [list, setList] = useState<any[]>([]); const [workers, setWorkers] = useState<any[]>([]); const [openId, setOpenId] = useState<string>("");
   const [detail, setDetail] = useState<any>(null); const [creating, setCreating] = useState(false); const [msg, setMsg] = useState("");
@@ -3298,7 +3455,7 @@ function JobWorkOrders({ jobId, users }: any) {
         <span style={{ flex: 1, minWidth: 120, cursor: "pointer" }} onClick={() => openWO(wo.id)}>{wo.title}</span>
         <select value={wo.status} onChange={e => patch(wo.id, { status: e.target.value })} style={{ background: bg, color: fg, border: 0, borderRadius: 999, padding: "2px 8px", fontWeight: 700, fontSize: 12, width: "auto" }}>{WO_STATUSES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
       </div>
-      <div className="muted" style={{ fontSize: 12, marginTop: 3 }}>{wo.pm_name ? "PM: " + wo.pm_name + " · " : ""}{wo.scheduled_start ? "🗓 " + String(wo.scheduled_start).slice(0, 10) + " " + String(wo.scheduled_start).slice(11, 16) : "🗓 not scheduled"}{(wo.crew || []).length ? " · 👷 " + wo.crew.map((c: any) => c.name).join(", ") : ""}{wo.photo_count ? ` · 📷 ${wo.photo_count}` : ""}</div>
+      <div className="muted" style={{ fontSize: 12, marginTop: 3 }}>{wo.pm_name ? "PM: " + wo.pm_name + " · " : ""}{wo.scheduled_start ? "🗓 " + String(wo.scheduled_start).slice(0, 10) + " " + String(wo.scheduled_start).slice(11, 16) : "🗓 not scheduled"}{(wo.crew || []).length ? " · 👷 " + wo.crew.map((c: any) => c.name).join(", ") : ""}{wo.photo_count ? ` · 📷 ${wo.photo_count}` : ""}{wo.inspections?.total ? ` · 🔍 ${wo.inspections.total}${wo.inspections.open ? ` (${wo.inspections.open} open)` : ""}${wo.inspections.failed ? ` · ❌ ${wo.inspections.failed} failed` : ""}` : ""}</div>
       {open && detail && detail.id === wo.id && <div style={{ borderTop: "1px dashed #D8E2DB", marginTop: 8, paddingTop: 8 }}>
         <label className="f">Scope / description<textarea defaultValue={detail.description || ""} rows={3} onBlur={e => patch(wo.id, { description: e.target.value })} /></label>
         <div className="rowflex"><label className="f" style={{ flex: 1 }}>Project manager<select value={detail.pm_id || ""} onChange={e => patch(wo.id, { pm_id: e.target.value || null })}><option value="">—</option>{(users || []).map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}</select></label>
@@ -3318,6 +3475,7 @@ function JobWorkOrders({ jobId, users }: any) {
           {(detail.files || []).map((f: any) => <div key={f.id} className="rowflex" style={{ fontSize: 12.5 }}><span style={{ flex: 1 }}>{f.name}</span><a href={`/api/attachments/${f.id}/download`} target="_blank" rel="noreferrer">Download</a></div>)}
           <label className="btn ghost small" style={{ marginTop: 4, display: "inline-block" }}>+ Upload<input type="file" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) upload(wo.id, f); e.target.value = ""; }} /></label>
         </div>
+        <WOInspections woId={wo.id} users={users} />
       </div>}
     </div>; })}
   </div>;
