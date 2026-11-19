@@ -7,6 +7,7 @@ import { assignLeadNo, assignQuoteNo, assignProjectNo, bumpProjectIteration, ens
 import { WO_STATUSES, createWorkOrder, listWorkOrders, decorateWO, ensureDefaultWorkOrder, rateForClass, dependencyBlock, openChecklistCount, ensureWOTemplates } from "./work-orders.ts";
 import { buildWorkspaceExport } from "./export.ts";
 import { portalAccountByToken, buildPortalData, renderPortalHtml } from "./portal.ts";
+import { REPORT_KINDS, parseRecipients, sendScheduledReport } from "./report-schedules.ts";
 import { newTotpSecret, verifyTotp, otpauthUrl, createMfaPending, peekMfaPending, consumeMfaPending } from "./mfa.ts";
 import { ensureInspTemplates, createInspection, decorateInsp, inspProgress, inspectionGateForWO, photoRequiredMissing, logInspEvent, parseSections, INSP_RESULTS } from "./inspections.ts";
 import { ensureReportTemplates, listReportTemplates, buildReportContext, renderReportHtml, generateReport, listReports, sampleReportContext } from "./reports.ts";
@@ -477,6 +478,29 @@ app.post("/api/auth/mfa/disable", requireAuth, (req: any, res) => {
   if (!verifyPassword(String(req.body?.password || ""), u.password_hash)) return res.status(401).json({ error: { code: "bad_credentials" } });
   db.prepare("UPDATE users SET totp_enabled=0, totp_secret=NULL WHERE id=?").run(u.id);
   res.json({ enabled: false });
+});
+app.get("/api/report-schedules", requireAuth, modGate("automations"), (req: any, res) => {
+  res.json(db.prepare("SELECT * FROM report_schedules WHERE workspace_id=? ORDER BY kind").all(req.user.workspace_id));
+});
+app.put("/api/report-schedules/:kind", requireAuth, modGate("automations", "edit"), (req: any, res) => {
+  const kind = REPORT_KINDS.includes(req.params.kind) ? req.params.kind : null;
+  if (!kind) return res.status(422).json({ error: { code: "bad_kind" } });
+  const b = req.body || {}; const ws = req.user.workspace_id;
+  const recipients = parseRecipients(String(b.recipients || "")).join(", ");
+  const weekday = Math.min(6, Math.max(0, Number(b.weekday) || 0)); const hour = Math.min(23, Math.max(0, Number(b.hour) || 0));
+  const existing = db.prepare("SELECT * FROM report_schedules WHERE workspace_id=? AND kind=?").get(ws, kind) as any;
+  if (existing) db.prepare("UPDATE report_schedules SET weekday=?, hour=?, recipients=?, enabled=? WHERE id=?").run(weekday, hour, recipients, b.enabled ? 1 : 0, existing.id);
+  else db.prepare("INSERT INTO report_schedules (id,workspace_id,kind,weekday,hour,recipients,enabled,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?)").run(uid("rsc"), ws, kind, weekday, hour, recipients, b.enabled ? 1 : 0, req.user.id, now());
+  res.json(db.prepare("SELECT * FROM report_schedules WHERE workspace_id=? AND kind=?").get(ws, kind));
+});
+app.post("/api/report-schedules/:kind/send-now", requireAuth, modGate("automations", "edit"), async (req: any, res) => {
+  try {
+    const sched = db.prepare("SELECT * FROM report_schedules WHERE workspace_id=? AND kind=?").get(req.user.workspace_id, req.params.kind) as any;
+    if (!sched) return res.status(404).json({ error: { code: "no_schedule", message: "Save the schedule first." } });
+    if (!parseRecipients(sched.recipients).length) return res.status(422).json({ error: { code: "no_recipients", message: "Add at least one recipient email." } });
+    const out = await sendScheduledReport(sched);
+    res.json({ ok: true, ...out });
+  } catch (e: any) { res.status(500).json({ error: { code: "send_failed", message: String(e?.message || e) } }); }
 });
 app.post("/api/onboarding/sample", requireAuth, (req: any, res) => {
   if (req.user.role !== "OWNER") return res.status(403).json({ error: { code: "owner_only" } });
@@ -2564,7 +2588,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-export const APP_VERSION = "v99";
+export const APP_VERSION = "v100";
 app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: APP_VERSION, jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {

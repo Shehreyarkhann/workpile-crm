@@ -2798,6 +2798,7 @@ function AIAssistant({ go, openLead, openJob }: any) {
     <ProviderCard />
     <PlaybookCard />
     <LearnedCard />
+    <SchedulesCard />
     <AgentMetricsCard />
     <QuietHoursCard />
     <SuppressionsCard />
@@ -3668,6 +3669,34 @@ function JobExpenses({ jobId, onDone }: any) {
       <select value={f.work_order_id} onChange={e => setF({ ...f, work_order_id: e.target.value })} style={{ width: "auto" }}><option value="">Whole job</option>{wos.map((w: any) => <option key={w.id} value={w.id}>{w.display_no || ("W" + String(w.seq).padStart(2, "0"))}</option>)}</select>
       <button className="btn small" onClick={add}>Add expense</button>
     </div>
+  </div>;
+}
+function SchedulesCard() {
+  const [kind, setKind] = useState("weekly_status");
+  const [all, setAll] = useState<any[]>([]);
+  const [f, setF] = useState<any>({ weekday: 1, hour: 8, recipients: "", enabled: false });
+  const [msg, setMsg] = useState("");
+  const load = () => { api("/api/report-schedules").then((r: any) => setAll(Array.isArray(r) ? r : [])).catch(() => {}); };
+  useEffect(load, []);
+  useEffect(() => { const s = all.find((x: any) => x.kind === kind); setF(s ? { weekday: s.weekday, hour: s.hour, recipients: s.recipients || "", enabled: !!s.enabled } : { weekday: 1, hour: 8, recipients: "", enabled: false }); }, [kind, all]);
+  const cur = all.find((x: any) => x.kind === kind);
+  const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  return <div className="card" style={{ marginTop: 16 }}>
+    <h3 style={{ marginTop: 0 }}>🗓 Scheduled reports</h3>
+    {msg && <p className="muted">{msg}</p>}
+    <div className="rowflex" style={{ flexWrap: "wrap" }}>
+      <select value={kind} onChange={e => setKind(e.target.value)} style={{ width: "auto" }}><option value="weekly_status">Weekly status report</option><option value="business_snapshot">Business snapshot</option></select>
+      <label className="rowflex" style={{ gap: 6 }}><input type="checkbox" checked={!!f.enabled} onChange={e => setF({ ...f, enabled: e.target.checked })} /> Send automatically</label>
+      <select value={f.weekday} onChange={e => setF({ ...f, weekday: Number(e.target.value) })} style={{ width: "auto" }}>{DAYS.map((d, i) => <option key={d} value={i}>{d}</option>)}</select>
+      <select value={f.hour} onChange={e => setF({ ...f, hour: Number(e.target.value) })} style={{ width: "auto" }}>{Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{h === 0 ? "12 AM" : h < 12 ? `${h} AM` : h === 12 ? "12 PM" : `${h - 12} PM`}</option>)}</select>
+    </div>
+    <label className="f" style={{ marginTop: 8 }}>Recipients (emails, comma-separated)<input value={f.recipients} onChange={e => setF({ ...f, recipients: e.target.value })} placeholder="owner@company.com, ops@company.com" /></label>
+    <div className="rowflex" style={{ marginTop: 8 }}>
+      <button className="btn" onClick={async () => { try { await api(`/api/report-schedules/${kind}`, { method: "PUT", body: f }); setMsg("Schedule saved ✓"); load(); } catch (e: any) { setMsg(e.message); } }}>Save schedule</button>
+      <button className="btn ghost" onClick={async () => { try { const r: any = await api(`/api/report-schedules/${kind}/send-now`, { method: "POST", body: {} }); setMsg(`Sent now to ${r.sent_to.join(", ")} ✓`); load(); } catch (e: any) { setMsg(e.message); } }}>Send now</button>
+      {cur?.last_sent_at && <span className="muted" style={{ fontSize: 12.5 }}>Last sent {String(cur.last_sent_at).slice(0, 16).replace("T", " ")}</span>}
+    </div>
+    <p className="muted" style={{ fontSize: 12.5, marginTop: 8 }}>The report is generated from live data at send time — the same figures the Copilot produces — and emailed as a Word document.</p>
   </div>;
 }
 function inspChip(i: any): [string, string, string] {

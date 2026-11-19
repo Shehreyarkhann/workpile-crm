@@ -76,6 +76,7 @@ export function initSchema() {
   CREATE TABLE IF NOT EXISTS subscriptions (id TEXT PRIMARY KEY, workspace_id TEXT, plan TEXT, status TEXT DEFAULT 'trialing', stripe_customer_id TEXT, stripe_subscription_id TEXT, current_period_end TEXT, created_at TEXT, updated_at TEXT);
   CREATE TABLE IF NOT EXISTS oauth_connections (id TEXT PRIMARY KEY, workspace_id TEXT, provider TEXT, account_email TEXT, status TEXT DEFAULT 'not_configured', token_ref TEXT, last_poll_at TEXT, last_error TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS portal_uploads (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, filename TEXT, note TEXT, created_at TEXT);
+  CREATE TABLE IF NOT EXISTS report_schedules (id TEXT PRIMARY KEY, workspace_id TEXT, kind TEXT, weekday INTEGER DEFAULT 1, hour INTEGER DEFAULT 8, recipients TEXT, enabled INTEGER DEFAULT 0, last_sent_at TEXT, created_by TEXT, created_at TEXT, UNIQUE(workspace_id, kind));
   CREATE TABLE IF NOT EXISTS expenses (id TEXT PRIMARY KEY, workspace_id TEXT, job_id TEXT, work_order_id TEXT, vendor TEXT, description TEXT, category TEXT DEFAULT 'other', amount REAL DEFAULT 0, spent_on TEXT, receipt_id TEXT, created_by TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS portal_tokens (id TEXT PRIMARY KEY, workspace_id TEXT, account_id TEXT, token TEXT UNIQUE, created_at TEXT, revoked_at TEXT);
   CREATE TABLE IF NOT EXISTS memberships (user_id TEXT, workspace_id TEXT, role TEXT, created_at TEXT, PRIMARY KEY (user_id, workspace_id));
