@@ -6,6 +6,8 @@ import { triageLead, packetCheck, demandGap, demandPool, injectionScan } from ".
 import { assignLeadNo, assignQuoteNo, assignProjectNo, bumpProjectIteration, ensureNumbers } from "./numbering.ts";
 import { WO_STATUSES, createWorkOrder, listWorkOrders, decorateWO, ensureDefaultWorkOrder, rateForClass, dependencyBlock, openChecklistCount, ensureWOTemplates } from "./work-orders.ts";
 import { ensureInspTemplates, createInspection, decorateInsp, inspProgress, inspectionGateForWO, photoRequiredMissing, logInspEvent, parseSections, INSP_RESULTS } from "./inspections.ts";
+import { ensureReportTemplates, listReportTemplates, buildReportContext, renderReportHtml, generateReport, listReports } from "./reports.ts";
+import { storageGet } from "./storage.ts";
 import { snapshotForTemplate } from "./sections.ts";
 import { BUILTIN_ROLES, EDITABLE_BUILTINS, getCustomRole, listCustomRoles, isAssignableRole, createCustomRole } from "./custom-roles.ts";
 import { parseSheet, planSheetImport, STAGE_NEXT_ACTION } from "./sheet-import.ts";
@@ -1371,6 +1373,71 @@ app.post("/api/jobs/:id/work-orders/from-template", requireAuth, modGate("jobs",
 
 // ---------- v88: inspections on work orders (INSPECTIONS-SCOPE T1) ----------
 const inspRow = (req: any) => db.prepare("SELECT * FROM inspections WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+// ---- v90: project files roll-up ----
+app.get("/api/jobs/:id/files", requireAuth, (req: any, res: any) => {
+  const job = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!job) return res.status(404).json({ error: { code: "not_found" } });
+  const w = req.user.workspace_id;
+  const rows = db.prepare(`SELECT a.*, 'job' AS via FROM attachments a WHERE a.workspace_id=? AND a.entity_type='job' AND a.entity_id=?
+    UNION ALL SELECT a.*, 'work order' FROM attachments a WHERE a.workspace_id=? AND a.entity_type='work_order' AND a.entity_id IN (SELECT id FROM work_orders WHERE workspace_id=? AND job_id=?)
+    UNION ALL SELECT a.*, 'inspection' FROM attachments a WHERE a.workspace_id=? AND a.entity_type='inspection' AND a.entity_id IN (SELECT i.id FROM inspections i JOIN work_orders w2 ON w2.id=i.work_order_id WHERE i.workspace_id=? AND w2.job_id=?)
+    UNION ALL SELECT a.*, 'material' FROM attachments a WHERE a.workspace_id=? AND a.entity_type='wo_material' AND a.entity_id IN (SELECT m.id FROM wo_materials m JOIN work_orders w3 ON w3.id=m.work_order_id WHERE m.workspace_id=? AND w3.job_id=?)
+    ORDER BY created_at DESC`).all(w, job.id, w, w, job.id, w, w, job.id, w, w, job.id) as any[];
+  res.json(rows);
+});
+// ---- v90: inspection report templates + generation ----
+app.get("/api/report-templates", requireAuth, (req: any, res: any) => { res.json(listReportTemplates(req.user.workspace_id)); });
+app.post("/api/report-templates", requireAuth, (req: any, res: any) => {
+  if (!permsOf(req.user).can_settings) return res.status(403).json({ error: { code: "forbidden" } });
+  ensureReportTemplates(req.user.workspace_id);
+  const b = req.body || {}; const id = uid("rtpl");
+  db.prepare("INSERT INTO report_templates (id,workspace_id,name,blocks,branding,active,created_at,updated_at) VALUES (?,?,?,?,?,1,?,?)").run(id, req.user.workspace_id, String(b.name || "Report template").slice(0, 120), JSON.stringify(Array.isArray(b.blocks) ? b.blocks : []), JSON.stringify(b.branding || {}), now(), now());
+  const t = db.prepare("SELECT * FROM report_templates WHERE id=?").get(id) as any;
+  res.status(201).json({ ...t, blocks: JSON.parse(t.blocks || "[]"), branding: JSON.parse(t.branding || "{}") });
+});
+app.patch("/api/report-templates/:id", requireAuth, (req: any, res: any) => {
+  if (!permsOf(req.user).can_settings) return res.status(403).json({ error: { code: "forbidden" } });
+  const t = db.prepare("SELECT * FROM report_templates WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!t) return res.status(404).json({ error: { code: "not_found" } });
+  const b = req.body || {};
+  db.prepare("UPDATE report_templates SET name=?, blocks=?, branding=?, updated_at=? WHERE id=?").run(b.name !== undefined ? String(b.name).slice(0, 120) : t.name, b.blocks !== undefined ? JSON.stringify(b.blocks) : t.blocks, b.branding !== undefined ? JSON.stringify(b.branding) : t.branding, now(), t.id);
+  const u = db.prepare("SELECT * FROM report_templates WHERE id=?").get(t.id) as any;
+  res.json({ ...u, blocks: JSON.parse(u.blocks || "[]"), branding: JSON.parse(u.branding || "{}") });
+});
+app.get("/api/inspections/:id/report-preview", requireAuth, (req: any, res: any) => {
+  const ctx = buildReportContext(req.user.workspace_id, req.params.id);
+  if (!ctx) return res.status(404).json({ error: { code: "not_found" } });
+  ensureReportTemplates(req.user.workspace_id);
+  const tplRow = req.query.template_id ? db.prepare("SELECT * FROM report_templates WHERE id=? AND workspace_id=?").get(String(req.query.template_id), req.user.workspace_id) as any : db.prepare("SELECT * FROM report_templates WHERE workspace_id=? AND active=1 ORDER BY created_at LIMIT 1").get(req.user.workspace_id) as any;
+  if (!tplRow) return res.status(404).json({ error: { code: "no_template" } });
+  const { html } = renderReportHtml(ctx, { ...tplRow, blocks: JSON.parse(tplRow.blocks || "[]"), branding: JSON.parse(tplRow.branding || "{}") }, {});
+  res.setHeader("Content-Type", "text/html"); res.send(html);
+});
+app.get("/api/inspections/:id/reports", requireAuth, (req: any, res: any) => { res.json(listReports(req.user.workspace_id, req.params.id)); });
+app.post("/api/inspections/:id/reports", requireAuth, async (req: any, res: any) => {
+  let out: any; try { out = await generateReport(req.user.workspace_id, req.user.id, req.params.id, (req.body || {}).template_id, (req.body || {}).overrides || {}); } catch (e: any) { return res.status(500).json({ error: { code: "report_failed", message: String(e?.message || e) } }); }
+  if ((out as any).error === "not_found") return res.status(404).json({ error: { code: "not_found" } });
+  if ((out as any).error === "not_closed") return res.status(422).json({ error: { code: "not_closed", message: "Close the inspection (record a result) before generating the final report" } });
+  if ((out as any).error) return res.status(422).json({ error: { code: (out as any).error } });
+  res.status(201).json((out as any).report);
+});
+app.get("/api/reports/:id/download", requireAuth, (req: any, res: any) => {
+  const r = db.prepare("SELECT * FROM inspection_reports WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!r) return res.status(404).json({ error: { code: "not_found" } });
+  const key = r.storage_key || r.html_key; const buf = key ? storageGet(key) : null;
+  if (!buf) return res.status(404).json({ error: { code: "file_gone" } });
+  const isPdf = !!r.storage_key;
+  res.setHeader("Content-Type", isPdf ? "application/pdf" : "text/html");
+  res.setHeader("Content-Disposition", `attachment; filename="${r.number}-v${r.version}.${isPdf ? "pdf" : "html"}"`);
+  res.send(buf);
+});
+app.get("/report/:token", (req: any, res: any) => {
+  const r = db.prepare("SELECT * FROM inspection_reports WHERE share_token=?").get(req.params.token) as any;
+  if (!r) return res.status(404).send("Report not found");
+  const buf = r.html_key ? storageGet(r.html_key) : null;
+  if (!buf) return res.status(404).send("Report file missing");
+  res.setHeader("Content-Type", "text/html"); res.send(buf.toString());
+});
 app.get("/api/work-orders/:id/inspections", requireAuth, modGate("jobs"), (req: any, res) => {
   const wo = db.prepare("SELECT * FROM work_orders WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!wo) return res.status(404).json({ error: { code: "not_found" } });
@@ -2294,7 +2361,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-export const APP_VERSION = "v89";
+export const APP_VERSION = "v90";
 app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: APP_VERSION, jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {

@@ -3304,7 +3304,7 @@ function WOCosts({ wo, users, workers, siblings, onPatch, refresh }: any) {
       </div>
     </div>
     <div style={{ marginTop: 8 }}><b style={{ fontSize: 13 }}>🧱 Materials ({(wo.materials_list || []).length})</b>
-      {(wo.materials_list || []).map((m: any) => <div key={m.id} className="rowflex" style={{ fontSize: 12.5, gap: 6 }}><span style={{ flex: 1 }}>{m.description}{m.supplier ? " · " + m.supplier : ""}</span><span>{m.qty} × ${m.unit_cost} = {money(m.qty * m.unit_cost)}</span><button className="btn ghost small" style={{ padding: "0 4px" }} onClick={() => post(`/api/materials/${m.id}`, undefined, "DELETE")}>✕</button></div>)}
+      {(wo.materials_list || []).map((m: any) => <div key={m.id} className="rowflex" style={{ fontSize: 12.5, gap: 6 }}><span style={{ flex: 1 }}>{m.description}{m.supplier ? " · " + m.supplier : ""}</span><span>{m.qty} × ${m.unit_cost} = {money(m.qty * m.unit_cost)}</span><MatFiles matId={m.id} /><button className="btn ghost small" style={{ padding: "0 4px" }} onClick={() => post(`/api/materials/${m.id}`, undefined, "DELETE")}>✕</button></div>)}
       <div className="rowflex" style={{ marginTop: 5, flexWrap: "wrap", gap: 5 }}>
         <input placeholder="Description — e.g. 6-mil poly sheeting" style={{ flex: 2, minWidth: 150 }} value={mf.description} onChange={e => setMf({ ...mf, description: e.target.value })} />
         <input type="number" placeholder="Qty" style={{ width: 64 }} value={mf.qty} onChange={e => setMf({ ...mf, qty: e.target.value })} />
@@ -3347,6 +3347,65 @@ function WOTemplatesEditor() {
       </div>)}
       <div className="rowflex" style={{ marginTop: 8 }}><button className="btn ghost small" onClick={() => setEdit({ ...edit, items: [...edit.items, { title: "", description: "", est_hours: "" }] })}>+ Work order</button><span style={{ flex: 1 }} /><button className="btn small" onClick={save}>Save template</button><button className="btn ghost small" onClick={() => setEdit(null)}>Cancel</button></div>
     </div>}
+  </div>;
+}
+function MatFiles({ matId }: any) {
+  const [files, setFiles] = useState<any[] | null>(null); const [busy, setBusy] = useState(false); const [err, setErr] = useState("");
+  const load = () => { api(`/api/attachments?entity_type=wo_material&entity_id=${matId}`).then((f: any) => setFiles(Array.isArray(f) ? f : [])).catch(() => setFiles([])); };
+  const upload = (e: any) => { const f = e.target.files?.[0]; if (!f) return; setBusy(true); setErr(""); const r = new FileReader(); r.onload = async () => { try { await api("/api/attachments", { method: "POST", body: { entity_type: "wo_material", entity_id: matId, name: f.name, mime: f.type || "application/octet-stream", data_base64: String(r.result).split(",")[1] } }); load(); } catch (er: any) { setErr(er.message); } setBusy(false); }; r.readAsDataURL(f); };
+  return <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+    <button className="btn ghost small" style={{ padding: "0 5px" }} onClick={() => files === null ? load() : setFiles(null)}>📎{files !== null ? ` (${files.length})` : ""}</button>
+    <label className="btn ghost small" style={{ padding: "0 5px", cursor: "pointer" }}>{busy ? "…" : "＋ file"}<input type="file" accept="image/*,.pdf,.doc,.docx" style={{ display: "none" }} onChange={upload} /></label>
+    {err && <span style={{ color: "#991B1B" }}>{err}</span>}
+    {files !== null && files.length > 0 && <span style={{ display: "block", width: "100%" }}>{files.map(f => <a key={f.id} href={`/api/attachments/${f.id}/download`} target="_blank" rel="noreferrer" style={{ display: "block", fontSize: 11.5 }}>📄 {f.name} <span className="muted">({f.category || "file"})</span></a>)}</span>}
+  </span>;
+}
+function ProjectFiles({ jobId }: any) {
+  const [files, setFiles] = useState<any[]>([]); const [cat, setCat] = useState(""); const [q, setQ] = useState("");
+  useEffect(() => { api(`/api/jobs/${jobId}/files`).then((f: any) => setFiles(Array.isArray(f) ? f : [])).catch(() => {}); }, [jobId]);
+  const cats = [...new Set(files.map(f => f.category || "other"))];
+  const shown = files.filter(f => (!cat || (f.category || "other") === cat) && (!q || (f.name + " " + (f.caption || "")).toLowerCase().includes(q.toLowerCase())));
+  return <div className="card" style={{ padding: 12, marginTop: 10 }}>
+    <div className="rowflex"><b>🗂 Project files ({files.length})</b><span style={{ flex: 1 }} />
+      <select value={cat} onChange={e => setCat(e.target.value)} style={{ width: "auto" }}><option value="">All categories</option>{cats.map(c => <option key={c} value={c}>{c}</option>)}</select>
+      <input placeholder="Search files…" style={{ width: 170 }} value={q} onChange={e => setQ(e.target.value)} /></div>
+    {shown.length === 0 && <p className="muted" style={{ fontSize: 12.5, marginTop: 6 }}>No files match. Uploads on work orders, inspections and materials land here automatically, organized by category.</p>}
+    <div style={{ marginTop: 6 }}>{shown.map(f => <div key={f.id} className="rowflex" style={{ fontSize: 12.5, padding: "4px 0", borderBottom: "1px solid #F0F3F0" }}>
+      <a href={`/api/attachments/${f.id}/download`} target="_blank" rel="noreferrer" style={{ flex: 1 }}>{(f.mime || "").startsWith("image/") ? "🖼" : "📄"} {f.name}</a>
+      <span className="tinyBadge">{f.category || "other"}</span><span className="muted">via {f.via}</span><span className="muted">{String(f.created_at || "").slice(0, 10)}</span>
+    </div>)}</div>
+  </div>;
+}
+function InspReports({ insp, photos }: any) {
+  const [tpls, setTpls] = useState<any[]>([]); const [tpl, setTpl] = useState(""); const [reports, setReports] = useState<any[]>([]);
+  const [review, setReview] = useState(false); const [summary, setSummary] = useState(""); const [cover, setCover] = useState(""); const [excl, setExcl] = useState<string[]>([]);
+  const [msg, setMsg] = useState(""); const [busy, setBusy] = useState(false);
+  const loadReports = () => { api(`/api/inspections/${insp.id}/reports`).then((r: any) => setReports(Array.isArray(r) ? r : [])).catch(() => {}); };
+  useEffect(() => { api("/api/report-templates").then((t: any) => { setTpls(Array.isArray(t) ? t : []); if (Array.isArray(t) && t[0]) setTpl(t[0].id); }).catch(() => {}); loadReports(); }, []);
+  const generate = async () => { setBusy(true); setMsg(""); try { await api(`/api/inspections/${insp.id}/reports`, { method: "POST", body: { template_id: tpl || undefined, overrides: { summary: summary || undefined, cover_photo_id: cover || undefined, exclude_photo_ids: excl } } }); setReview(false); loadReports(); setMsg("Report generated."); } catch (e: any) { setMsg(e.message + " — close the inspection first (record a result) if it is still open."); } setBusy(false); };
+  const imgPhotos = (photos || []).filter((p: any) => (p.mime || "").startsWith("image/"));
+  return <div style={{ marginTop: 12 }}>
+    <b style={{ fontSize: 13 }}>📄 Reports</b>
+    {msg && <p className="muted" style={{ fontSize: 12.5 }}>{msg}</p>}
+    <div className="rowflex" style={{ marginTop: 5, flexWrap: "wrap", gap: 5 }}>
+      <select value={tpl} onChange={e => setTpl(e.target.value)} style={{ width: "auto" }}>{tpls.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}</select>
+      <a className="btn ghost small" href={`/api/inspections/${insp.id}/report-preview${tpl ? `?template_id=${tpl}` : ""}`} target="_blank" rel="noreferrer">Preview</a>
+      <button className="btn small" disabled={insp.status !== "closed"} title={insp.status !== "closed" ? "Close the inspection first" : ""} onClick={() => { setSummary(insp.summary || ""); setExcl([]); setCover(""); setReview(true); }}>Generate report</button>
+      {insp.status !== "closed" && <span className="muted" style={{ fontSize: 12 }}>Available once the inspection is closed with a result.</span>}
+    </div>
+    {reports.map(r => <div key={r.id} className="rowflex" style={{ fontSize: 12.5, padding: "4px 0", borderBottom: "1px solid #F0F3F0" }}>
+      <span style={{ flex: 1 }}>📄 {r.number} · v{r.version} <span className="tinyBadge">{r.format === "pdf" ? "PDF" : "HTML"}</span> <span className="muted">{String(r.created_at || "").slice(0, 10)}</span></span>
+      <a className="btn ghost small" href={`/api/reports/${r.id}/download`} target="_blank" rel="noreferrer">Download</a>
+      <button className="btn ghost small" onClick={() => { navigator.clipboard?.writeText(`${location.origin}/report/${r.share_token}`); setMsg("Share link copied."); }}>Copy share link</button>
+    </div>)}
+    {review && <div className="modalWrap" onClick={() => setReview(false)}><div className="modal" style={{ maxWidth: 640 }} onClick={e => e.stopPropagation()}>
+      <h3 style={{ marginTop: 0 }}>Review before generating</h3>
+      <label className="f">Executive summary (report-only edit)<textarea rows={3} value={summary} onChange={e => setSummary(e.target.value)} /></label>
+      <label className="f">Cover photo<select value={cover} onChange={e => setCover(e.target.value)}><option value="">First included photo</option>{imgPhotos.map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+      {imgPhotos.length > 0 && <><b style={{ fontSize: 12.5 }}>Photos in this report</b>
+      <div style={{ maxHeight: 180, overflowY: "auto", marginTop: 4 }}>{imgPhotos.map((p: any) => <label key={p.id} className="rowflex" style={{ fontSize: 12.5, gap: 6 }}><input type="checkbox" checked={!excl.includes(p.id)} onChange={e => setExcl(x => e.target.checked ? x.filter(i => i !== p.id) : [...x, p.id])} /><span style={{ flex: 1 }}>{p.name}</span><span className="muted">{p.tag || ""}</span></label>)}</div></>}
+      <div className="rowflex" style={{ marginTop: 12 }}><span style={{ flex: 1 }} /><button className="btn ghost" onClick={() => setReview(false)}>Cancel</button><button className="btn" disabled={busy} onClick={generate}>{busy ? "Generating…" : "Generate PDF"}</button></div>
+    </div></div>}
   </div>;
 }
 function inspChip(i: any): [string, string, string] {
@@ -3400,6 +3459,7 @@ function InspectionView({ id, users, onBack, onSwitch }: any) {
       <label className="f">Conditions observed<textarea rows={2} value={ov.conditions} onChange={e => setOv({ ...ov, conditions: e.target.value })} /></label>
       <label className="f">Inspector's summary / conclusion<textarea rows={3} value={ov.summary} onChange={e => setOv({ ...ov, summary: e.target.value })} /></label>
       <button className="btn small" onClick={saveOverview}>Save overview</button>
+      <InspReports insp={d.inspection} photos={d.photos || []} />
       {(insp.started_at || insp.submitted_at || insp.decided_at) && <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>{insp.started_at ? "Started " + String(insp.started_at).slice(0, 16).replace("T", " ") + " · " : ""}{insp.submitted_at ? "Submitted " + String(insp.submitted_at).slice(0, 16).replace("T", " ") + " · " : ""}{insp.decided_at ? "Decided " + String(insp.decided_at).slice(0, 16).replace("T", " ") : ""}{insp.review_note ? " — " + insp.review_note : ""}</p>}
     </div>}
     {tab === "checklist" && <div style={{ marginTop: 10 }}>
@@ -3664,6 +3724,7 @@ function JobDetail({ id, users, me, priceBook, close, refresh, openLead }: any) 
       <JobChat jobId={id} me={me} users={users} />
       {(d.emails || []).length > 0 && <div className="card" style={{ marginTop: 12 }}><h3 style={{ marginTop: 0 }}>📧 Client emails on this job</h3>{(d.emails || []).map((e: any) => <div key={e.id} style={{ padding: "6px 0", borderBottom: "1px solid #eef2f7" }}><b>{e.subject || "(no subject)"}</b> <span className="muted">· {e.from_name || e.from_email} · {dt(e.created_at)}</span><div className="muted" style={{ fontSize: 12.5 }}>{String(e.body || "").slice(0, 220)}</div></div>)}</div>}
       <JobFiles jobId={id} />
+      <ProjectFiles jobId={id} />
       <h4 style={{ marginTop: 16 }}>Invoices</h4>
       {d.deposits && d.deposits.taken > 0 && <p className="muted" style={{ margin: "2px 0 8px" }}>💳 Deposits on this project: <b>{money(d.deposits.taken)}</b> collected · {money(d.deposits.applied)} applied to invoices{d.deposits.available > 0 ? <> · <b>{money(d.deposits.available)}</b> still available as credit</> : ""}</p>}
       {(d.invoices || []).map((inv: any) => <div className="check" key={inv.id}><span style={{ flex: 1 }}><b>{inv.number}</b> · {money(inv.total)} · {inv.status} · balance {money(inv.balance)}{inv.deposit_credit > 0 ? ` · 💳 deposit applied ${money(inv.deposit_credit)}` : ""}{inv.due_at ? ` · due ${new Date(inv.due_at).toLocaleDateString()}` : ""}</span>{inv.balance > 0 && inv.status !== "void" && <><input id={"jpay-" + inv.id} type="number" placeholder="$" style={{ width: 90 }} /><button className="btn ghost small" onClick={async () => { const v = Number((document.getElementById("jpay-" + inv.id) as HTMLInputElement).value); if (!(v > 0)) return; try { await api(`/api/invoices/${inv.id}/payments`, { method: "POST", body: { amount: v } }); toast("Payment recorded ✓"); load(); } catch (e: any) { setMsg(e.message); } }}>Record payment</button></>}
