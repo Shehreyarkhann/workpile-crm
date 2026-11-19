@@ -91,7 +91,7 @@ export async function gmailPoll(conn: any, fetchFn: FetchFn = realFetch): Promis
     const headers: Record<string, string> = {}; for (const h of full.payload?.headers || []) headers[h.name.toLowerCase()] = h.value;
     const from = splitFrom(headers.from || "");
     inPoll.add(id);
-    out.push({ from_email: from.email, from_name: from.name, subject: headers.subject || "", body: gmailBody(full.payload) || full.snippet || "", received_at: headers.date ? new Date(headers.date).toISOString() : now(), external_id: id });
+    out.push({ from_email: from.email, from_name: from.name, subject: headers.subject || "", body: gmailBody(full.payload) || full.snippet || "", received_at: headers.date ? new Date(headers.date).toISOString() : now(), external_id: id, headers: { "list-unsubscribe": headers["list-unsubscribe"] || "", "list-id": headers["list-id"] || "", precedence: headers["precedence"] || "", "auto-submitted": headers["auto-submitted"] || "" } });
   };
   const listPage = (q: string, pageToken?: string) => getJson(`https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${GMAIL_PAGE}&q=${encodeURIComponent(q)}${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`, token, fetchFn);
   // Lane 1: incremental (skipped on the very first poll — backfill covers it)

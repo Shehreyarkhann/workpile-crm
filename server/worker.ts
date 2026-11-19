@@ -62,8 +62,10 @@ export function replayDelivery(deliveryId: string): boolean {
 }
 
 let timer: any = null;
+let lastRetriage = 0;
+function retriageTick() { const t = Date.now(); if (t - lastRetriage < 30 * 60000) return; lastRetriage = t; import("./inbox.ts").then(m => m.retriageSweep()).catch(() => {}); }
 export function startWorker(intervalMs = 15000) {
   if (timer) return;
-  timer = setInterval(() => { processDeliveries().catch(() => {}); processEventDeliveries().catch(() => {}); processFollowups(process.env.BASE_URL || "").catch(() => {}); processCampaigns(process.env.BASE_URL || "").catch(() => {}); try { processReplyClassification(); } catch {} try { processRecurrences(); } catch {} processProactive().catch(() => {}); try { processAutomations(); } catch {} import("./agent-learning.ts").then(m => m.processLearning()).catch(() => {}); import("./report-schedules.ts").then(m => m.processReportSchedules()).catch(() => {}); chaseMissing().catch(() => {}); chaseMissingReports().catch(() => {}); processJobs(JOB_HANDLERS).catch(() => {}); try { relayOutbox(); } catch {} }, intervalMs);
+  timer = setInterval(() => { processDeliveries().catch(() => {}); processEventDeliveries().catch(() => {}); processFollowups(process.env.BASE_URL || "").catch(() => {}); processCampaigns(process.env.BASE_URL || "").catch(() => {}); try { processReplyClassification(); } catch {} try { processRecurrences(); } catch {} processProactive().catch(() => {}); try { processAutomations(); } catch {} import("./agent-learning.ts").then(m => m.processLearning()).catch(() => {}); import("./report-schedules.ts").then(m => m.processReportSchedules()).catch(() => {}); retriageTick(); chaseMissing().catch(() => {}); chaseMissingReports().catch(() => {}); processJobs(JOB_HANDLERS).catch(() => {}); try { relayOutbox(); } catch {} }, intervalMs);
   timer.unref?.();
 }

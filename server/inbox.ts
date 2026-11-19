@@ -1,10 +1,14 @@
+import { db, now } from "./db.ts";
+
 // Workpile — inbox ingestion (§4.1 email branch + §25 P0-2 full inbox triage)
 // Provider note: Gmail / Microsoft 365 OAuth pollers feed this same pipeline once the
 // workspace connects credentials; the parse/categorize/create path below is provider-
 // agnostic and is what those pollers call. Every email becomes EITHER a lead OR a
 // triaged inbox item with an owner — nothing sits unowned (Gregory's 3,000-email rule).
 
-export type InboxCategory = "lead" | "proposal" | "field" | "client_active_job" | "vendor" | "finance" | "admin";
+export type InboxCategory = "lead" | "proposal" | "field" | "client_active_job" | "vendor" | "finance" | "admin" | "spam" | "marketing" | "notification";
+
+export const SCREENED_CATEGORIES = ["spam", "marketing", "notification"];
 
 const RULES: [InboxCategory, RegExp][] = [
   ["finance", /invoice|payment|bill|receipt|payroll|timesheet attached/i],
@@ -27,11 +31,52 @@ export function extractPhone(text: string): string {
   return m ? m[0] : "";
 }
 
-export interface InboundEmail { from_name?: string; from_email?: string; phone?: string; subject?: string; body?: string; received_at?: string }
+export interface InboundEmail { from_name?: string; from_email?: string; phone?: string; subject?: string; body?: string; received_at?: string; headers?: Record<string, string> }
+// v106 — the smart gate. Business categorization only ever sees mail that
+// survives this screen: bulk, automated and junk mail is classified as
+// spam / marketing / notification and NEVER becomes a lead, a queue item
+// or a first touch. Deliberately conservative — only high-confidence
+// signals demote, so a human inquiry from a personal address always
+// passes through to the business rules.
+const BULK_LOCALPART = /^(no-?reply|do-?not-?reply|notifications?|automated|system|mailer-daemon|postmaster)$/i;
+const MARKETING_LOCALPART = /^(newsletter|news|marketing|promo|promos|promotions|deals|offers|digest|updates|hello|team|info)@/i;
+const PROMO_PHRASES = [/\d+% off/i, /sale ends/i, /shop now/i, /limited[- ]time/i, /free shipping/i, /buy one get/i, /act now/i, /exclusive offer/i, /discount code/i, /promo code/i];
+const SPAM_PHRASES = [/you('ve| have) won/i, /lottery winner/i, /claim your (prize|reward)/i, /viagra|cialis/i, /crypto (giveaway|doubling)/i, /wire transfer.*inheritance/i, /dear (beneficiary|winner)/i, /risk-free investment/i];
+const MACHINE_SUBJECTS = [/verify your (email|account)/i, /password reset/i, /security alert/i, /sign-in (attempt|from)/i, /your (verification )?code is/i, /two-factor/i, /delivery (notification|update)/i, /has been shipped/i, /out for delivery/i];
+
+export function screenEmail(e: InboundEmail): "spam" | "marketing" | "notification" | null {
+  const from = String(e.from_email || "").toLowerCase();
+  const local = from.split("@")[0] || "";
+  const subject = e.subject || ""; const body = e.body || "";
+  const text = `${subject} ${body}`;
+  const h = e.headers || {};
+  if (SPAM_PHRASES.some(re => re.test(text))) return "spam";
+  const hasListHeader = !!(h["list-unsubscribe"] || h["list-id"]);
+  const promoHits = PROMO_PHRASES.filter(re => re.test(text)).length;
+  if (hasListHeader && (promoHits >= 1 || MARKETING_LOCALPART.test(from) || /unsubscribe/i.test(body))) return "marketing";
+  if (MARKETING_LOCALPART.test(from) && promoHits >= 1) return "marketing";
+  if (promoHits >= 2 && /unsubscribe/i.test(body)) return "marketing";
+  if (BULK_LOCALPART.test(local)) return "notification";
+  if (h["auto-submitted"] && h["auto-submitted"] !== "no") return "notification";
+  if (/^(bulk|list)$/i.test(h["precedence"] || "") && promoHits >= 1) return "marketing";
+  if (MACHINE_SUBJECTS.some(re => re.test(subject)) && (BULK_LOCALPART.test(local) || hasListHeader)) return "notification";
+  return null;
+}
+
 export function parseEmail(e: InboundEmail) {
-  const category = categorizeEmail(e.subject || "", e.body || "");
+  const screened = screenEmail(e);
+  if (screened) return { category: screened as InboxCategory, phone: "", is_lead: false, screened };
+  let category = categorizeEmail(e.subject || "", e.body || "");
+  let is_lead = false;
+  if (category === "lead") {
+    // Lead signals count where a human writes them — subject + opening —
+    // not in a footer three screens down.
+    const head = `${e.subject || ""} ${(e.body || "").slice(0, 600)}`;
+    const leadRule = RULES.find(([c]) => c === "lead")![1];
+    if (leadRule.test(head)) is_lead = true; else category = "admin";
+  }
   const phone = e.phone || extractPhone(e.body || "");
-  return { category, phone, is_lead: category === "lead" };
+  return { category, phone, is_lead, screened: null };
 }
 
 // ---------- slice 18: bulk email parsers (mbox / email CSV) ----------
@@ -118,4 +163,29 @@ export function suggestInboxAction(item: any, business: string): { action: strin
     case "finance": return { action: "Acknowledge & route to bookkeeping", why: "Invoices and payroll items age into late fees and unhappy crews; acknowledging receipt buys goodwill while it routes.", draft_subject: re, draft_body: `Hi ${first},\n\nReceived — this has been routed to our bookkeeping today. If anything else is needed from our side, reply here and we'll turn it around quickly.` + sign };
     default: return { action: "Acknowledge & assign", why: "Admin mail (permits, insurance, renewals) carries deadlines — acknowledge it, give it an owner and a date.", draft_subject: re, draft_body: `Hi ${first},\n\nThanks for sending this over — it's logged and assigned internally with a due date. We'll come back on this thread if we need anything from you.` + sign };
   }
+}
+
+// v106 — retroactive sweep: mail that arrived before the smart gate (or
+// slipped it) gets re-screened from what's stored. Screened open items
+// are filed as done under their real category; leads that exist ONLY
+// because a bulk sender's mail created them (still NEW, no proposals,
+// tasks or jobs) are junked. Conservative by construction: lead-junking
+// uses sender-only signals, so a human's lead is never touched.
+export function retriageSweep(): { archived: number; junked_leads: number } {
+  let archived = 0, junked_leads = 0;
+  const items = db.prepare("SELECT * FROM inbox_items WHERE status='open' AND category NOT IN ('spam','marketing','notification') ORDER BY created_at LIMIT 500").all() as any[];
+  for (const it of items) {
+    const v = screenEmail({ from_email: it.from_email, from_name: it.from_name, subject: it.subject, body: it.body });
+    if (v) { db.prepare("UPDATE inbox_items SET category=?, status='done', completed_at=? WHERE id=?").run(v, now(), it.id); archived++; }
+  }
+  const leads = db.prepare(`SELECT l.id, l.contact_id FROM leads l WHERE l.state='NEW'
+    AND EXISTS (SELECT 1 FROM activities a WHERE a.lead_id=l.id AND a.type='email_in')
+    AND NOT EXISTS (SELECT 1 FROM proposals p WHERE p.lead_id=l.id)
+    AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.lead_id=l.id)
+    AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.lead_id=l.id) LIMIT 200`).all() as any[];
+  for (const l of leads) {
+    const c = db.prepare("SELECT email FROM contacts WHERE id=?").get(l.contact_id) as any;
+    if (c?.email && screenEmail({ from_email: c.email, subject: "", body: "" })) { db.prepare("UPDATE leads SET state='JUNK' WHERE id=?").run(l.id); junked_leads++; }
+  }
+  return { archived, junked_leads };
 }
