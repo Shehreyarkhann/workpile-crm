@@ -202,6 +202,9 @@ export function initSchema() {
     "ALTER TABLE payments ADD COLUMN stripe_account_id TEXT",
     "ALTER TABLE payments ADD COLUMN qb_id TEXT",
     "ALTER TABLE payments ADD COLUMN qb_error TEXT",
+    "ALTER TABLE oauth_connections ADD COLUMN sync_token TEXT",
+    "ALTER TABLE oauth_connections ADD COLUMN sync_since INTEGER",
+    "ALTER TABLE oauth_connections ADD COLUMN backfill_done INTEGER DEFAULT 0",
     "ALTER TABLE workspaces ADD COLUMN missed_call_text TEXT",
     "ALTER TABLE services ADD COLUMN cycle_months INTEGER DEFAULT 0",
     // crm.ts initCrmSchema also ALTERs these, but its ALTERs run at import time — before
