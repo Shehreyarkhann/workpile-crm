@@ -9,7 +9,8 @@ import { emitEvent } from "./integrations.ts";
 import { notifyOwners } from "./comms.ts";
 import { onInvoicePaid } from "./lifecycle.ts";
 
-export function stripeMode(): "live" | "test" { return process.env.STRIPE_SECRET_KEY ? "live" : "test"; }
+export function stripeMode(): "live" | "test" { const k = process.env.STRIPE_SECRET_KEY || ""; return k.startsWith("sk_live") ? "live" : "test"; }
+import { connectAccountFor } from "./stripe-connect.ts";
 
 export async function createDeposit(proposalId: string, baseUrl: string): Promise<any | null> {
   const p = db.prepare("SELECT * FROM proposals WHERE id=?").get(proposalId) as any;
@@ -21,8 +22,9 @@ export async function createDeposit(proposalId: string, baseUrl: string): Promis
   const amount = Math.round(p.total * pct) / 100;
   const id = uid("pay");
   const mode = stripeMode();
+  const acct = connectAccountFor(p.workspace_id);
   let link: string, sessionId: string | null = null;
-  if (mode === "live") {
+  if (process.env.STRIPE_SECRET_KEY) {
     const body = new URLSearchParams({
       mode: "payment", success_url: `${baseUrl}/p/paid`, cancel_url: `${baseUrl}/p/cancelled`,
       "line_items[0][quantity]": "1", "line_items[0][price_data][currency]": "usd",
@@ -30,15 +32,15 @@ export async function createDeposit(proposalId: string, baseUrl: string): Promis
       "line_items[0][price_data][product_data][name]": `Deposit (${pct}%) — proposal ${p.id}`,
       "metadata[proposal_id]": p.id, "metadata[payment_id]": id,
     });
-    const r = await fetch("https://api.stripe.com/v1/checkout/sessions", { method: "POST", headers: { Authorization: `Bearer ${process.env.STRIPE_SECRET_KEY}`, "Content-Type": "application/x-www-form-urlencoded" }, body });
+    const r = await fetch("https://api.stripe.com/v1/checkout/sessions", { method: "POST", headers: { Authorization: `Bearer ${process.env.STRIPE_SECRET_KEY}`, "Content-Type": "application/x-www-form-urlencoded", ...(acct ? { "Stripe-Account": acct } : {}) }, body });
     const j: any = await r.json();
     if (!r.ok) throw new Error("Stripe: " + (j.error?.message || r.status));
     link = j.url; sessionId = j.id;
   } else {
     link = `${baseUrl}/pay/test/${id}`;
   }
-  db.prepare("INSERT INTO payments (id,workspace_id,proposal_id,kind,amount,mode,stripe_session_id,status,link,created_at) VALUES (?,?,?,'deposit',?,?,?,?,?,?)")
-    .run(id, p.workspace_id, p.id, amount, mode, sessionId, "pending", link, now());
+  db.prepare("INSERT INTO payments (id,workspace_id,proposal_id,kind,amount,mode,stripe_session_id,status,link,created_at,stripe_account_id) VALUES (?,?,?,'deposit',?,?,?,?,?,?,?)")
+    .run(id, p.workspace_id, p.id, amount, mode, sessionId, "pending", link, now(), acct);
   db.prepare("UPDATE proposals SET payment_status='deposit_pending' WHERE id=?").run(p.id);
   return db.prepare("SELECT * FROM payments WHERE id=?").get(id);
 }
@@ -52,8 +54,9 @@ export async function createInvoicePayment(invoiceId: string, baseUrl: string): 
   if (pending) return pending;
   const id = uid("pay");
   const mode = stripeMode();
+  const acct = connectAccountFor(inv.workspace_id);
   let link: string, sessionId: string | null = null;
-  if (mode === "live") {
+  if (process.env.STRIPE_SECRET_KEY) {
     const body = new URLSearchParams({
       mode: "payment", success_url: `${baseUrl}/invoice/${inv.token}?paid=1`, cancel_url: `${baseUrl}/invoice/${inv.token}`,
       "line_items[0][quantity]": "1", "line_items[0][price_data][currency]": "usd",
@@ -61,15 +64,15 @@ export async function createInvoicePayment(invoiceId: string, baseUrl: string): 
       "line_items[0][price_data][product_data][name]": `Invoice ${inv.number} — balance due`,
       "metadata[invoice_id]": inv.id, "metadata[payment_id]": id,
     });
-    const r = await fetch("https://api.stripe.com/v1/checkout/sessions", { method: "POST", headers: { Authorization: `Bearer ${process.env.STRIPE_SECRET_KEY}`, "Content-Type": "application/x-www-form-urlencoded" }, body });
+    const r = await fetch("https://api.stripe.com/v1/checkout/sessions", { method: "POST", headers: { Authorization: `Bearer ${process.env.STRIPE_SECRET_KEY}`, "Content-Type": "application/x-www-form-urlencoded", ...(acct ? { "Stripe-Account": acct } : {}) }, body });
     const j: any = await r.json();
     if (!r.ok) throw new Error("Stripe: " + (j.error?.message || r.status));
     link = j.url; sessionId = j.id;
   } else {
     link = `${baseUrl}/pay/test/${id}`;
   }
-  db.prepare("INSERT INTO payments (id,workspace_id,proposal_id,invoice_id,kind,amount,mode,stripe_session_id,status,link,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
-    .run(id, inv.workspace_id, null, inv.id, "invoice", balance, mode, sessionId, "pending", link, now());
+  db.prepare("INSERT INTO payments (id,workspace_id,proposal_id,invoice_id,kind,amount,mode,stripe_session_id,status,link,created_at,stripe_account_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+    .run(id, inv.workspace_id, null, inv.id, "invoice", balance, mode, sessionId, "pending", link, now(), acct);
   return db.prepare("SELECT * FROM payments WHERE id=?").get(id);
 }
 

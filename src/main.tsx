@@ -1587,6 +1587,21 @@ function MailSyncCard() {
       <span className="muted" style={{ fontSize: 12 }}>{st.google?.configured || st.microsoft?.configured ? "You'll approve read-only access on the provider's own screen." : "Not live yet on this deployment: it needs the provider apps registered (GOOGLE_CLIENT_ID/SECRET, MS_CLIENT_ID/SECRET) — a one-time founder setup, guided in the Integrations catalog."}</span>
     </div></div>);
 }
+function StripeConnectCard() {
+  const [st, setSt] = useState<any>(null); const [msg, setMsg] = useState("");
+  const load = () => { api("/api/stripe/connect/status").then(setSt).catch(() => {}); };
+  useEffect(load, []);
+  if (!st) return null;
+  const c = st.connection;
+  return (<div className="card" style={{ marginBottom: 12 }}><h3 style={{ marginTop: 0 }}>💳 Client payments — Stripe</h3>
+    <p className="muted" style={{ fontSize: 12.5 }}>Clients pay deposits and invoices straight into YOUR Stripe account — Workpile never holds the money. Every payment is recorded on its invoice automatically, and paid invoices sync to QuickBooks.</p>
+    {msg && <p style={{ fontSize: 13 }}>{msg}</p>}
+    {!st.configured ? <p style={{ fontSize: 13 }}>⚠ Stripe isn't configured on this deployment yet (platform key missing) — payments run in labeled test mode until it is.</p>
+      : !c ? <div className="rowflex"><span style={{ flex: 1, fontSize: 13.5 }}>Not connected — clients currently pay through the shared checkout.</span><button className="btn" onClick={async () => { const r: any = await api("/api/stripe/connect/start", { method: "POST", body: {} }); if (r?.url) location.href = r.url; else setMsg("⚠ " + (r?.error?.message || "Could not start Stripe setup")); }}>Connect your Stripe account</button></div>
+      : c.charges_enabled ? <div className="rowflex"><span style={{ flex: 1, fontSize: 13.5 }}>✅ Connected · account <b>…{String(c.account_id).slice(-6)}</b> · card payments on{c.payouts_enabled ? " · payouts on" : " · payouts pending"}</span><button className="btn ghost" onClick={async () => { const r: any = await api("/api/stripe/connect/dashboard", { method: "POST", body: {} }); if (r?.url) window.open(r.url, "_blank"); else setMsg("⚠ " + (r?.error?.message || "Dashboard link failed")); }}>Open Stripe dashboard</button><button className="btn ghost" onClick={async () => { await api("/api/stripe/connect/refresh-status", { method: "POST", body: {} }); load(); }}>Refresh status</button></div>
+      : <div className="rowflex"><span style={{ flex: 1, fontSize: 13.5 }}>Setup started (account …{String(c.account_id).slice(-6)}) — Stripe still needs your business and bank details before clients can pay you.</span><button className="btn" onClick={async () => { const r: any = await api("/api/stripe/connect/start", { method: "POST", body: {} }); if (r?.url) location.href = r.url; else setMsg("⚠ " + (r?.error?.message || "Could not resume Stripe setup")); }}>Continue Stripe setup</button></div>}
+  </div>);
+}
 function QuickBooksCard() {
   const [st, setSt] = useState<any>(null); const [msg, setMsg] = useState("");
   const load = () => { api("/api/quickbooks/status").then(setSt).catch(() => {}); };
@@ -1706,6 +1721,7 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any)
     {tab === "integrations" && canSettings && <div>
       <DeliverabilityPanel />
       <MailSyncCard />
+      <StripeConnectCard />
       <QuickBooksCard />
       <div className="card"><h3 style={{ marginTop: 0 }}>Integration catalog — every way data moves in and out</h3>
       <div className="featGrid">{catalog.map((c: any) => <div className="feat clickable" key={c.id} onClick={() => { setCfg(c.id); setCfgMsg(""); }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><b>{c.name}</b><span className="tinyBadge" style={c.status === "connected" ? { background: "#dcfce7", color: "#166534" } : c.status === "test_mode" || c.status === "demo_source" ? { background: "#fef9c3", color: "#854d0e" } : {}}>{c.status.replaceAll("_", " ")}</span></div><p>{c.detail}</p><span className="cfgHint">Configure →</span></div>)}</div></div>
