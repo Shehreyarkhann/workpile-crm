@@ -3406,6 +3406,8 @@ function InspReports({ insp, photos }: any) {
       <span style={{ flex: 1 }}>📄 {r.number} · v{r.version} <span className="tinyBadge">{r.format === "pdf" ? "PDF" : "HTML"}</span> <span className="muted">{String(r.created_at || "").slice(0, 10)}</span></span>
       <a className="btn ghost small" href={`/api/reports/${r.id}/download`} target="_blank" rel="noreferrer">Download</a>
       <button className="btn ghost small" onClick={() => { navigator.clipboard?.writeText(`${location.origin}/report/${r.share_token}`); setMsg("Share link copied."); }}>Copy share link</button>
+      <a className="btn ghost small" href={`/api/reports/${r.id}/docx`}>DOCX</a>
+      <button className="btn ghost small" onClick={async () => { try { const out: any = await api(`/api/reports/${r.id}/send`, { method: "POST", body: {} }); setMsg(`Report sent to ${out.to} ✓`); } catch (e: any) { setMsg(e.message); } }}>Send to client</button>
     </div>)}
     {review && <div className="modalWrap" onClick={() => setReview(false)}><div className="modal" style={{ maxWidth: 640 }} onClick={e => e.stopPropagation()}>
       <h3 style={{ marginTop: 0 }}>Review before generating</h3>
@@ -3611,13 +3613,15 @@ function MfaCard() {
   </div>;
 }
 function WorkspaceDataCard() {
-  const [msg, setMsg] = useState("");
+  const [msg, setMsg] = useState(""); const [storage, setStorage] = useState<any>(null);
+  useEffect(() => { api("/api/settings").then((r: any) => setStorage(r.counts || null)).catch(() => {}); }, []);
   return <div className="card" style={{ marginTop: 16 }}><h3 style={{ marginTop: 0 }}>Your data</h3>
     {msg && <p className="muted">{msg}</p>}
     <div className="rowflex">
       <a className="btn ghost" href="/api/export">Download data export (JSON)</a>
       <button className="btn ghost" onClick={async () => { try { const r = await api("/api/onboarding/sample", { method: "POST", body: {} }); setMsg(`Sample data loaded — ${r.loaded} sample leads added.`); } catch (e: any) { setMsg(e.message); } }}>Load sample data</button>
     </div>
+    {storage && <p className="muted" style={{ fontSize: 12.5, marginTop: 8 }}>Storage used: <b>{((storage.storage_bytes || 0) / 1048576).toFixed(1)} MB</b> across {storage.storage_files || 0} files.</p>}
     <p className="muted" style={{ fontSize: 12.5, marginTop: 8 }}>The export contains everything this workspace owns. Sample data loads only into an empty workspace and is clearly labeled “Sample —”.</p>
   </div>;
 }

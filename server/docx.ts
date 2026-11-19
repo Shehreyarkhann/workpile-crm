@@ -173,3 +173,72 @@ export async function invoiceDocx(invoiceId: string, payUrl: string): Promise<{ 
   const buffer = await Packer.toBuffer(doc);
   return { buffer: Buffer.from(buffer), filename: `${inv.number}.docx` };
 }
+
+// ---- v97: inspection report as a Word document — the same content the HTML
+// report carries (cover facts, summary, results, findings, photos,
+// limitations, sign-off), generated on demand from the report's context.
+export async function inspectionReportDocx(reportId: string): Promise<{ buffer: Buffer; filename: string } | null> {
+  const { buildReportContext, LIMITATIONS_DEFAULT } = await import("./reports.ts");
+  const rep = db.prepare("SELECT * FROM inspection_reports WHERE id=?").get(reportId) as any;
+  if (!rep) return null;
+  const ctx = buildReportContext(rep.workspace_id, rep.inspection_id);
+  if (!ctx) return null;
+  const overrides = (() => { try { return JSON.parse(rep.overrides || "{}"); } catch { return {}; } })();
+  const resultLabel = ({ passed: "PASSED", passed_with_conditions: "PASSED WITH CONDITIONS", failed: "FAILED" } as any)[ctx.result] || "—";
+  const valOf = (it: any) => {
+    const a = (ctx.answers || {})[it.key] || {};
+    if (a.v === undefined || a.v === "") return "—";
+    if (it.type === "reading") { const range = it.min != null || it.max != null ? ` (acceptable ${it.min ?? "…"}–${it.max ?? "…"} ${it.unit || ""})`.trimEnd() : ""; return `${a.v} ${it.unit || ""}${range ? " " + range : ""}`; }
+    if (it.type === "passfail") return a.v === "pass" ? "Pass" : a.v === "fail" ? "FAIL" : String(a.v);
+    if (it.type === "yesno") return a.v === "yes" ? "Yes" : a.v === "no" ? "No" : String(a.v);
+    return String(a.v);
+  };
+  const kids: any[] = [
+    P(ctx.company, { bold: true, size: 34, color: PINE, after: 0 }),
+    P("INSPECTION REPORT", { bold: true, size: 26, color: PINE, after: 40 }),
+    P(`${rep.number} · v${rep.version}`, { size: 20, color: GRAY, after: 160 }),
+    P(`Inspection: ${ctx.inspNo}`, { after: 30 }),
+    P(`Project: ${ctx.job?.project_no || "—"}${ctx.site ? " · " + ctx.site : ""}`, { after: 30 }),
+    P(`Client: ${ctx.client}`, { after: 30 }),
+    P(`Service: ${ctx.service || "—"}`, { after: 30 }),
+    P(`Result: ${resultLabel}`, { bold: true, after: 30 }),
+    P(`Inspector: ${ctx.inspector}${ctx.license ? " · License " + ctx.license : ""}${ctx.reviewer ? " · Reviewed by " + ctx.reviewer : ""}`, { after: 160 }),
+    P("Summary", { bold: true, size: 23, color: PINE, after: 60 }),
+    P(String(overrides.summary || ctx.insp.summary || "—"), { after: 160 }),
+    P("Results", { bold: true, size: 23, color: PINE, after: 60 }),
+  ];
+  for (const sec of ctx.sections || []) {
+    kids.push(P(String(sec.title || ""), { bold: true, after: 40, keepNext: true }));
+    const rows = (sec.items || []).map((it: any) => new TableRow({ children: [
+      new TableCell({ width: { size: 70, type: WidthType.PERCENTAGE }, borders: cellBorders(), children: [P(String(it.label || ""), { size: 19 })] }),
+      new TableCell({ width: { size: 30, type: WidthType.PERCENTAGE }, borders: cellBorders(), children: [P(valOf(it), { size: 19 })] }),
+    ] }));
+    kids.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, columnWidths: [70, 30], rows }));
+    kids.push(P("", { after: 80 }));
+  }
+  if ((ctx.findings || []).length) {
+    kids.push(P("Findings", { bold: true, size: 23, color: PINE, after: 60 }));
+    for (const f of ctx.findings) kids.push(P(`• ${f.label}${f.out_of_range ? ` — reading ${f.value} ${f.unit || ""} outside the acceptable range` : ""}${f.note ? " — " + f.note : ""}`, { after: 40 }));
+    kids.push(P("", { after: 100 }));
+  }
+  const excl = new Set(overrides.exclude_photo_ids || []);
+  const photos = (ctx.photos || []).filter((p: any) => p.data_uri && !excl.has(p.id)).slice(0, 12);
+  if (photos.length) {
+    kids.push(P("Photo appendix", { bold: true, size: 23, color: PINE, after: 60 }));
+    for (const p of photos) {
+      try {
+        const type = (p.mime || "").includes("png") ? "png" : "jpg";
+        const buf = Buffer.from(String(p.data_uri).split(",")[1] || "", "base64");
+        if (buf.length) kids.push(new Paragraph({ spacing: { after: 40 }, children: [new ImageRun({ type, data: buf, transformation: { width: 340, height: 255 } })] }));
+        if (p.caption) kids.push(P(String(p.caption), { size: 17, color: GRAY, after: 100 }));
+      } catch { /* a bad image never blocks the document */ }
+    }
+  }
+  kids.push(P("Limitations", { bold: true, size: 23, color: PINE, after: 60 }));
+  kids.push(P(LIMITATIONS_DEFAULT, { size: 19, after: 160 }));
+  kids.push(P(`Inspector: ${ctx.inspector}${ctx.license ? " · License " + ctx.license : ""}`, { after: 30 }));
+  if (ctx.reviewer) kids.push(P(`Reviewer: ${ctx.reviewer}`, { after: 30 }));
+  const doc = new Document({ styles: { default: { document: { run: { font: "Calibri", size: 21, color: INK } } } }, sections: [{ children: kids }] });
+  const buffer = await Packer.toBuffer(doc);
+  return { buffer, filename: `${rep.number}-v${rep.version}.docx` };
+}
