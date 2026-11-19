@@ -19,7 +19,7 @@ export function supersedePriorVersions(ws: string, leadId: string, keepId: strin
 export function draftProposalForLead(ws: string, lead: any): { proposal_id: string; total: number; priced: "price_book" | "estimate" } {
   const words = String(lead.service_requested || "").toLowerCase().split(/[^a-z]+/).filter((w: string) => w.length > 3);
   const pb = (db.prepare("SELECT * FROM price_book_items WHERE workspace_id=? AND standard_price>0").all(ws) as any[]).find(p => words.some(w => String(p.name).toLowerCase().includes(w)));
-  const line = pb ? { price_book_item_id: pb.id, description: pb.name, qty: 1, unit_price: pb.standard_price, line_total: pb.standard_price, source: "price_book" } : { description: `ESTIMATE — ${lead.service_requested} (from lead value; review pricing before sending)`, qty: 1, unit_price: lead.est_value || 0, line_total: lead.est_value || 0, source: "manual" };
+  const line = pb ? { price_book_item_id: pb.id, description: pb.name, qty: 1, unit_price: pb.standard_price, cost: pb.cost || 0, line_total: pb.standard_price, source: "price_book" } : { description: `ESTIMATE — ${lead.service_requested} (from lead value; review pricing before sending)`, qty: 1, unit_price: lead.est_value || 0, line_total: lead.est_value || 0, source: "manual" };
   const count = (db.prepare("SELECT COUNT(*) c FROM proposals WHERE lead_id=?").get(lead.id) as any).c;
   const id = uid("prop");
   const pnum = (db.prepare("SELECT COALESCE(MAX(number),1000) m FROM proposals WHERE workspace_id=?").get(ws) as any).m + 1;

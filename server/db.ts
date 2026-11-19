@@ -41,7 +41,7 @@ export function initSchema() {
   CREATE TABLE IF NOT EXISTS approvals (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, proposal_id TEXT, submitted_by TEXT, approver_id TEXT, tier TEXT, decision TEXT, reason_code TEXT, edits_diff TEXT, submitted_at TEXT, decided_at TEXT);
   UPDATE approvals SET decision=NULL WHERE decision='pending'; -- v52: ONE pending representation (NULL) across UI, agent and readers
   CREATE TABLE IF NOT EXISTS services (id TEXT PRIMARY KEY, workspace_id TEXT, name TEXT, active INTEGER DEFAULT 1, is_catalog INTEGER DEFAULT 1);
-  CREATE TABLE IF NOT EXISTS price_book_items (id TEXT PRIMARY KEY, workspace_id TEXT, service_id TEXT, name TEXT, unit TEXT, standard_price REAL, floor_price REAL);
+  CREATE TABLE IF NOT EXISTS price_book_items (id TEXT PRIMARY KEY, workspace_id TEXT, service_id TEXT, name TEXT, unit TEXT, standard_price REAL, floor_price REAL, cost REAL DEFAULT 0);
   CREATE TABLE IF NOT EXISTS templates (id TEXT PRIMARY KEY, workspace_id TEXT, service_id TEXT, kind TEXT, name TEXT, body TEXT, version INTEGER DEFAULT 1, active INTEGER DEFAULT 1);
   CREATE TABLE IF NOT EXISTS proposals (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, template_id TEXT, version INTEGER DEFAULT 1, status TEXT DEFAULT 'draft', line_items TEXT DEFAULT '[]', total REAL DEFAULT 0, margin_band TEXT, win_prob_band TEXT, sent_at TEXT, viewed_at TEXT, signed_at TEXT, outcome TEXT, lost_reason TEXT, payment_status TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, proposal_id TEXT, pm_id TEXT, status TEXT DEFAULT 'created', starts_at TEXT, handoff_status TEXT DEFAULT 'pending', external_project_id TEXT, external_system TEXT, handoff_delivered_at TEXT, handoff_acked_at TEXT, created_at TEXT);
@@ -267,7 +267,7 @@ export function initSchema() {
     "ALTER TABLE job_schedule ADD COLUMN work_order_id TEXT",
     "ALTER TABLE attachments ADD COLUMN doc_type TEXT",
     "ALTER TABLE attachments ADD COLUMN item_key TEXT",
-    "ALTER TABLE attachments ADD COLUMN category TEXT", "ALTER TABLE attachments ADD COLUMN caption TEXT", "ALTER TABLE attachments ADD COLUMN orig_name TEXT",
+    "ALTER TABLE attachments ADD COLUMN category TEXT", "ALTER TABLE price_book_items ADD COLUMN cost REAL DEFAULT 0", "ALTER TABLE jobs ADD COLUMN budget_cost REAL", "ALTER TABLE attachments ADD COLUMN caption TEXT", "ALTER TABLE attachments ADD COLUMN orig_name TEXT",
     "ALTER TABLE attachments ADD COLUMN tag TEXT",
     "ALTER TABLE work_orders ADD COLUMN est_hours REAL",
     "ALTER TABLE work_orders ADD COLUMN percent_complete INTEGER DEFAULT 0",
