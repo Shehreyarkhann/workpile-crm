@@ -1683,7 +1683,7 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any)
     {tab === "pricebook" && canSettings && <div className="card"><table><thead><tr><th>Item</th><th>Unit</th><th>Standard</th><th>Floor</th><th>Cost (internal)</th><th></th></tr></thead><tbody>
       {pb.map((p: any, i: number) => <tr key={p.id}><td>{p.name}</td><td>{p.unit}</td><td><input type="number" min="0" step="0.5" style={{ width: 110 }} value={p.standard_price} onChange={e => { const n = [...pb]; n[i] = { ...p, standard_price: e.target.value }; setPb(n); }} /></td><td><input type="number" min="0" step="0.5" style={{ width: 110 }} value={p.floor_price} onChange={e => { const n = [...pb]; n[i] = { ...p, floor_price: e.target.value }; setPb(n); }} /></td><td><input type="number" min="0" step="0.5" style={{ width: 110 }} value={p.cost ?? 0} onChange={e => { const n = [...pb]; n[i] = { ...p, cost: e.target.value }; setPb(n); }} /></td><td><button className="btn ghost small" onClick={async () => { await api(`/api/price-book/${p.id}`, { method: "PATCH", body: { standard_price: Number(p.standard_price) || 0, floor_price: Number(p.floor_price) || 0, cost: Number(p.cost) || 0 } }); setMsg("Price saved ✓"); loadAll(); }}>Save</button> <button className="btn ghost small" onClick={async () => { await api(`/api/price-book/${p.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></td></tr>)}
     </tbody></table>
-      <div className="rowflex" style={{ marginTop: 12 }}><input style={{ flex: 2 }} placeholder="New item name" value={nb.name} onChange={e => setNb({ ...nb, name: e.target.value })} /><input style={{ width: 90 }} placeholder="unit" value={nb.unit} onChange={e => setNb({ ...nb, unit: e.target.value })} /><input style={{ width: 120 }} type="number" placeholder="standard $" value={nb.standard_price} onChange={e => setNb({ ...nb, standard_price: e.target.value })} /><input style={{ width: 120 }} type="number" placeholder="floor $" value={nb.floor_price} onChange={e => setNb({ ...nb, floor_price: e.target.value })} /><input style={{ width: 120 }} type="number" placeholder="cost $" value={nb.cost} onChange={e => setNb({ ...nb, cost: e.target.value })} /><button className="btn" onClick={async () => { await api("/api/price-book", { method: "POST", body: { ...nb, standard_price: Number(nb.standard_price) || 0, floor_price: Number(nb.floor_price) || 0, cost: Number(nb.cost) || 0 } }); setNb({ name: "", unit: "job", standard_price: "", floor_price: "", cost: "" }); loadAll(); }}>Add item</button></div>
+      <div className="rowflex" style={{ marginTop: 12 }}><input style={{ flex: 2 }} placeholder="New item name" value={nb.name} onChange={e => setNb({ ...nb, name: e.target.value })} /><input style={{ width: 90 }} placeholder="unit" value={nb.unit} onChange={e => setNb({ ...nb, unit: e.target.value })} /><input style={{ width: 120 }} type="number" placeholder="standard $" value={nb.standard_price} onChange={e => setNb({ ...nb, standard_price: e.target.value })} /><input style={{ width: 120 }} type="number" placeholder="floor $" value={nb.floor_price} onChange={e => setNb({ ...nb, floor_price: e.target.value })} /><input style={{ width: 120 }} type="number" placeholder="cost $" value={nb.cost} onChange={e => setNb({ ...nb, cost: e.target.value })} /><button className="btn" onClick={async () => { await api("/api/price-book", { method: "POST", body: { ...nb, standard_price: Number(nb.standard_price) || 0, floor_price: Number(nb.floor_price) || 0, cost: Number(nb.cost) || 0 } }); setNb({ name: "", unit: "job", standard_price: "", floor_price: "", cost: "" }); loadAll(); }}>Add item</button></div><TaxRatesEditor />
       <p className="muted">Proposals can only price from this book — the floor is the margin guardrail the Approval Gate enforces.</p></div>}
     {tab === "templates" && canSettings && <div className="card"><VerticalPacksCard /><DocTemplatesEditor /><SectionLibraryManager /><InspectionTemplatesEditor /><WOTemplatesEditor /><ReportTemplatesEditor /><h3>Message templates</h3>{tpls.map(t => <div key={t.id} style={{ borderBottom: "1px solid #eef2f7", padding: "10px 0" }}><b>{t.name}</b> <span className="muted">· {t.kind} · v{t.version} · {t.active ? "active" : "inactive"}</span>{tplEdit?.id === t.id ? <><textarea rows={5} value={tplEdit.body} onChange={e => setTplEdit({ ...tplEdit, body: e.target.value })} /><span className="rowflex" style={{ marginTop: 6 }}><button className="btn small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "PATCH", body: { body: tplEdit.body } }); setTplEdit(null); loadAll(); }}>Save</button><button className="btn ghost small" onClick={() => setTplEdit(null)}>Cancel</button></span></> : <><p className="muted" style={{ whiteSpace: "pre-wrap" }}>{t.body}</p><button className="btn ghost small" onClick={() => setTplEdit({ id: t.id, body: t.body })}>Edit</button></>} <button className="btn ghost small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></div>)}
       <div className="formgrid" style={{ marginTop: 12 }}><div><label className="f">New template name</label><input value={nt.name} onChange={e => setNt({ ...nt, name: e.target.value })} /></div><div className="full"><label className="f">Body (merge fields: {"{{contact_name}} {{service}} {{total}}"})</label><textarea rows={4} value={nt.body} onChange={e => setNt({ ...nt, body: e.target.value })} /></div></div>
@@ -3503,6 +3503,63 @@ function MoneyStrip({ m, jobId, onSaved }: any) {
     </tbody></table>}
   </div>;
 }
+function TaxRatesEditor() {
+  const [rates, setRates] = useState<any[]>([]); const [nb, setNb] = useState<any>({ name: "", rate: "", is_default: false }); const [msg, setMsg] = useState("");
+  const load = () => { api("/api/tax-rates").then((r: any) => setRates(Array.isArray(r) ? r : [])).catch(() => {}); };
+  useEffect(load, []);
+  return <div style={{ marginTop: 18 }}>
+    <h3>Tax rates</h3>
+    {msg && <p className="muted">{msg}</p>}
+    {rates.map(r => <div key={r.id} className="rowflex" style={{ padding: "5px 0", borderBottom: "1px solid #EEF2EF" }}>
+      <span style={{ flex: 1 }}><b>{r.name}</b> · {r.rate}% {r.is_default ? <span className="tinyBadge">default</span> : null} {!r.active ? <span className="tinyBadge">inactive</span> : null}</span>
+      {!r.is_default && <button className="btn ghost small" onClick={async () => { await api("/api/tax-rates/" + r.id, { method: "PATCH", body: { is_default: true } }); load(); }}>Make default</button>}
+      <button className="btn ghost small" onClick={async () => { await api("/api/tax-rates/" + r.id, { method: "DELETE" }); load(); }}>Delete</button>
+    </div>)}
+    <div className="rowflex" style={{ marginTop: 10 }}>
+      <input style={{ flex: 2 }} placeholder="Rate name — e.g. NY sales tax" value={nb.name} onChange={e => setNb({ ...nb, name: e.target.value })} />
+      <input style={{ width: 110 }} type="number" step="0.001" placeholder="Rate %" value={nb.rate} onChange={e => setNb({ ...nb, rate: e.target.value })} />
+      <label className="muted" style={{ fontSize: 12.5 }}><input type="checkbox" style={{ width: "auto" }} checked={nb.is_default} onChange={e => setNb({ ...nb, is_default: e.target.checked })} /> Default</label>
+      <button className="btn" onClick={async () => { if (!nb.name || nb.rate === "") return setMsg("Name and rate required."); await api("/api/tax-rates", { method: "POST", body: { name: nb.name, rate: Number(nb.rate) || 0, is_default: nb.is_default } }); setNb({ name: "", rate: "", is_default: false }); setMsg(""); load(); }}>Add rate</button>
+    </div>
+  </div>;
+}
+function JobBilling({ jobId, job, invoices, onDone }: any) {
+  const [rates, setRates] = useState<any[]>([]);
+  const [rows, setRows] = useState<any[]>([]);
+  const [msg, setMsg] = useState("");
+  useEffect(() => { api("/api/tax-rates").then((r: any) => setRates((Array.isArray(r) ? r : []).filter((x: any) => x.active))).catch(() => {}); }, []);
+  useEffect(() => { try { setRows(JSON.parse(job.payment_plan || "[]")); } catch { setRows([]); } }, [job.id, job.payment_plan]);
+  let saved: any[] = []; try { saved = JSON.parse(job.payment_plan || "[]"); } catch { saved = []; }
+  const totalPct = rows.reduce((s: number, r: any) => s + (Number(r.pct) || 0), 0);
+  const invFor = (i: number) => (invoices || []).find((x: any) => x.plan_item === i && x.status !== "void");
+  return <div style={{ margin: "4px 0 10px" }}>
+    <div className="rowflex">
+      <label className="f" style={{ minWidth: 240 }}>Sales tax<select value={job.tax_rate_id || ""} onChange={async e => { await api(`/api/jobs/${jobId}`, { method: "PATCH", body: { tax_rate_id: e.target.value || null } }); onDone && onDone(); }}>
+        <option value="">Workspace default</option>
+        {rates.map((r: any) => <option key={r.id} value={r.id}>{r.name} — {r.rate}%{r.is_default ? " (default)" : ""}</option>)}
+      </select></label>
+    </div>
+    {saved.length > 0 && <div style={{ marginTop: 6 }}>
+      {saved.map((it: any, i: number) => { const inv = invFor(i); return <div key={i} className="rowflex" style={{ padding: "4px 0", fontSize: 13 }}>
+        <span style={{ flex: 1 }}><b>{it.label}</b> · {it.pct}% of contract</span>
+        {inv ? <span className="tinyBadge">Invoiced · {inv.number}</span> : <button className="btn ghost small" onClick={async () => { try { await api(`/api/jobs/${jobId}/invoice`, { method: "POST", body: { plan_item: i } }); setMsg(""); onDone && onDone(); } catch (e: any) { setMsg(e.message); } }}>Invoice this milestone</button>}
+      </div>; })}
+    </div>}
+    <div style={{ marginTop: 8 }}>
+      <b style={{ fontSize: 13 }}>Payment plan</b> <span className="muted" style={{ fontSize: 12 }}>— total {totalPct}%{totalPct !== 100 ? " (should be 100%)" : ""}</span>
+      {rows.map((r: any, i: number) => <div key={i} className="rowflex" style={{ marginTop: 4 }}>
+        <input style={{ flex: 2 }} placeholder="Milestone — e.g. On completion" value={r.label} onChange={e => { const n = [...rows]; n[i] = { ...r, label: e.target.value }; setRows(n); }} />
+        <input style={{ width: 90 }} type="number" placeholder="%" value={r.pct} onChange={e => { const n = [...rows]; n[i] = { ...r, pct: e.target.value }; setRows(n); }} />
+        <button className="btn ghost small" onClick={() => setRows(rows.filter((_: any, j: number) => j !== i))}>✕</button>
+      </div>)}
+      <div className="rowflex" style={{ marginTop: 6 }}>
+        <button className="btn ghost small" onClick={() => setRows([...rows, { label: "", pct: "" }])}>+ Add milestone</button>
+        <button className="btn ghost small" onClick={async () => { const clean = rows.filter((r: any) => r.label && Number(r.pct) > 0).map((r: any) => ({ label: r.label, pct: Number(r.pct) })); await api(`/api/jobs/${jobId}`, { method: "PATCH", body: { payment_plan: JSON.stringify(clean) } }); setMsg("Plan saved."); onDone && onDone(); }}>Save plan</button>
+        {msg && <span className="muted" style={{ fontSize: 12.5 }}>{msg}</span>}
+      </div>
+    </div>
+  </div>;
+}
 function inspChip(i: any): [string, string, string] {
   if (i.status === "closed") return i.result === "passed" ? ["Passed", "#E7F2EB", "#0E5C3A"] : i.result === "failed" ? ["Failed", "#FDECEC", "#991B1B"] : ["Passed w/ conditions", "#FEF3C7", "#92400E"];
   return i.status === "submitted" ? ["Awaiting decision", "#FEF3C7", "#92400E"] : i.status === "in_progress" ? ["In progress", "#E0EFFF", "#1D4ED8"] : ["Scheduled", "#EEF2EF", "#5B6B62"];
@@ -3822,8 +3879,9 @@ function JobDetail({ id, users, me, priceBook, close, refresh, openLead }: any) 
       <JobFiles jobId={id} />
       <ProjectFiles jobId={id} />
       <h4 style={{ marginTop: 16 }}>Invoices</h4>
+      <JobBilling jobId={id} job={j} invoices={d.invoices} onDone={load} />
       {d.deposits && d.deposits.taken > 0 && <p className="muted" style={{ margin: "2px 0 8px" }}>💳 Deposits on this project: <b>{money(d.deposits.taken)}</b> collected · {money(d.deposits.applied)} applied to invoices{d.deposits.available > 0 ? <> · <b>{money(d.deposits.available)}</b> still available as credit</> : ""}</p>}
-      {(d.invoices || []).map((inv: any) => <div className="check" key={inv.id}><span style={{ flex: 1 }}><b>{inv.number}</b> · {money(inv.total)} · {inv.status} · balance {money(inv.balance)}{inv.deposit_credit > 0 ? ` · 💳 deposit applied ${money(inv.deposit_credit)}` : ""}{inv.due_at ? ` · due ${new Date(inv.due_at).toLocaleDateString()}` : ""}</span>{inv.balance > 0 && inv.status !== "void" && <><input id={"jpay-" + inv.id} type="number" placeholder="$" style={{ width: 90 }} /><button className="btn ghost small" onClick={async () => { const v = Number((document.getElementById("jpay-" + inv.id) as HTMLInputElement).value); if (!(v > 0)) return; try { await api(`/api/invoices/${inv.id}/payments`, { method: "POST", body: { amount: v } }); toast("Payment recorded ✓"); load(); } catch (e: any) { setMsg(e.message); } }}>Record payment</button></>}
+      {(d.invoices || []).map((inv: any) => <div className="check" key={inv.id}><span style={{ flex: 1 }}><b>{inv.number}</b> · {money(inv.total)} · {inv.status} · balance {money(inv.balance)}{inv.plan_label ? ` · ${inv.plan_label}` : ""}{(inv.tax_amount || 0) > 0 ? ` · incl. ${money(inv.tax_amount)} ${inv.tax_name || "tax"}` : ""}{inv.deposit_credit > 0 ? ` · 💳 deposit applied ${money(inv.deposit_credit)}` : ""}{inv.due_at ? ` · due ${new Date(inv.due_at).toLocaleDateString()}` : ""}</span>{inv.balance > 0 && inv.status !== "void" && <><input id={"jpay-" + inv.id} type="number" placeholder="$" style={{ width: 90 }} /><button className="btn ghost small" onClick={async () => { const v = Number((document.getElementById("jpay-" + inv.id) as HTMLInputElement).value); if (!(v > 0)) return; try { await api(`/api/invoices/${inv.id}/payments`, { method: "POST", body: { amount: v } }); toast("Payment recorded ✓"); load(); } catch (e: any) { setMsg(e.message); } }}>Record payment</button></>}
       <div style={{ width: "100%", marginTop: 4 }}><InvoiceActions inv={inv} onDone={load} /></div></div>)}
       {!(d.invoices || []).some((x: any) => ["sent", "partially_paid"].includes(x.status)) && j.stage !== "CANCELLED" && <button className="btn ghost small" onClick={async () => { try { await api(`/api/jobs/${j.id}/invoice`, { method: "POST", body: {} }); toast("Invoice created ✓"); load(); } catch (e: any) { setMsg(e.message); } }}>🧾 Create invoice ({money(j.value)})</button>}
       <h4>Change orders</h4>

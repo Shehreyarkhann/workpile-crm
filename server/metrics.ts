@@ -60,6 +60,7 @@ export function financialSummary(workspaceId: string) {
     collected_cash: { value: (() => { const a = db.prepare("SELECT COALESCE(SUM(amount),0) v FROM payments WHERE workspace_id=? AND status='paid'").get(workspaceId) as any; const b = db.prepare("SELECT COALESCE(SUM(amount),0) v FROM payments WHERE workspace_id=? AND status='refunded'").get(workspaceId) as any; return Math.round(((a?.v || 0) - (b?.v || 0)) * 100) / 100; })(), definition: "Cash actually received through recorded payments (e.g. deposits), net of refunds. The only 'money in' figure." },
     outstanding_receivables: { value: one("SELECT COALESCE(SUM(total - paid_amount),0) v FROM invoices WHERE workspace_id=? AND status IN ('sent','partially_paid')"), definition: "True accounts receivable: invoiced amounts not yet paid. Excludes signed-but-uninvoiced work." },
     overdue_receivables: { value: one("SELECT COALESCE(SUM(total - paid_amount),0) v FROM invoices WHERE workspace_id=? AND status IN ('sent','partially_paid') AND due_at IS NOT NULL AND due_at < datetime('now')"), definition: "Receivables past their due date — the number that needs chasing." },
+    tax_collected: { value: one("SELECT COALESCE(SUM(CASE WHEN status='paid' THEN COALESCE(tax_amount,0) WHEN status='partially_paid' AND total>0 THEN COALESCE(tax_amount,0)*paid_amount/total ELSE 0 END),0) v FROM invoices WHERE workspace_id=?"), definition: "Sales tax actually collected: full tax on paid invoices, pro-rated by the paid share on partially paid ones." },
   };
 }
 

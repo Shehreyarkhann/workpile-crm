@@ -820,21 +820,43 @@ const depositInfoForInvoice = (i: any) => {
   const taken = i.lead_id ? (db.prepare("SELECT p.amount, p.paid_at, p.created_at, pr.quote_no, pr.number FROM payments p JOIN proposals pr ON pr.id=p.proposal_id WHERE p.workspace_id=? AND pr.lead_id=? AND p.status='paid' AND (p.kind='deposit' OR p.kind IS NULL) ORDER BY p.paid_at").all(i.workspace_id, i.lead_id) as any[]) : [];
   return { deposit_credit: Math.round(credit * 100) / 100, deposits_taken: taken.map((t: any) => ({ amount: t.amount, paid_at: t.paid_at || t.created_at, quote_no: t.quote_no || ("PROP-" + t.number) })), deposits_taken_total: Math.round(taken.reduce((sm: number, t: any) => sm + (t.amount || 0), 0) * 100) / 100 };
 };
-const invView = (i: any) => ({ ...i, token: ensureInvoiceToken(i), link: "/invoice/" + ensureInvoiceToken(i), lines: JSON.parse(i.lines || "[]"), balance: Math.round(((i.total || 0) - (i.paid_amount || 0)) * 100) / 100, overdue: i.status !== "paid" && i.status !== "void" && i.due_at && new Date(i.due_at) < new Date(), ...depositInfoForInvoice(i) });
+const invView = (i: any) => ({ ...i, subtotal: i.subtotal != null ? i.subtotal : i.total, token: ensureInvoiceToken(i), link: "/invoice/" + ensureInvoiceToken(i), lines: JSON.parse(i.lines || "[]"), balance: Math.round(((i.total || 0) - (i.paid_amount || 0)) * 100) / 100, overdue: i.status !== "paid" && i.status !== "void" && i.due_at && new Date(i.due_at) < new Date(), ...depositInfoForInvoice(i) });
 app.get("/api/invoices", requireAuth, (req: any, res) => { res.json((db.prepare("SELECT i.*, l.service_requested FROM invoices i LEFT JOIN leads l ON l.id=i.lead_id WHERE i.workspace_id=? ORDER BY i.created_at DESC LIMIT 200").all(req.user.workspace_id) as any[]).map(invView)); });
 app.post("/api/jobs/:id/invoice", requireAuth, async (req: any, res) => {
   const ws = req.user.workspace_id; const job = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, ws) as any;
   if (!job) return res.status(404).json({ error: { code: "not_found" } });
   const paidInv = db.prepare("SELECT id FROM invoices WHERE job_id=? AND status='paid'").get(job.id);
-  if (paidInv) return res.status(409).json({ error: { code: "already_invoiced", message: "This job already has a paid invoice — a second full invoice would double-bill the customer." } });
-  const open = db.prepare("SELECT id FROM invoices WHERE job_id=? AND status IN ('sent','partially_paid')").get(job.id);
-  if (open) return res.status(409).json({ error: { code: "invoice_open", message: "This job already has an open invoice — collect or void it first." } });
+  if (paidInv) return res.status(409).json({ error: { code: "already_invoiced", message: "This job already has a paid invoice — a second invoice would double-bill the customer." } });
+  const isPlan = req.body?.plan_item !== undefined && req.body?.plan_item !== null;
+  let subtotal = 0; let lines: any[] = []; let planItem: any = null; let planLabel: any = null;
+  if (isPlan) {
+    let plan: any[] = []; try { plan = JSON.parse(job.payment_plan || "[]"); } catch { plan = []; }
+    const idx = Number(req.body.plan_item); const item = plan[idx];
+    if (!item) return res.status(422).json({ error: { code: "bad_plan_item", message: "That payment-plan item does not exist." } });
+    const dup = db.prepare("SELECT id FROM invoices WHERE job_id=? AND plan_item=? AND status!='void'").get(job.id, idx);
+    if (dup) return res.status(409).json({ error: { code: "milestone_invoiced", message: "That milestone already has an invoice." } });
+    const revised = jobMoney(ws, job).revised;
+    subtotal = Math.round(revised * (Number(item.pct) || 0)) / 100;
+    planItem = idx; planLabel = String(item.label || `Milestone ${idx + 1}`);
+    lines = [{ description: `${planLabel} — milestone ${idx + 1} of ${plan.length} (${item.pct}% of contract)`, qty: 1, unit_price: subtotal, line_total: subtotal }];
+  } else {
+    const open = db.prepare("SELECT id FROM invoices WHERE job_id=? AND status IN ('sent','partially_paid') AND plan_item IS NULL").get(job.id);
+    if (open) return res.status(409).json({ error: { code: "invoice_open", message: "This job already has an open invoice — collect or void it first." } });
+    subtotal = Math.round((job.value || 0) * 100) / 100;
+    const leadSvc = (db.prepare("SELECT service_requested FROM leads WHERE id=?").get(job.lead_id) as any)?.service_requested;
+    lines = [{ description: `Job — ${leadSvc || "services"}`, qty: 1, unit_price: subtotal, line_total: subtotal }];
+  }
+  // v94 tax: body rate wins, then the job's saved rate, then the workspace default.
+  let taxRatePct = 0; let taxName = "";
+  const trId = req.body?.tax_rate_id || job.tax_rate_id;
+  const tr = trId ? db.prepare("SELECT * FROM tax_rates WHERE id=? AND workspace_id=? AND active=1").get(trId, ws) as any : db.prepare("SELECT * FROM tax_rates WHERE workspace_id=? AND is_default=1 AND active=1").get(ws) as any;
+  if (tr && req.body?.tax !== false) { taxRatePct = Number(tr.rate) || 0; taxName = String(tr.name || ""); }
+  const taxAmount = Math.round(subtotal * taxRatePct) / 100;
+  const total = Math.round((subtotal + taxAmount) * 100) / 100;
   const n = ((db.prepare("SELECT COUNT(*) c FROM invoices WHERE workspace_id=?").get(ws) as any).c || 0) + 1;
-  const id = uid("inv"); const total = Math.round((job.value || 0) * 100) / 100;
-  const leadSvc = (db.prepare("SELECT service_requested FROM leads WHERE id=?").get(job.lead_id) as any)?.service_requested;
-  const lines = [{ description: `Job — ${leadSvc || "services"}`, qty: 1, unit_price: total, line_total: total }];
-  db.prepare("INSERT INTO invoices (id,workspace_id,lead_id,job_id,proposal_id,number,status,lines,total,paid_amount,due_at,issued_at,source,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'manual',?)")
-    .run(id, ws, job.lead_id, job.id, job.proposal_id || null, "INV-" + String(n).padStart(4, "0"), "sent", JSON.stringify(lines), total, 0, new Date(Date.now() + (Number(req.body?.due_days || 30)) * 86400000).toISOString(), now(), now());
+  const id = uid("inv");
+  db.prepare("INSERT INTO invoices (id,workspace_id,lead_id,job_id,proposal_id,number,status,lines,total,paid_amount,due_at,issued_at,source,created_at,subtotal,tax_rate,tax_amount,tax_name,plan_item,plan_label) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'manual',?,?,?,?,?,?,?)")
+    .run(id, ws, job.lead_id, job.id, job.proposal_id || null, "INV-" + String(n).padStart(4, "0"), "sent", JSON.stringify(lines), total, 0, new Date(Date.now() + (Number(req.body?.due_days || 30)) * 86400000).toISOString(), now(), now(), subtotal, taxRatePct, taxAmount, taxName, planItem, planLabel);
   db.prepare("UPDATE jobs SET invoice_status='invoiced' WHERE id=?").run(job.id);
   audit(ws, req.user.id, "invoice.created", "invoice", id, { job_id: job.id, total });
   // v52: a deposit already collected on this lead is CREDITED here — the
@@ -967,6 +989,7 @@ app.get("/invoice/:token", (req, res) => {
   ${req.query.paid ? `<div class="paidbox">✅ Payment received — thank you!</div>` : ""}
   <table><tr><th>Description</th><th class="r">Qty</th><th class="r">Unit price</th><th class="r">Amount</th></tr>
   ${lines.map((l: any) => `<tr><td>${e(l.description || l.name || "Service")}</td><td class="r">${e(l.qty ?? 1)}</td><td class="r">${money(l.unit_price)}</td><td class="r">${money(l.line_total ?? (Number(l.unit_price || 0) * (l.qty || 1)))}</td></tr>`).join("")}
+  ${(inv.tax_amount || 0) > 0 ? `<tr class="tot"><td colspan="3" class="r">Subtotal</td><td class="r">${money(inv.subtotal != null ? inv.subtotal : inv.total - (inv.tax_amount || 0))}</td></tr><tr class="tot"><td colspan="3" class="r">${e(inv.tax_name || "Sales tax")} (${inv.tax_rate}%)</td><td class="r">${money(inv.tax_amount)}</td></tr>` : ""}
   <tr class="tot"><td colspan="3" class="r">Total</td><td class="r">${money(inv.total)}</td></tr>
   ${depCredit > 0 ? `<tr class="tot"><td colspan="3" class="r">Deposit applied${depTaken.length ? ` — paid ${new Date(depTaken[0].paid_at || depTaken[0].created_at).toLocaleDateString()}` : ""}</td><td class="r">−${money(depCredit)}</td></tr>` : ""}
   ${otherPaid > 0 ? `<tr class="tot"><td colspan="3" class="r">Paid</td><td class="r">−${money(otherPaid)}</td></tr>` : ""}
@@ -1395,6 +1418,10 @@ app.get("/api/jobs/:id/files", requireAuth, (req: any, res: any) => {
   res.json(rows);
 });
 // ---- v90: inspection report templates + generation ----
+app.get("/api/tax-rates", requireAuth, (req: any, res: any) => { res.json(db.prepare("SELECT * FROM tax_rates WHERE workspace_id=? ORDER BY is_default DESC, name").all(req.user.workspace_id)); });
+app.post("/api/tax-rates", requireAuth, needPerm("can_settings"), (req: any, res: any) => { const b = req.body || {}; if (!b.name || !(Number(b.rate) >= 0)) return res.status(422).json({ error: { code: "bad_rate" } }); if (b.is_default) db.prepare("UPDATE tax_rates SET is_default=0 WHERE workspace_id=?").run(req.user.workspace_id); const id = uid("tax"); db.prepare("INSERT INTO tax_rates (id,workspace_id,name,rate,is_default,active,created_at) VALUES (?,?,?,?,?,1,?)").run(id, req.user.workspace_id, String(b.name).slice(0, 60), Number(b.rate) || 0, b.is_default ? 1 : 0, now()); res.status(201).json(db.prepare("SELECT * FROM tax_rates WHERE id=?").get(id)); });
+app.patch("/api/tax-rates/:id", requireAuth, needPerm("can_settings"), (req: any, res: any) => { const b = req.body || {}; const t = db.prepare("SELECT * FROM tax_rates WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any; if (!t) return res.status(404).json({ error: { code: "not_found" } }); if (b.is_default) db.prepare("UPDATE tax_rates SET is_default=0 WHERE workspace_id=?").run(req.user.workspace_id); db.prepare("UPDATE tax_rates SET name=?, rate=?, is_default=?, active=? WHERE id=?").run(b.name !== undefined ? String(b.name).slice(0, 60) : t.name, b.rate !== undefined ? Number(b.rate) || 0 : t.rate, b.is_default !== undefined ? (b.is_default ? 1 : 0) : t.is_default, b.active !== undefined ? (b.active ? 1 : 0) : t.active, t.id); res.json(db.prepare("SELECT * FROM tax_rates WHERE id=?").get(t.id)); });
+app.delete("/api/tax-rates/:id", requireAuth, needPerm("can_settings"), (req: any, res: any) => { db.prepare("DELETE FROM tax_rates WHERE id=? AND workspace_id=?").run(req.params.id, req.user.workspace_id); res.json({ ok: true }); });
 app.get("/api/report-templates", requireAuth, (req: any, res: any) => { if (req.query.all) { ensureReportTemplates(req.user.workspace_id); return res.json((db.prepare("SELECT * FROM report_templates WHERE workspace_id=? ORDER BY created_at").all(req.user.workspace_id) as any[]).map((t: any) => ({ ...t, blocks: JSON.parse(t.blocks || "[]"), branding: JSON.parse(t.branding || "{}") }))); } res.json(listReportTemplates(req.user.workspace_id)); });
 app.post("/api/report-templates", requireAuth, (req: any, res: any) => {
   if (!permsOf(req.user).can_settings) return res.status(403).json({ error: { code: "forbidden" } });
@@ -1618,7 +1645,7 @@ app.patch("/api/jobs/:id", requireAuth, (req: any, res) => {
   const j = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!j) return res.status(404).json({ error: { code: "not_found" } });
   const b = req.body || {}; const sets: string[] = []; const vals: any[] = [];
-  for (const k of ["scheduled_start", "scheduled_end", "invoice_status", "value", "sector", "requires_site_visit", "budget_cost"]) if (b[k] !== undefined) { sets.push(`${k}=?`); vals.push(b[k]); }
+  for (const k of ["scheduled_start", "scheduled_end", "invoice_status", "value", "sector", "requires_site_visit", "budget_cost", "tax_rate_id", "payment_plan"]) if (b[k] !== undefined) { sets.push(`${k}=?`); vals.push(b[k]); }
   if (sets.length) { db.prepare(`UPDATE jobs SET ${sets.join(",")}, updated_at=? WHERE id=?`).run(...vals, now(), j.id); }
   res.json(jobView(db.prepare("SELECT * FROM jobs WHERE id=?").get(j.id)));
 });
@@ -2376,7 +2403,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-export const APP_VERSION = "v93";
+export const APP_VERSION = "v94";
 app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: APP_VERSION, jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {
