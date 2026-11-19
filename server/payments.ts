@@ -119,6 +119,7 @@ export function markPaid(paymentId: string): boolean {
       db.prepare("INSERT INTO outbox (id,workspace_id,kind,payload,idempotency_key,created_at) VALUES (?,?,?,?,?,?)")
         .run(uid("out"), pay.workspace_id, "payment.invoice_paid", JSON.stringify({ payment_id: paymentId, invoice_id: inv.id, amount: pay.amount }), `pay-${paymentId}`, now());
     }
+    void import("./quickbooks.ts").then(m => m.pushPaymentToQb(pay.workspace_id, paymentId)).catch(() => {});
     return true;
   }
   db.prepare("UPDATE proposals SET payment_status='deposit_paid' WHERE id=?").run(pay.proposal_id);
@@ -127,6 +128,7 @@ export function markPaid(paymentId: string): boolean {
   notifyOwners(pay.workspace_id, "deposit.paid", "Deposit paid 💳", `Deposit of $${pay.amount} received on proposal ${pay.proposal_id}`, prop2?.lead_id);
   db.prepare("INSERT INTO outbox (id,workspace_id,kind,payload,idempotency_key,created_at) VALUES (?,?,?,?,?,?)")
     .run(uid("out"), pay.workspace_id, "payment.deposit_paid", JSON.stringify({ payment_id: paymentId, proposal_id: pay.proposal_id, amount: pay.amount }), `pay-${paymentId}`, now());
+  void import("./quickbooks.ts").then(m => m.pushPaymentToQb(pay.workspace_id, paymentId)).catch(() => {});
   return true;
 }
 

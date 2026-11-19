@@ -1608,10 +1608,11 @@ function QuickBooksCard() {
   useEffect(load, []);
   if (!st) return null;
   return (<div className="card"><h3 style={{ marginTop: 0 }}>📗 QuickBooks Online</h3>
-    <p className="muted" style={{ fontSize: 12.5 }}>Push any Workpile invoice into QuickBooks with one click (the customer is created there if needed) — no more double entry at 9pm. The QBO invoice id is stamped back onto the Workpile invoice.</p>
+    <p className="muted" style={{ fontSize: 12.5 }}>Invoices push to QuickBooks from the job (the customer is created there if needed), and every payment and deposit syncs there automatically, linked to its invoice — no more double entry at 9pm.</p>
     {msg && <p style={{ fontSize: 13 }}>{msg}</p>}
     {st.connection ? <div className="rowflex"><span style={{ flex: 1 }}>Connected · company <b>{st.connection.realm_id}</b> since {new Date(st.connection.created_at).toLocaleDateString()}</span><button className="btn ghost small" onClick={async () => { await api("/api/quickbooks", { method: "DELETE" }); load(); }}>Disconnect</button></div>
       : <div className="rowflex"><button className="btn" onClick={async () => { const r: any = await api("/api/quickbooks/start"); if (r?.url) location.href = r.url; else setMsg("⚠ " + (r?.error?.message || "The Intuit app isn't registered on this deployment yet (INTUIT_CLIENT_ID/SECRET).")); }}>Connect QuickBooks{st.configured ? "" : " (setup needed)"}</button><span className="muted" style={{ fontSize: 12 }}>{st.configured ? "You'll approve access on Intuit's own screen." : "Needs the Intuit app registered on this deployment first — a one-time founder setup."}</span></div>}
+    {st.connection && st.payments && <div className="rowflex" style={{ marginTop: 10, borderTop: "1px solid #E3E8E3", paddingTop: 10 }}><span style={{ flex: 1, fontSize: 13.5 }}>Payments → QuickBooks: <b>{st.payments.synced}</b> synced · <b>{st.payments.pending}</b> pending{st.payments.failed ? <> · <b style={{ color: "#B91C1C" }}>{st.payments.failed} failed</b></> : null}</span><button className="btn ghost small" onClick={async () => { const r: any = await api("/api/quickbooks/sync-payments", { method: "POST", body: {} }); setMsg(r?.ok ? `Payment sync ran — ${r.synced} synced, ${r.deferred} waiting on an invoice, ${r.failed} failed.` : "⚠ " + (r?.error?.message || "Sync failed")); load(); }}>Sync payments now</button></div>}
   </div>);
 }
 function SetupCard({ go }: any) {

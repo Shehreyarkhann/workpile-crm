@@ -48,13 +48,8 @@ export async function pushInvoiceToQb(workspaceId: string, invoiceId: string, fe
   if (!inv) { const e: any = new Error("invoice not found"); e.code = "not_found"; throw e; }
   if (inv.status === "void") { const e: any = new Error("void invoices are never pushed to QuickBooks"); e.code = "invoice_void"; throw e; }
   if (inv.qb_id) return { qb_id: inv.qb_id, already: true };
-  const lead = inv.lead_id ? db.prepare("SELECT * FROM leads WHERE id=?").get(inv.lead_id) as any : null;
-  const contact = lead?.contact_id ? db.prepare("SELECT * FROM contacts WHERE id=?").get(lead.contact_id) as any : null;
-  const customerName = (contact?.company || contact?.name || lead?.contact_name || "Workpile customer").slice(0, 100);
   const token = await qbAccess(conn, fetchFn);
-  const q = await qbCall(conn, "GET", `query?query=${encodeURIComponent(`select * from Customer where DisplayName = '${customerName.replace(/'/g, "\\'")}'`)}`, null, token, fetchFn);
-  let customerId = q?.QueryResponse?.Customer?.[0]?.Id;
-  if (!customerId) { const created = await qbCall(conn, "POST", "customer", { DisplayName: customerName, ...(contact?.email ? { PrimaryEmailAddr: { Address: contact.email } } : {}) }, token, fetchFn); customerId = created?.Customer?.Id; }
+  const customerId = await qbCustomerId(conn, inv, token, fetchFn);
   let lines: any[] = []; try { lines = JSON.parse(inv.lines || "[]"); } catch { lines = []; }
   const qbLines = (lines.length ? lines : [{ description: "Services rendered", qty: 1, unit_price: inv.total }]).map((l: any) => {
     const qty = Number(l.qty) || 1; const rate = Number(l.unit_price ?? l.price ?? (l.amount ? l.amount / qty : 0)) || 0;
@@ -65,4 +60,62 @@ export async function pushInvoiceToQb(workspaceId: string, invoiceId: string, fe
   if (!qbId) throw new Error("QBO did not return an invoice id");
   db.prepare("UPDATE invoices SET qb_id=?, qb_synced_at=? WHERE id=?").run(qbId, now(), inv.id);
   return { qb_id: qbId };
+}
+
+// v104 — resolve (or create) the QBO customer for an invoice's lead.
+export async function qbCustomerId(conn: any, inv: any, token: string, fetchFn: FetchFn = realFetch): Promise<string> {
+  const lead = inv.lead_id ? db.prepare("SELECT * FROM leads WHERE id=?").get(inv.lead_id) as any : null;
+  const contact = lead?.contact_id ? db.prepare("SELECT * FROM contacts WHERE id=?").get(lead.contact_id) as any : null;
+  const customerName = (contact?.company || contact?.name || lead?.contact_name || "Workpile customer").slice(0, 100);
+  const q = await qbCall(conn, "GET", `query?query=${encodeURIComponent(`select * from Customer where DisplayName = '${customerName.replace(/'/g, "\\'")}'`)}`, null, token, fetchFn);
+  let customerId = q?.QueryResponse?.Customer?.[0]?.Id;
+  if (!customerId) { const created = await qbCall(conn, "POST", "customer", { DisplayName: customerName, ...(contact?.email ? { PrimaryEmailAddr: { Address: contact.email } } : {}) }, token, fetchFn); customerId = created?.Customer?.Id; }
+  return String(customerId);
+}
+
+// v104 — every paid payment (invoice payment or proposal deposit) lands in
+// QuickBooks as a Payment linked to its invoice. Deposits taken before an
+// invoice exists defer (awaiting_invoice) and resolve on the next sweep.
+export async function pushPaymentToQb(workspaceId: string, paymentId: string, fetchFn: FetchFn = realFetch): Promise<any> {
+  const conn = db.prepare("SELECT * FROM quickbooks_connections WHERE workspace_id=? AND status='connected'").get(workspaceId) as any;
+  if (!conn) return { skipped: "qb_not_connected" };
+  const pay = db.prepare("SELECT * FROM payments WHERE id=? AND workspace_id=?").get(paymentId, workspaceId) as any;
+  if (!pay) return { skipped: "not_found" };
+  if (pay.status !== "paid") return { skipped: "not_paid" };
+  if (pay.qb_id) return { qb_id: pay.qb_id, already: true };
+  try {
+    let inv: any = null;
+    if (pay.invoice_id) inv = db.prepare("SELECT * FROM invoices WHERE id=?").get(pay.invoice_id) as any;
+    if (!inv && pay.proposal_id) {
+      const prop = db.prepare("SELECT lead_id FROM proposals WHERE id=?").get(pay.proposal_id) as any;
+      if (prop?.lead_id) inv = db.prepare("SELECT * FROM invoices WHERE lead_id=? AND status!='void' ORDER BY created_at DESC").get(prop.lead_id) as any;
+    }
+    if (!inv) return { deferred: "awaiting_invoice" };
+    if (!inv.qb_id) await pushInvoiceToQb(workspaceId, inv.id, fetchFn);
+    inv = db.prepare("SELECT * FROM invoices WHERE id=?").get(inv.id) as any;
+    const token = await qbAccess(conn, fetchFn);
+    const customerId = await qbCustomerId(conn, inv, token, fetchFn);
+    const posted = await qbCall(conn, "POST", "payment", { CustomerRef: { value: String(customerId) }, TotalAmt: pay.amount, TxnDate: String(pay.paid_at || now()).slice(0, 10), Line: [{ Amount: pay.amount, LinkedTxn: [{ TxnId: String(inv.qb_id), TxnType: "Invoice" }] }] }, token, fetchFn);
+    const qbId = String(posted?.Payment?.Id || "");
+    if (!qbId) throw new Error("QBO did not return a payment id");
+    db.prepare("UPDATE payments SET qb_id=?, qb_error=NULL WHERE id=?").run(qbId, pay.id);
+    return { qb_id: qbId };
+  } catch (e: any) {
+    db.prepare("UPDATE payments SET qb_error=? WHERE id=?").run(String(e?.message || e).slice(0, 300), pay.id);
+    return { error: String(e?.message || e) };
+  }
+}
+
+export async function syncPendingPayments(workspaceId: string, fetchFn: FetchFn = realFetch): Promise<{ synced: number; deferred: number; failed: number }> {
+  const rows = db.prepare("SELECT id FROM payments WHERE workspace_id=? AND status='paid' AND qb_id IS NULL ORDER BY created_at LIMIT 50").all(workspaceId) as any[];
+  let synced = 0, deferred = 0, failed = 0;
+  for (const r of rows) { const out = await pushPaymentToQb(workspaceId, r.id, fetchFn); if (out.qb_id) synced++; else if (out.deferred) deferred++; else if (out.error) failed++; }
+  return { synced, deferred, failed };
+}
+
+export function qbPaymentSyncCounts(workspaceId: string): { synced: number; pending: number; failed: number } {
+  const synced = (db.prepare("SELECT COUNT(*) c FROM payments WHERE workspace_id=? AND status='paid' AND qb_id IS NOT NULL").get(workspaceId) as any).c;
+  const failed = (db.prepare("SELECT COUNT(*) c FROM payments WHERE workspace_id=? AND status='paid' AND qb_id IS NULL AND qb_error IS NOT NULL").get(workspaceId) as any).c;
+  const pending = (db.prepare("SELECT COUNT(*) c FROM payments WHERE workspace_id=? AND status='paid' AND qb_id IS NULL AND qb_error IS NULL").get(workspaceId) as any).c;
+  return { synced, pending, failed };
 }
