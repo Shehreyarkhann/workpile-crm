@@ -3642,6 +3642,34 @@ function PortalCard({ accountId }: any) {
     </>}
   </div>;
 }
+function JobExpenses({ jobId, onDone }: any) {
+  const [rows, setRows] = useState<any[]>([]); const [total, setTotal] = useState(0); const [wos, setWos] = useState<any[]>([]);
+  const [f, setF] = useState<any>({ vendor: "", description: "", category: "materials", amount: "", spent_on: new Date().toISOString().slice(0, 10), work_order_id: "" });
+  const [msg, setMsg] = useState("");
+  const load = () => { api(`/api/jobs/${jobId}/expenses`).then((r: any) => { setRows(r.expenses || []); setTotal(r.total || 0); }).catch(() => {}); };
+  useEffect(load, [jobId]);
+  useEffect(() => { api(`/api/jobs/${jobId}/work-orders`).then((r: any) => setWos(Array.isArray(r) ? r : [])).catch(() => {}); }, [jobId]);
+  const add = async () => { try { await api(`/api/jobs/${jobId}/expenses`, { method: "POST", body: { ...f, amount: Number(f.amount) } }); setF({ vendor: "", description: "", category: "materials", amount: "", spent_on: new Date().toISOString().slice(0, 10), work_order_id: "" }); setMsg(""); load(); onDone && onDone(); } catch (e: any) { setMsg(e.message); } };
+  const attach = async (expenseId: string, file: File) => { const buf = await file.arrayBuffer(); let bin = ""; const bytes = new Uint8Array(buf); for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192)); try { const att: any = await api("/api/attachments", { method: "POST", body: { entity_type: "expense", entity_id: expenseId, name: file.name, mime: file.type || "application/octet-stream", data_base64: btoa(bin), category: "receipt" } }); await api(`/api/expenses/${expenseId}`, { method: "PATCH", body: { receipt_id: att.id } }); load(); } catch (e: any) { setMsg(e.message); } };
+  return <div style={{ marginTop: 16 }}>
+    <h4 style={{ margin: "0 0 6px" }}>Expenses <span className="muted" style={{ fontWeight: 400, fontSize: 12.5 }}>— count into actual job cost · total {money(total)}</span></h4>
+    {msg && <p className="muted" style={{ fontSize: 12.5 }}>{msg}</p>}
+    {rows.map(r => <div key={r.id} className="rowflex" style={{ fontSize: 12.5, padding: "4px 0", borderBottom: "1px solid #F0F3F0" }}>
+      <span style={{ flex: 1 }}><b>{money(r.amount)}</b> · {r.vendor || r.description || r.category} <span className="muted">{r.description && r.vendor ? "— " + r.description : ""} · {r.category} · {r.spent_on || ""}{r.wo_seq ? ` · W${String(r.wo_seq).padStart(2, "0")}` : ""}</span></span>
+      {r.receipt_id ? <a className="btn ghost small" href={`/api/attachments/${r.receipt_id}/download`}>Receipt</a> : <label className="btn ghost small" style={{ cursor: "pointer" }}>Attach receipt<input type="file" style={{ display: "none" }} onChange={e => { const fl = e.target.files && e.target.files[0]; if (fl) attach(r.id, fl); }} /></label>}
+      <button className="btn ghost small" onClick={async () => { await api(`/api/expenses/${r.id}`, { method: "DELETE" }); load(); onDone && onDone(); }}>Delete</button>
+    </div>)}
+    <div className="rowflex" style={{ marginTop: 8, flexWrap: "wrap" }}>
+      <input placeholder="Vendor" value={f.vendor} onChange={e => setF({ ...f, vendor: e.target.value })} style={{ width: 150 }} />
+      <input placeholder="What for" value={f.description} onChange={e => setF({ ...f, description: e.target.value })} style={{ width: 170 }} />
+      <select value={f.category} onChange={e => setF({ ...f, category: e.target.value })} style={{ width: "auto" }}>{["materials", "fuel", "disposal", "subcontractor", "equipment", "lodging", "permits", "other"].map(c => <option key={c} value={c}>{c}</option>)}</select>
+      <input type="number" placeholder="Amount" value={f.amount} onChange={e => setF({ ...f, amount: e.target.value })} style={{ width: 100 }} />
+      <input type="date" value={f.spent_on} onChange={e => setF({ ...f, spent_on: e.target.value })} style={{ width: 140 }} />
+      <select value={f.work_order_id} onChange={e => setF({ ...f, work_order_id: e.target.value })} style={{ width: "auto" }}><option value="">Whole job</option>{wos.map((w: any) => <option key={w.id} value={w.id}>{w.display_no || ("W" + String(w.seq).padStart(2, "0"))}</option>)}</select>
+      <button className="btn small" onClick={add}>Add expense</button>
+    </div>
+  </div>;
+}
 function inspChip(i: any): [string, string, string] {
   if (i.status === "closed") return i.result === "passed" ? ["Passed", "#E7F2EB", "#0E5C3A"] : i.result === "failed" ? ["Failed", "#FDECEC", "#991B1B"] : ["Passed w/ conditions", "#FEF3C7", "#92400E"];
   return i.status === "submitted" ? ["Awaiting decision", "#FEF3C7", "#92400E"] : i.status === "in_progress" ? ["In progress", "#E0EFFF", "#1D4ED8"] : ["Scheduled", "#EEF2EF", "#5B6B62"];
@@ -3963,6 +3991,7 @@ function JobDetail({ id, users, me, priceBook, close, refresh, openLead }: any) 
       <ProjectFiles jobId={id} />
       <h4 style={{ marginTop: 16 }}>Invoices</h4>
       <JobBilling jobId={id} job={j} invoices={d.invoices} onDone={load} />
+      <JobExpenses jobId={id} onDone={load} />
       {d.deposits && d.deposits.taken > 0 && <p className="muted" style={{ margin: "2px 0 8px" }}>💳 Deposits on this project: <b>{money(d.deposits.taken)}</b> collected · {money(d.deposits.applied)} applied to invoices{d.deposits.available > 0 ? <> · <b>{money(d.deposits.available)}</b> still available as credit</> : ""}</p>}
       {(d.invoices || []).map((inv: any) => <div className="check" key={inv.id}><span style={{ flex: 1 }}><b>{inv.number}</b> · {money(inv.total)} · {inv.status} · balance {money(inv.balance)}{inv.plan_label ? ` · ${inv.plan_label}` : ""}{(inv.tax_amount || 0) > 0 ? ` · incl. ${money(inv.tax_amount)} ${inv.tax_name || "tax"}` : ""}{inv.deposit_credit > 0 ? ` · 💳 deposit applied ${money(inv.deposit_credit)}` : ""}{inv.due_at ? ` · due ${new Date(inv.due_at).toLocaleDateString()}` : ""}</span>{inv.balance > 0 && inv.status !== "void" && <><input id={"jpay-" + inv.id} type="number" placeholder="$" style={{ width: 90 }} /><button className="btn ghost small" onClick={async () => { const v = Number((document.getElementById("jpay-" + inv.id) as HTMLInputElement).value); if (!(v > 0)) return; try { await api(`/api/invoices/${inv.id}/payments`, { method: "POST", body: { amount: v } }); toast("Payment recorded ✓"); load(); } catch (e: any) { setMsg(e.message); } }}>Record payment</button></>}
       <div style={{ width: "100%", marginTop: 4 }}><InvoiceActions inv={inv} onDone={load} /></div></div>)}

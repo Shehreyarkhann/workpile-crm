@@ -23,7 +23,8 @@ export function jobMoney(ws: string, job: any) {
   const collected = r2(collectedInv + collectedDep);
   const labor = r2(((db.prepare("SELECT COALESCE(SUM(COALESCE(t.hours,0)*COALESCE(t.rate,0)),0) AS s FROM wo_time_entries t JOIN work_orders w ON w.id=t.work_order_id WHERE t.workspace_id=? AND w.job_id=?").get(ws, job.id) as any)?.s) || 0);
   const materials = r2(((db.prepare("SELECT COALESCE(SUM(COALESCE(m.qty,0)*COALESCE(m.unit_cost,0)),0) AS s FROM wo_materials m JOIN work_orders w ON w.id=m.work_order_id WHERE m.workspace_id=? AND w.job_id=?").get(ws, job.id) as any)?.s) || 0);
-  const actual_cost = r2(labor + materials);
+  const expenses = r2(((db.prepare("SELECT COALESCE(SUM(amount),0) AS s FROM expenses WHERE workspace_id=? AND job_id=?").get(ws, job.id) as any)?.s) || 0);
+  const actual_cost = r2(labor + materials + expenses);
   let budget_cost: number | null = job.budget_cost != null ? Number(job.budget_cost) : null;
   if (budget_cost == null && signed) { try { budget_cost = estLineCost(JSON.parse(signed.line_items || "[]")); } catch { budget_cost = 0; } }
   const margin = r2(revised - actual_cost);
@@ -31,11 +32,12 @@ export function jobMoney(ws: string, job: any) {
   const cost_by_wo = (db.prepare("SELECT w.id, w.seq, w.title, w.status, w.percent_complete FROM work_orders w WHERE w.workspace_id=? AND w.job_id=? AND w.status!='cancelled' ORDER BY w.seq").all(ws, job.id) as any[]).map(w => {
     const l = r2(((db.prepare("SELECT COALESCE(SUM(COALESCE(hours,0)*COALESCE(rate,0)),0) AS s FROM wo_time_entries WHERE workspace_id=? AND work_order_id=?").get(ws, w.id) as any)?.s) || 0);
     const m = r2(((db.prepare("SELECT COALESCE(SUM(COALESCE(qty,0)*COALESCE(unit_cost,0)),0) AS s FROM wo_materials WHERE workspace_id=? AND work_order_id=?").get(ws, w.id) as any)?.s) || 0);
-    return { id: w.id, display_no: `${job.project_no}-W${String(w.seq).padStart(2, "0")}`, title: w.title, status: w.status, percent_complete: w.percent_complete || 0, labor: l, materials: m, cost_total: r2(l + m) };
+    const ex = r2(((db.prepare("SELECT COALESCE(SUM(amount),0) AS s FROM expenses WHERE workspace_id=? AND work_order_id=?").get(ws, w.id) as any)?.s) || 0);
+    return { id: w.id, display_no: `${job.project_no}-W${String(w.seq).padStart(2, "0")}`, title: w.title, status: w.status, percent_complete: w.percent_complete || 0, labor: l, materials: m, expenses: ex, cost_total: r2(l + m + ex) };
   });
   return {
     contract, change_orders: coApproved, revised, invoiced, collected,
-    labor_cost: labor, materials_cost: materials, actual_cost,
+    labor_cost: labor, materials_cost: materials, expenses_cost: expenses, actual_cost,
     budget_cost, margin, margin_pct: revised > 0 ? Math.round((margin / revised) * 1000) / 10 : null,
     projected_margin, projected_margin_pct: revised > 0 && projected_margin != null ? Math.round((projected_margin / revised) * 1000) / 10 : null,
     cost_by_wo, has_signed_proposal: !!signed,

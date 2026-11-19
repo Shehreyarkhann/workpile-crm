@@ -1808,6 +1808,34 @@ app.post("/api/jobs/:id/packet/preview", requireAuth, (req: any, res) => {
   if (!pk.v.contact_email) return res.status(422).json({ error: { code: "no_destination", message: "This customer has no email address on file — add one to the lead first, or download the packet and send it yourself." } });
   res.json({ to: pk.v.contact_email, to_name: pk.v.contact_name, subject: pk.subject, body: pk.body, includes: pk.includes, email_test_mode: !process.env.RESEND_API_KEY });
 });
+const EXPENSE_CATS = ["materials", "fuel", "disposal", "subcontractor", "equipment", "lodging", "permits", "other"];
+app.get("/api/jobs/:id/expenses", requireAuth, modGate("jobs"), (req: any, res) => {
+  const rows = db.prepare("SELECT e.*, u.name AS by_name, w.seq AS wo_seq FROM expenses e LEFT JOIN users u ON u.id=e.created_by LEFT JOIN work_orders w ON w.id=e.work_order_id WHERE e.workspace_id=? AND e.job_id=? ORDER BY e.spent_on DESC, e.created_at DESC").all(req.user.workspace_id, req.params.id);
+  res.json({ expenses: rows, total: Math.round(rows.reduce((t: number, r: any) => t + (Number(r.amount) || 0), 0) * 100) / 100 });
+});
+app.post("/api/jobs/:id/expenses", requireAuth, modGate("jobs", "edit"), (req: any, res) => {
+  const j = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!j) return res.status(404).json({ error: { code: "not_found" } });
+  const b = req.body || {}; const amount = Number(b.amount);
+  if (!amount || amount <= 0) return res.status(422).json({ error: { code: "bad_amount", message: "Enter an amount above zero." } });
+  const id = uid("exp");
+  db.prepare("INSERT INTO expenses (id,workspace_id,job_id,work_order_id,vendor,description,category,amount,spent_on,receipt_id,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+    .run(id, req.user.workspace_id, j.id, b.work_order_id || null, String(b.vendor || "").slice(0, 120), String(b.description || "").slice(0, 240), EXPENSE_CATS.includes(b.category) ? b.category : "other", amount, String(b.spent_on || new Date().toISOString().slice(0, 10)).slice(0, 10), b.receipt_id || null, req.user.id, now());
+  res.status(201).json(db.prepare("SELECT * FROM expenses WHERE id=?").get(id));
+});
+app.patch("/api/expenses/:id", requireAuth, modGate("jobs", "edit"), (req: any, res) => {
+  const e = db.prepare("SELECT * FROM expenses WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!e) return res.status(404).json({ error: { code: "not_found" } });
+  const b = req.body || {}; const F = ["vendor", "description", "category", "amount", "spent_on", "work_order_id", "receipt_id"];
+  const sets = F.filter(f => b[f] !== undefined); if (!sets.length) return res.json(e);
+  db.prepare(`UPDATE expenses SET ${sets.map(f => f + "=?").join(",")} WHERE id=?`).run(...sets.map(f => f === "category" && !EXPENSE_CATS.includes(b[f]) ? "other" : b[f]), e.id);
+  res.json(db.prepare("SELECT * FROM expenses WHERE id=?").get(e.id));
+});
+app.delete("/api/expenses/:id", requireAuth, modGate("jobs", "edit"), (req: any, res) => {
+  const out = db.prepare("DELETE FROM expenses WHERE id=? AND workspace_id=?").run(req.params.id, req.user.workspace_id);
+  if (!out.changes) return res.status(404).json({ error: { code: "not_found" } });
+  res.json({ ok: true });
+});
 app.get("/api/jobs/:id/packet/download", requireAuth, async (req: any, res) => {
   const j = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!j) return res.status(404).json({ error: { code: "not_found" } });
@@ -2536,7 +2564,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-export const APP_VERSION = "v98";
+export const APP_VERSION = "v99";
 app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: APP_VERSION, jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {
