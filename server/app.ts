@@ -8,6 +8,7 @@ import { WO_STATUSES, createWorkOrder, listWorkOrders, decorateWO, ensureDefault
 import { buildWorkspaceExport } from "./export.ts";
 import { portalAccountByToken, buildPortalData, renderPortalHtml } from "./portal.ts";
 import { REPORT_KINDS, parseRecipients, sendScheduledReport } from "./report-schedules.ts";
+import { localParts, localToday } from "./tz.ts";
 import { newTotpSecret, verifyTotp, otpauthUrl, createMfaPending, peekMfaPending, consumeMfaPending } from "./mfa.ts";
 import { ensureInspTemplates, createInspection, decorateInsp, inspProgress, inspectionGateForWO, photoRequiredMissing, logInspEvent, parseSections, INSP_RESULTS } from "./inspections.ts";
 import { ensureReportTemplates, listReportTemplates, buildReportContext, renderReportHtml, generateReport, listReports, sampleReportContext } from "./reports.ts";
@@ -1617,6 +1618,26 @@ app.post("/api/work-orders/:id/inspections", requireAuth, modGate("jobs", "edit"
   if (!wo) return res.status(404).json({ error: { code: "not_found" } });
   res.status(201).json(createInspection(req.user.workspace_id, wo, req.user.id, req.body || {}));
 });
+app.get("/api/inspections/summary", requireAuth, modGate("jobs"), (req: any, res) => {
+  const ws = req.user.workspace_id;
+  const wsRow: any = db.prepare("SELECT timezone FROM workspaces WHERE id=?").get(ws);
+  const today = localToday(wsRow?.timezone || "America/New_York");
+  const rows = db.prepare("SELECT status, result, scheduled_start, decided_at FROM inspections WHERE workspace_id=?").all(ws) as any[];
+  const cnt = (f: (r: any) => boolean) => rows.filter(f).length;
+  const since30 = new Date(Date.now() - 30 * 86400000).toISOString();
+  const closed30 = rows.filter(r => r.status === "closed" && r.decided_at && r.decided_at >= since30);
+  const passed30 = closed30.filter(r => r.result === "passed" || r.result === "passed_with_conditions").length;
+  const reportsPending = (db.prepare("SELECT COUNT(*) c FROM inspections i WHERE i.workspace_id=? AND i.status='closed' AND NOT EXISTS (SELECT 1 FROM inspection_reports r WHERE r.inspection_id=i.id)").get(ws) as any).c;
+  const openActions = (db.prepare("SELECT COUNT(*) c FROM inspection_actions WHERE workspace_id=? AND status='open'").get(ws) as any).c;
+  res.json({
+    scheduled_today: cnt(r => r.status === "scheduled" && r.scheduled_start && localParts(r.scheduled_start, wsRow?.timezone || "America/New_York").date === today),
+    in_progress: cnt(r => r.status === "in_progress"),
+    awaiting_review: cnt(r => r.status === "submitted"),
+    overdue: cnt(r => r.status === "scheduled" && r.scheduled_start && r.scheduled_start < new Date().toISOString()),
+    open_actions: openActions, reports_pending: reportsPending,
+    closed_30d: closed30.length, pass_rate_30d: closed30.length ? Math.round((passed30 / closed30.length) * 1000) / 10 : null,
+  });
+});
 app.get("/api/inspections/:id", requireAuth, modGate("jobs"), (req: any, res) => {
   const insp = inspRow(req); if (!insp) return res.status(404).json({ error: { code: "not_found" } });
   const ws = req.user.workspace_id;
@@ -2588,7 +2609,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-export const APP_VERSION = "v100";
+export const APP_VERSION = "v101";
 app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: APP_VERSION, jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {
