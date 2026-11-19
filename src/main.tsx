@@ -1683,7 +1683,7 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any)
     </tbody></table>
       <div className="rowflex" style={{ marginTop: 12 }}><input style={{ flex: 2 }} placeholder="New item name" value={nb.name} onChange={e => setNb({ ...nb, name: e.target.value })} /><input style={{ width: 90 }} placeholder="unit" value={nb.unit} onChange={e => setNb({ ...nb, unit: e.target.value })} /><input style={{ width: 120 }} type="number" placeholder="standard $" value={nb.standard_price} onChange={e => setNb({ ...nb, standard_price: e.target.value })} /><input style={{ width: 120 }} type="number" placeholder="floor $" value={nb.floor_price} onChange={e => setNb({ ...nb, floor_price: e.target.value })} /><button className="btn" onClick={async () => { await api("/api/price-book", { method: "POST", body: { ...nb, standard_price: Number(nb.standard_price) || 0, floor_price: Number(nb.floor_price) || 0 } }); setNb({ name: "", unit: "job", standard_price: "", floor_price: "" }); loadAll(); }}>Add item</button></div>
       <p className="muted">Proposals can only price from this book — the floor is the margin guardrail the Approval Gate enforces.</p></div>}
-    {tab === "templates" && canSettings && <div className="card"><VerticalPacksCard /><DocTemplatesEditor /><SectionLibraryManager /><InspectionTemplatesEditor /><h3>Message templates</h3>{tpls.map(t => <div key={t.id} style={{ borderBottom: "1px solid #eef2f7", padding: "10px 0" }}><b>{t.name}</b> <span className="muted">· {t.kind} · v{t.version} · {t.active ? "active" : "inactive"}</span>{tplEdit?.id === t.id ? <><textarea rows={5} value={tplEdit.body} onChange={e => setTplEdit({ ...tplEdit, body: e.target.value })} /><span className="rowflex" style={{ marginTop: 6 }}><button className="btn small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "PATCH", body: { body: tplEdit.body } }); setTplEdit(null); loadAll(); }}>Save</button><button className="btn ghost small" onClick={() => setTplEdit(null)}>Cancel</button></span></> : <><p className="muted" style={{ whiteSpace: "pre-wrap" }}>{t.body}</p><button className="btn ghost small" onClick={() => setTplEdit({ id: t.id, body: t.body })}>Edit</button></>} <button className="btn ghost small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></div>)}
+    {tab === "templates" && canSettings && <div className="card"><VerticalPacksCard /><DocTemplatesEditor /><SectionLibraryManager /><InspectionTemplatesEditor /><WOTemplatesEditor /><h3>Message templates</h3>{tpls.map(t => <div key={t.id} style={{ borderBottom: "1px solid #eef2f7", padding: "10px 0" }}><b>{t.name}</b> <span className="muted">· {t.kind} · v{t.version} · {t.active ? "active" : "inactive"}</span>{tplEdit?.id === t.id ? <><textarea rows={5} value={tplEdit.body} onChange={e => setTplEdit({ ...tplEdit, body: e.target.value })} /><span className="rowflex" style={{ marginTop: 6 }}><button className="btn small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "PATCH", body: { body: tplEdit.body } }); setTplEdit(null); loadAll(); }}>Save</button><button className="btn ghost small" onClick={() => setTplEdit(null)}>Cancel</button></span></> : <><p className="muted" style={{ whiteSpace: "pre-wrap" }}>{t.body}</p><button className="btn ghost small" onClick={() => setTplEdit({ id: t.id, body: t.body })}>Edit</button></>} <button className="btn ghost small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></div>)}
       <div className="formgrid" style={{ marginTop: 12 }}><div><label className="f">New template name</label><input value={nt.name} onChange={e => setNt({ ...nt, name: e.target.value })} /></div><div className="full"><label className="f">Body (merge fields: {"{{contact_name}} {{service}} {{total}}"})</label><textarea rows={4} value={nt.body} onChange={e => setNt({ ...nt, body: e.target.value })} /></div></div>
       <button className="btn" style={{ marginTop: 10 }} onClick={async () => { await api("/api/templates", { method: "POST", body: nt }); setNt({ name: "", body: "" }); loadAll(); }}>Add template</button></div>}
     {tab === "services" && canSettings && <ServicesConsole svcs={svcs} reload={loadAll} />}
@@ -3266,6 +3266,89 @@ function PacketModal({ jobId, close, onSent }: any) {
 // v78 — Work orders inside a project + the dedicated Projects tab (docs/CHAIN-MODEL.md).
 const WO_STATUSES: [string, string][] = [["planned", "Planned"], ["scheduled", "Scheduled"], ["in_progress", "In progress"], ["on_hold", "On hold"], ["completed", "Completed"], ["cancelled", "Cancelled"]];
 const woPill = (st: string) => ({ planned: "#E2E8F0|#334155", scheduled: "#DBEAFE|#1E40AF", in_progress: "#DCFCE7|#166534", on_hold: "#FEF3C7|#92400E", completed: "#0E5C3A|#FFFFFF", cancelled: "#FEE2E2|#991B1B" } as any)[st] || "#E2E8F0|#334155";
+function WOCosts({ wo, users, workers, siblings, onPatch, refresh }: any) {
+  const [classes, setClasses] = useState<any[]>([]);
+  const [tf, setTf] = useState<any>({ person: "", hours: "", work_date: new Date().toISOString().slice(0, 10), labor_class_id: "", note: "" });
+  const [mf, setMf] = useState<any>({ description: "", qty: 1, unit_cost: "", supplier: "" });
+  const [chkLabel, setChkLabel] = useState("");
+  const [msg, setMsg] = useState("");
+  useEffect(() => { api("/api/labor-classes").then((c: any) => setClasses(Array.isArray(c) ? c : [])).catch(() => {}); }, []);
+  const money = (n: any) => "$" + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const post = async (path: string, body: any, method = "POST") => { setMsg(""); try { await api(path, { method, body }); refresh(); } catch (e: any) { setMsg(e.message); } };
+  const personOpts = [...(users || []).map((u: any) => ({ v: "u:" + u.id, l: u.name })), ...(workers || []).map((w: any) => ({ v: "w:" + w.id, l: w.name + " (roster)" }))];
+  const addTime = () => { if (!tf.person || !tf.hours) return setMsg("Pick a person and hours"); const [kind, pid] = tf.person.split(":"); post(`/api/work-orders/${wo.id}/time`, { user_id: kind === "u" ? pid : undefined, worker_id: kind === "w" ? pid : undefined, hours: Number(tf.hours), work_date: tf.work_date, labor_class_id: tf.labor_class_id || undefined, note: tf.note }); setTf({ ...tf, hours: "", note: "" }); };
+  const startTimer = () => { if (!tf.person) return setMsg("Pick a person to start their timer"); const [kind, pid] = tf.person.split(":"); if (kind !== "u") return setMsg("Timers run for team members — roster workers log hours manually"); post(`/api/work-orders/${wo.id}/time/start`, { user_id: pid, labor_class_id: tf.labor_class_id || undefined }); };
+  return <div style={{ marginTop: 10 }}>
+    {msg && <p className="muted" style={{ color: "#991B1B" }}>{msg}</p>}
+    <div className="rowflex" style={{ flexWrap: "wrap" }}>
+      <label className="f" style={{ flex: 1, minWidth: 110 }}>Est. hours<input type="number" defaultValue={wo.est_hours ?? ""} onBlur={e => onPatch(wo.id, { est_hours: e.target.value === "" ? null : Number(e.target.value) })} /></label>
+      <label className="f" style={{ flex: 1, minWidth: 110 }}>Progress %<input type="number" min={0} max={100} defaultValue={wo.percent_complete ?? 0} onBlur={e => onPatch(wo.id, { percent_complete: Number(e.target.value) })} /></label>
+      <label className="f" style={{ flex: 2, minWidth: 160 }}>Depends on (must finish first)<select value={wo.depends_on_id || ""} onChange={e => onPatch(wo.id, { depends_on_id: e.target.value || null })}><option value="">— none —</option>{(siblings || []).filter((x: any) => x.id !== wo.id).map((x: any) => <option key={x.id} value={x.id}>{x.display_no} — {x.title}</option>)}</select></label>
+    </div>
+    <div className="muted" style={{ fontSize: 12.5 }}>⏱ {wo.time?.actual_hours ?? 0}h logged{wo.est_hours ? ` of ${wo.est_hours}h est.` : ""} · Labor {money(wo.time?.labor_cost)} · Materials {money(wo.materials?.cost)} · <b>Total cost {money(wo.cost_total)}</b></div>
+    <div style={{ marginTop: 8 }}><b style={{ fontSize: 13 }}>⏱ Time</b>
+      {(wo.time_entries || []).map((e: any) => <div key={e.id} className="rowflex" style={{ fontSize: 12.5, gap: 6 }}>
+        <span style={{ flex: 1 }}>{e.person_name || "—"} · {e.work_date || String(e.started_at || "").slice(0, 10)}{e.note ? " · " + e.note : ""}</span>
+        {e.started_at && !e.ended_at ? <><span className="tinyBadge" style={{ background: "#E0EFFF", color: "#1D4ED8" }}>timer running</span><button className="btn ghost small" onClick={() => post(`/api/time-entries/${e.id}/stop`, {})}>Stop</button></>
+        : <span>{e.hours}h{e.rate ? ` × $${e.rate} = ${money(e.cost)}` : ""}</span>}
+        <button className="btn ghost small" style={{ padding: "0 4px" }} onClick={() => post(`/api/time-entries/${e.id}`, undefined, "DELETE")}>✕</button>
+      </div>)}
+      <div className="rowflex" style={{ marginTop: 5, flexWrap: "wrap", gap: 5 }}>
+        <select value={tf.person} onChange={e => setTf({ ...tf, person: e.target.value })} style={{ width: "auto" }}><option value="">Person…</option>{personOpts.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}</select>
+        <select value={tf.labor_class_id} onChange={e => setTf({ ...tf, labor_class_id: e.target.value })} style={{ width: "auto" }}><option value="">Labor class…</option>{classes.map((c: any) => <option key={c.id} value={c.id}>{c.name} (${c.private_rate}/h)</option>)}</select>
+        <input type="number" placeholder="Hours" style={{ width: 76 }} value={tf.hours} onChange={e => setTf({ ...tf, hours: e.target.value })} />
+        <input type="date" style={{ width: 140 }} value={tf.work_date} onChange={e => setTf({ ...tf, work_date: e.target.value })} />
+        <input placeholder="Note" style={{ flex: 1, minWidth: 100 }} value={tf.note} onChange={e => setTf({ ...tf, note: e.target.value })} />
+        <button className="btn ghost small" onClick={addTime}>+ Log time</button>
+        <button className="btn ghost small" onClick={startTimer}>▶ Start timer</button>
+      </div>
+    </div>
+    <div style={{ marginTop: 8 }}><b style={{ fontSize: 13 }}>🧱 Materials ({(wo.materials_list || []).length})</b>
+      {(wo.materials_list || []).map((m: any) => <div key={m.id} className="rowflex" style={{ fontSize: 12.5, gap: 6 }}><span style={{ flex: 1 }}>{m.description}{m.supplier ? " · " + m.supplier : ""}</span><span>{m.qty} × ${m.unit_cost} = {money(m.qty * m.unit_cost)}</span><button className="btn ghost small" style={{ padding: "0 4px" }} onClick={() => post(`/api/materials/${m.id}`, undefined, "DELETE")}>✕</button></div>)}
+      <div className="rowflex" style={{ marginTop: 5, flexWrap: "wrap", gap: 5 }}>
+        <input placeholder="Description — e.g. 6-mil poly sheeting" style={{ flex: 2, minWidth: 150 }} value={mf.description} onChange={e => setMf({ ...mf, description: e.target.value })} />
+        <input type="number" placeholder="Qty" style={{ width: 64 }} value={mf.qty} onChange={e => setMf({ ...mf, qty: e.target.value })} />
+        <input type="number" placeholder="Unit $" style={{ width: 84 }} value={mf.unit_cost} onChange={e => setMf({ ...mf, unit_cost: e.target.value })} />
+        <input placeholder="Supplier" style={{ flex: 1, minWidth: 100 }} value={mf.supplier} onChange={e => setMf({ ...mf, supplier: e.target.value })} />
+        <button className="btn ghost small" onClick={() => { if (!mf.description.trim()) return setMsg("Describe the material"); post(`/api/work-orders/${wo.id}/materials`, { description: mf.description, qty: Number(mf.qty) || 1, unit_cost: Number(mf.unit_cost) || 0, supplier: mf.supplier }); setMf({ description: "", qty: 1, unit_cost: "", supplier: "" }); }}>+ Add</button>
+      </div>
+    </div>
+    <div style={{ marginTop: 8 }}><b style={{ fontSize: 13 }}>☑ Checklist ({wo.checklist?.done ?? 0}/{(wo.checklist_items || []).length})</b>
+      {(wo.checklist_items || []).map((c: any) => <div key={c.id} className="rowflex" style={{ fontSize: 12.5, gap: 6 }}>
+        <input type="checkbox" checked={!!c.done} onChange={e => post(`/api/wo-checklist/${c.id}`, { done: e.target.checked }, "PATCH")} />
+        <span style={{ flex: 1, textDecoration: c.done ? "line-through" : "none", color: c.done ? "#5B6B62" : "inherit" }}>{c.label}</span>
+        <button className="btn ghost small" style={{ padding: "0 4px" }} onClick={() => post(`/api/wo-checklist/${c.id}`, undefined, "DELETE")}>✕</button>
+      </div>)}
+      <div className="rowflex" style={{ marginTop: 5, gap: 5 }}>
+        <input placeholder="Add a checklist item — e.g. Waste manifest signed" style={{ flex: 1 }} value={chkLabel} onChange={e => setChkLabel(e.target.value)} />
+        <button className="btn ghost small" onClick={() => { if (!chkLabel.trim()) return; post(`/api/work-orders/${wo.id}/checklist`, { label: chkLabel }); setChkLabel(""); }}>+ Add</button>
+      </div>
+    </div>
+  </div>;
+}
+function WOTemplatesEditor() {
+  const [tpls, setTpls] = useState<any[]>([]); const [edit, setEdit] = useState<any>(null); const [msg, setMsg] = useState("");
+  const load = () => { api("/api/wo-templates").then((t: any) => setTpls(Array.isArray(t) ? t : [])).catch(() => {}); };
+  useEffect(load, []);
+  const save = async () => { try { if (edit.id) await api("/api/wo-templates/" + edit.id, { method: "PATCH", body: edit }); else await api("/api/wo-templates", { method: "POST", body: edit }); setEdit(null); setMsg("Saved."); load(); } catch (e: any) { setMsg(e.message); } };
+  return <div style={{ marginTop: 18 }}>
+    <h3>Work order templates</h3>
+    <p className="muted" style={{ fontSize: 12.5 }}>Standard splits applied to a project in one click — the work orders are created in order, each depending on the one before it.</p>
+    {msg && <p className="muted">{msg}</p>}
+    {tpls.map(t => <div key={t.id} className="rowflex" style={{ padding: "6px 0", borderBottom: "1px solid #EEF2EF" }}><span style={{ flex: 1 }}><b>{t.name}</b> <span className="muted">· {(t.items || []).length} work orders</span></span><button className="btn ghost small" onClick={() => setEdit(JSON.parse(JSON.stringify(t)))}>Edit</button></div>)}
+    {!edit && <button className="btn ghost small" style={{ marginTop: 8 }} onClick={() => setEdit({ id: "", name: "", items: [{ title: "", description: "", est_hours: "" }] })}>+ New template</button>}
+    {edit && <div className="card" style={{ padding: 10, marginTop: 8 }}>
+      <label className="f">Name<input value={edit.name} onChange={e => setEdit({ ...edit, name: e.target.value })} /></label>
+      {(edit.items || []).map((it: any, ii: number) => <div key={ii} className="rowflex" style={{ gap: 5, marginTop: 5, flexWrap: "wrap" }}>
+        <input style={{ flex: 2, minWidth: 150 }} placeholder="Work order title" value={it.title} onChange={e => { const items = [...edit.items]; items[ii] = { ...items[ii], title: e.target.value }; setEdit({ ...edit, items }); }} />
+        <input type="number" style={{ width: 84 }} placeholder="Est. hrs" value={it.est_hours ?? ""} onChange={e => { const items = [...edit.items]; items[ii] = { ...items[ii], est_hours: e.target.value }; setEdit({ ...edit, items }); }} />
+        <input style={{ flex: 2, minWidth: 150 }} placeholder="Scope / description" value={it.description || ""} onChange={e => { const items = [...edit.items]; items[ii] = { ...items[ii], description: e.target.value }; setEdit({ ...edit, items }); }} />
+        <button className="btn ghost small" onClick={() => setEdit({ ...edit, items: edit.items.filter((_: any, j: number) => j !== ii) })}>✕</button>
+      </div>)}
+      <div className="rowflex" style={{ marginTop: 8 }}><button className="btn ghost small" onClick={() => setEdit({ ...edit, items: [...edit.items, { title: "", description: "", est_hours: "" }] })}>+ Work order</button><span style={{ flex: 1 }} /><button className="btn small" onClick={save}>Save template</button><button className="btn ghost small" onClick={() => setEdit(null)}>Cancel</button></div>
+    </div>}
+  </div>;
+}
 function inspChip(i: any): [string, string, string] {
   if (i.status === "closed") return i.result === "passed" ? ["Passed", "#E7F2EB", "#0E5C3A"] : i.result === "failed" ? ["Failed", "#FDECEC", "#991B1B"] : ["Passed w/ conditions", "#FEF3C7", "#92400E"];
   return i.status === "submitted" ? ["Awaiting decision", "#FEF3C7", "#92400E"] : i.status === "in_progress" ? ["In progress", "#E0EFFF", "#1D4ED8"] : ["Scheduled", "#EEF2EF", "#5B6B62"];
@@ -3428,16 +3511,26 @@ function JobWorkOrders({ jobId, users }: any) {
   const [detail, setDetail] = useState<any>(null); const [creating, setCreating] = useState(false); const [msg, setMsg] = useState("");
   const [form, setForm] = useState<any>({ title: "", description: "", pm_id: "", scheduled_start: "", scheduled_end: "", location: "" });
   const [crewPick, setCrewPick] = useState<any>({ user_id: "", worker_id: "" });
+  const [woTpls, setWoTpls] = useState<any[]>([]); const [tplPick, setTplPick] = useState("");
+  useEffect(() => { api("/api/wo-templates").then((t: any) => { setWoTpls(Array.isArray(t) ? t : []); if (Array.isArray(t) && t[0]) setTplPick(t[0].id); }).catch(() => {}); }, []);
   const load = () => { api("/api/jobs/" + jobId + "/work-orders").then(setList).catch(() => {}); };
   useEffect(load, [jobId]);
   useEffect(() => { api("/api/workers").then(setRosterSafe).catch(() => {}); }, []);
   const setRosterSafe = (r: any) => setWorkers(Array.isArray(r) ? r : r?.workers || []);
   const openWO = async (id: string) => { if (openId === id) { setOpenId(""); setDetail(null); return; } setOpenId(id); try { setDetail(await api("/api/work-orders/" + id)); } catch { setDetail(null); } };
-  const patch = async (id: string, body: any) => { try { await api("/api/work-orders/" + id, { method: "PATCH", body }); load(); if (openId === id) setDetail(await api("/api/work-orders/" + id)); } catch (e: any) { setMsg(e.message); } };
+  const patch = async (id: string, body: any) => {
+    const wo = list.find((x: any) => x.id === id);
+    if (body.status === "in_progress" && wo?.depends_on && !["completed", "cancelled"].includes(wo.depends_on.status) && !body.force) {
+      if (!window.confirm(`${wo.depends_on.display_no} must be completed first. Start this work order anyway?`)) return;
+      body = { ...body, force: true };
+    }
+    try { await api("/api/work-orders/" + id, { method: "PATCH", body }); load(); if (openId === id) setDetail(await api("/api/work-orders/" + id)); }
+    catch (e: any) { setMsg(body.status === "completed" ? "Completion blocked — this work order has open or failed inspections, or unfinished checklist items. Open it to see what is outstanding." : e.message); }
+  };
   const create = async () => { if (!form.title.trim()) return setMsg("Give the work order a title"); try { const wo = await api("/api/jobs/" + jobId + "/work-orders", { method: "POST", body: { ...form, scheduled_start: form.scheduled_start ? new Date(form.scheduled_start).toISOString() : null, scheduled_end: form.scheduled_end ? new Date(form.scheduled_end).toISOString() : null } }); setCreating(false); setForm({ title: "", description: "", pm_id: "", scheduled_start: "", scheduled_end: "", location: "" }); load(); setMsg(""); if (wo?.id) openWO(wo.id); } catch (e: any) { setMsg(e.message); } };
   const upload = (woId: string, f: File) => { const r = new FileReader(); r.onload = async () => { try { const b64 = String(r.result || "").split(",")[1] || ""; await api("/api/attachments", { method: "POST", body: { entity_type: "work_order", entity_id: woId, name: f.name, mime: f.type || "application/octet-stream", data_base64: b64 } }); setDetail(await api("/api/work-orders/" + woId)); load(); } catch (e: any) { setMsg(e.message); } }; r.readAsDataURL(f); };
   return <div>
-    <div className="rowflex" style={{ justifyContent: "space-between", margin: "4px 0 8px" }}><b>🔨 Work orders ({list.length})</b><button className="btn small" onClick={() => setCreating(c => !c)}>+ New work order</button></div>
+    <div className="rowflex" style={{ justifyContent: "space-between", margin: "4px 0 8px" }}><b>🔨 Work orders ({list.length})</b><span className="rowflex" style={{ gap: 5 }}><select value={tplPick} onChange={e => setTplPick(e.target.value)} style={{ width: "auto" }}>{woTpls.map((t: any) => <option key={t.id} value={t.id}>{t.name}</option>)}</select><button className="btn ghost small" onClick={async () => { if (!tplPick) return; try { await api(`/api/jobs/${jobId}/work-orders/from-template`, { method: "POST", body: { template_id: tplPick } }); load(); } catch (e: any) { setMsg(e.message); } }}>Apply template</button></span><button className="btn small" onClick={() => setCreating(c => !c)}>+ New work order</button></div>
     {msg && <p className="muted" style={{ color: "#991B1B" }}>{msg}</p>}
     {creating && <div className="card" style={{ padding: 10, marginBottom: 10 }}>
       <input placeholder="Title — e.g. Phase 1: containment & removal" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} />
@@ -3455,7 +3548,7 @@ function JobWorkOrders({ jobId, users }: any) {
         <span style={{ flex: 1, minWidth: 120, cursor: "pointer" }} onClick={() => openWO(wo.id)}>{wo.title}</span>
         <select value={wo.status} onChange={e => patch(wo.id, { status: e.target.value })} style={{ background: bg, color: fg, border: 0, borderRadius: 999, padding: "2px 8px", fontWeight: 700, fontSize: 12, width: "auto" }}>{WO_STATUSES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
       </div>
-      <div className="muted" style={{ fontSize: 12, marginTop: 3 }}>{wo.pm_name ? "PM: " + wo.pm_name + " · " : ""}{wo.scheduled_start ? "🗓 " + String(wo.scheduled_start).slice(0, 10) + " " + String(wo.scheduled_start).slice(11, 16) : "🗓 not scheduled"}{(wo.crew || []).length ? " · 👷 " + wo.crew.map((c: any) => c.name).join(", ") : ""}{wo.photo_count ? ` · 📷 ${wo.photo_count}` : ""}{wo.inspections?.total ? ` · 🔍 ${wo.inspections.total}${wo.inspections.open ? ` (${wo.inspections.open} open)` : ""}${wo.inspections.failed ? ` · ❌ ${wo.inspections.failed} failed` : ""}` : ""}</div>
+      <div className="muted" style={{ fontSize: 12, marginTop: 3 }}>{wo.pm_name ? "PM: " + wo.pm_name + " · " : ""}{wo.scheduled_start ? "🗓 " + String(wo.scheduled_start).slice(0, 10) + " " + String(wo.scheduled_start).slice(11, 16) : "🗓 not scheduled"}{(wo.crew || []).length ? " · 👷 " + wo.crew.map((c: any) => c.name).join(", ") : ""}{wo.photo_count ? ` · 📷 ${wo.photo_count}` : ""}{wo.inspections?.total ? ` · 🔍 ${wo.inspections.total}${wo.inspections.open ? ` (${wo.inspections.open} open)` : ""}${wo.inspections.failed ? ` · ❌ ${wo.inspections.failed} failed` : ""}` : ""}{wo.time?.actual_hours ? ` · ⏱ ${wo.time.actual_hours}${wo.est_hours ? "/" + wo.est_hours : ""}h` : ""}{wo.percent_complete ? ` · ${wo.percent_complete}%` : ""}{wo.cost_total ? ` · 💲${Number(wo.cost_total).toLocaleString()} cost` : ""}</div>
       {open && detail && detail.id === wo.id && <div style={{ borderTop: "1px dashed #D8E2DB", marginTop: 8, paddingTop: 8 }}>
         <label className="f">Scope / description<textarea defaultValue={detail.description || ""} rows={3} onBlur={e => patch(wo.id, { description: e.target.value })} /></label>
         <div className="rowflex"><label className="f" style={{ flex: 1 }}>Project manager<select value={detail.pm_id || ""} onChange={e => patch(wo.id, { pm_id: e.target.value || null })}><option value="">—</option>{(users || []).map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}</select></label>
@@ -3463,6 +3556,7 @@ function JobWorkOrders({ jobId, users }: any) {
         <div className="rowflex"><label className="f" style={{ flex: 1 }}>Starts<input type="datetime-local" defaultValue={detail.scheduled_start ? String(detail.scheduled_start).slice(0, 16) : ""} onBlur={e => patch(wo.id, { scheduled_start: e.target.value ? new Date(e.target.value).toISOString() : null })} /></label>
         <label className="f" style={{ flex: 1 }}>Ends<input type="datetime-local" defaultValue={detail.scheduled_end ? String(detail.scheduled_end).slice(0, 16) : ""} onBlur={e => patch(wo.id, { scheduled_end: e.target.value ? new Date(e.target.value).toISOString() : null })} /></label></div>
         <label className="f">Notes<textarea defaultValue={detail.notes || ""} rows={2} onBlur={e => patch(wo.id, { notes: e.target.value })} /></label>
+        <WOCosts wo={detail} users={users} workers={workers} siblings={list} onPatch={patch} refresh={async () => { try { setDetail(await api("/api/work-orders/" + wo.id)); } catch { /* noop */ } load(); }} />
         <div style={{ marginTop: 6 }}><b style={{ fontSize: 13 }}>👷 Crew</b>
           <div className="rowflex" style={{ flexWrap: "wrap", gap: 6, marginTop: 4 }}>{(detail.crew || []).map((c: any) => <span key={c.id} className="tinyBadge" style={{ background: "#E7F2EB", color: "#0E5C3A" }}>{c.name} <button className="btn ghost small" style={{ padding: "0 4px" }} onClick={async () => { await api(`/api/work-orders/${wo.id}/crew/${c.id}`, { method: "DELETE" }); setDetail(await api("/api/work-orders/" + wo.id)); load(); }}>✕</button></span>)}</div>
           <div className="rowflex" style={{ marginTop: 6 }}>

@@ -4,7 +4,7 @@ import { createHash, randomBytes, createHmac, timingSafeEqual } from "node:crypt
 import { db, uid, now, hashPassword, verifyPassword, apiKeyHash, logEvent, audit, withTx } from "./db.ts";
 import { triageLead, packetCheck, demandGap, demandPool, injectionScan } from "./agents.ts";
 import { assignLeadNo, assignQuoteNo, assignProjectNo, bumpProjectIteration, ensureNumbers } from "./numbering.ts";
-import { WO_STATUSES, createWorkOrder, listWorkOrders, decorateWO, ensureDefaultWorkOrder } from "./work-orders.ts";
+import { WO_STATUSES, createWorkOrder, listWorkOrders, decorateWO, ensureDefaultWorkOrder, rateForClass, dependencyBlock, openChecklistCount, ensureWOTemplates } from "./work-orders.ts";
 import { ensureInspTemplates, createInspection, decorateInsp, inspProgress, inspectionGateForWO, photoRequiredMissing, logInspEvent, parseSections, INSP_RESULTS } from "./inspections.ts";
 import { snapshotForTemplate } from "./sections.ts";
 import { BUILTIN_ROLES, EDITABLE_BUILTINS, getCustomRole, listCustomRoles, isAssignableRole, createCustomRole } from "./custom-roles.ts";
@@ -1193,7 +1193,8 @@ app.get("/api/projects", requireAuth, modGate("jobs"), (req: any, res) => {
       const v = jobView(j);
       const wo = db.prepare("SELECT COUNT(*) t, SUM(CASE WHEN status NOT IN ('completed','cancelled') THEN 1 ELSE 0 END) o, MIN(CASE WHEN status NOT IN ('completed','cancelled') THEN scheduled_start END) nxt FROM work_orders WHERE job_id=?").get(j.id) as any;
       const ins = (() => { try { return db.prepare("SELECT COUNT(*) t, SUM(CASE WHEN status IN ('scheduled','in_progress','submitted') THEN 1 ELSE 0 END) o, SUM(CASE WHEN status='closed' AND result='failed' THEN 1 ELSE 0 END) f FROM inspections WHERE job_id=?").get(j.id) as any; } catch { return null; } })();
-      return { ...v, wo_total: wo?.t || 0, wo_open: wo?.o || 0, wo_next: wo?.nxt || null, insp_total: ins?.t || 0, insp_open: ins?.o || 0, insp_failed: ins?.f || 0 };
+      const wop = (() => { try { const rs = db.prepare("SELECT percent_complete pc, est_hours eh FROM work_orders WHERE job_id=? AND status NOT IN ('cancelled')").all(j.id) as any[]; if (!rs.length) return 0; let tw = 0, sw = 0; for (const r of rs) { const w = Number(r.eh) > 0 ? Number(r.eh) : 1; tw += w; sw += w * (Number(r.pc) || 0); } return tw ? Math.round(sw / tw) : 0; } catch { return 0; } })();
+      return { ...v, wo_total: wo?.t || 0, wo_open: wo?.o || 0, wo_next: wo?.nxt || null, insp_total: ins?.t || 0, insp_open: ins?.o || 0, insp_failed: ins?.f || 0, wo_progress: wop };
     });
   res.json(rows);
 });
@@ -1214,13 +1215,21 @@ app.get("/api/work-orders/:id", requireAuth, modGate("jobs"), (req: any, res) =>
   const wo = db.prepare("SELECT * FROM work_orders WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!wo) return res.status(404).json({ error: { code: "not_found" } });
   const files = db.prepare("SELECT id,name,mime,size,created_at FROM attachments WHERE workspace_id=? AND entity_type='work_order' AND entity_id=? ORDER BY created_at DESC").all(req.user.workspace_id, wo.id);
-  res.json({ ...decorateWO(req.user.workspace_id, wo), files });
+  const personName = (r: any) => r.user_id ? (db.prepare("SELECT name FROM users WHERE id=?").get(r.user_id) as any)?.name : r.worker_id ? (db.prepare("SELECT name FROM workers WHERE id=?").get(r.worker_id) as any)?.name : null;
+  const time_entries = (db.prepare("SELECT * FROM wo_time_entries WHERE workspace_id=? AND work_order_id=? ORDER BY COALESCE(work_date, started_at, created_at) DESC").all(req.user.workspace_id, wo.id) as any[]).map(r => ({ ...r, person_name: personName(r), cost: r.hours ? Math.round(r.hours * (r.rate || 0) * 100) / 100 : null }));
+  const materials_list = db.prepare("SELECT * FROM wo_materials WHERE workspace_id=? AND work_order_id=? ORDER BY created_at").all(req.user.workspace_id, wo.id);
+  const checklist_items = db.prepare("SELECT * FROM wo_checklist WHERE workspace_id=? AND work_order_id=? ORDER BY sort, created_at").all(req.user.workspace_id, wo.id);
+  res.json({ ...decorateWO(req.user.workspace_id, wo), files, time_entries, materials_list, checklist_items });
 });
 app.patch("/api/work-orders/:id", requireAuth, modGate("jobs", "edit"), (req: any, res) => {
   const wo = db.prepare("SELECT * FROM work_orders WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!wo) return res.status(404).json({ error: { code: "not_found" } });
   const b = req.body || {};
   const status = b.status !== undefined ? (WO_STATUSES.includes(b.status) ? b.status : wo.status) : wo.status;
+  if (status === "in_progress" && wo.status !== "in_progress" && !(b as any).force) {
+    const blocker = dependencyBlock(req.user.workspace_id, { ...wo, depends_on_id: b.depends_on_id !== undefined ? b.depends_on_id : wo.depends_on_id });
+    if (blocker) return res.status(422).json({ error: { code: "blocked_by", message: `${blocker.display_no} (${blocker.title}) must be completed first.`, blocker } });
+  }
   if (status === "completed" && wo.status !== "completed") {
     const gate = inspectionGateForWO(req.user.workspace_id, wo.id);
     if (gate.blocked) {
@@ -1228,12 +1237,21 @@ app.patch("/api/work-orders/:id", requireAuth, modGate("jobs", "edit"), (req: an
       if (!(["OWNER", "OPS_ADMIN"].includes(req.user.role) && reason)) return res.status(422).json({ error: { code: "inspections_open", message: `This work order has ${gate.open} open inspection(s)${gate.failed ? ` and ${gate.failed} failed inspection(s)` : ""}. Close or pass them first, or an owner/ops admin can complete it with an override reason.`, open: gate.open, failed: gate.failed } });
       audit(req.user.workspace_id, req.user.id, "wo_complete_override", "work_order", wo.id, { reason: reason.slice(0, 300), open: gate.open, failed: gate.failed });
     }
+    const openChk = openChecklistCount(req.user.workspace_id, wo.id);
+    if (openChk > 0) {
+      const reason2 = String(b.override_reason || "").trim();
+      if (!(["OWNER", "OPS_ADMIN"].includes(req.user.role) && reason2)) return res.status(422).json({ error: { code: "checklist_open", message: `This work order has ${openChk} unfinished checklist item(s). Finish them first, or an owner/ops admin can complete it with an override reason.`, open_checklist: openChk } });
+      audit(req.user.workspace_id, req.user.id, "wo_complete_override", "work_order", wo.id, { reason: reason2.slice(0, 300), open_checklist: openChk });
+    }
   }
-  db.prepare("UPDATE work_orders SET title=?, description=?, status=?, pm_id=?, scheduled_start=?, scheduled_end=?, location=?, notes=?, completed_at=?, updated_at=? WHERE id=?")
+  db.prepare("UPDATE work_orders SET title=?, description=?, status=?, pm_id=?, scheduled_start=?, scheduled_end=?, location=?, notes=?, completed_at=?, updated_at=?, est_hours=?, percent_complete=?, depends_on_id=? WHERE id=?")
     .run(b.title !== undefined ? String(b.title).slice(0, 160) : wo.title, b.description !== undefined ? String(b.description) : wo.description, status,
       b.pm_id !== undefined ? (b.pm_id || null) : wo.pm_id, b.scheduled_start !== undefined ? (b.scheduled_start || null) : wo.scheduled_start,
       b.scheduled_end !== undefined ? (b.scheduled_end || null) : wo.scheduled_end, b.location !== undefined ? String(b.location) : wo.location,
-      b.notes !== undefined ? String(b.notes) : wo.notes, status === "completed" ? (wo.completed_at || now()) : status === "planned" || status === "scheduled" || status === "in_progress" ? null : wo.completed_at, now(), wo.id);
+      b.notes !== undefined ? String(b.notes) : wo.notes, status === "completed" ? (wo.completed_at || now()) : status === "planned" || status === "scheduled" || status === "in_progress" ? null : wo.completed_at, now(),
+      b.est_hours !== undefined ? (b.est_hours === null || b.est_hours === "" ? null : Number(b.est_hours) || 0) : wo.est_hours,
+      b.percent_complete !== undefined ? Math.max(0, Math.min(100, Math.round(Number(b.percent_complete) || 0))) : (wo.percent_complete || 0),
+      b.depends_on_id !== undefined ? (b.depends_on_id || null) : wo.depends_on_id, wo.id);
   res.json(decorateWO(req.user.workspace_id, db.prepare("SELECT * FROM work_orders WHERE id=?").get(wo.id)));
 });
 app.post("/api/work-orders/:id/crew", requireAuth, modGate("jobs", "edit"), (req: any, res) => {
@@ -1250,6 +1268,107 @@ app.delete("/api/work-orders/:id/crew/:crewId", requireAuth, modGate("jobs", "ed
   if (!wo) return res.status(404).json({ error: { code: "not_found" } });
   res.json(decorateWO(req.user.workspace_id, wo));
 });
+// ---------- v89: work order time, materials, checklist, templates ----------
+const woRow = (req: any) => db.prepare("SELECT * FROM work_orders WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+app.post("/api/work-orders/:id/time", requireAuth, modGate("jobs", "edit"), (req: any, res) => {
+  const wo = woRow(req); if (!wo) return res.status(404).json({ error: { code: "not_found" } });
+  const b = req.body || {}; const hours = Number(b.hours);
+  if (!hours || hours <= 0 || hours > 24) return res.status(422).json({ error: { code: "bad_hours", message: "Hours must be between 0 and 24." } });
+  if (!b.user_id && !b.worker_id) return res.status(422).json({ error: { code: "person_required" } });
+  const job = db.prepare("SELECT * FROM jobs WHERE id=?").get(wo.job_id) as any;
+  const id = uid("wte");
+  db.prepare("INSERT INTO wo_time_entries (id,workspace_id,work_order_id,user_id,worker_id,labor_class_id,rate,hours,work_date,note,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+    .run(id, req.user.workspace_id, wo.id, b.user_id || null, b.worker_id || null, b.labor_class_id || null, rateForClass(req.user.workspace_id, job, b.labor_class_id || null), hours, b.work_date || now().slice(0, 10), String(b.note || "").slice(0, 300), req.user.id, now());
+  res.status(201).json(db.prepare("SELECT * FROM wo_time_entries WHERE id=?").get(id));
+});
+app.post("/api/work-orders/:id/time/start", requireAuth, modGate("jobs", "edit"), (req: any, res) => {
+  const wo = woRow(req); if (!wo) return res.status(404).json({ error: { code: "not_found" } });
+  const b = req.body || {}; const userId = b.user_id || req.user.id;
+  const running = db.prepare("SELECT * FROM wo_time_entries WHERE workspace_id=? AND work_order_id=? AND user_id=? AND started_at IS NOT NULL AND ended_at IS NULL").get(req.user.workspace_id, wo.id, userId) as any;
+  if (running) return res.status(422).json({ error: { code: "timer_running", message: "A timer is already running for this person on this work order." } });
+  const job = db.prepare("SELECT * FROM jobs WHERE id=?").get(wo.job_id) as any;
+  const id = uid("wte");
+  db.prepare("INSERT INTO wo_time_entries (id,workspace_id,work_order_id,user_id,worker_id,labor_class_id,rate,hours,work_date,note,started_at,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
+    .run(id, req.user.workspace_id, wo.id, userId, null, b.labor_class_id || null, rateForClass(req.user.workspace_id, job, b.labor_class_id || null), null, now().slice(0, 10), String(b.note || "").slice(0, 300), now(), req.user.id, now());
+  res.status(201).json(db.prepare("SELECT * FROM wo_time_entries WHERE id=?").get(id));
+});
+app.post("/api/time-entries/:id/stop", requireAuth, modGate("jobs", "edit"), (req: any, res) => {
+  const e = db.prepare("SELECT * FROM wo_time_entries WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!e) return res.status(404).json({ error: { code: "not_found" } });
+  if (!e.started_at || e.ended_at) return res.status(422).json({ error: { code: "not_running" } });
+  const hours = Math.max(0.01, Math.round(((Date.now() - new Date(e.started_at).getTime()) / 3600000) * 100) / 100);
+  db.prepare("UPDATE wo_time_entries SET ended_at=?, hours=? WHERE id=?").run(now(), hours, e.id);
+  res.json(db.prepare("SELECT * FROM wo_time_entries WHERE id=?").get(e.id));
+});
+app.delete("/api/time-entries/:id", requireAuth, modGate("jobs", "edit"), (req: any, res) => {
+  const e = db.prepare("SELECT * FROM wo_time_entries WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!e) return res.status(404).json({ error: { code: "not_found" } });
+  db.prepare("DELETE FROM wo_time_entries WHERE id=?").run(e.id); res.json({ ok: true });
+});
+app.post("/api/work-orders/:id/materials", requireAuth, modGate("jobs", "edit"), (req: any, res) => {
+  const wo = woRow(req); if (!wo) return res.status(404).json({ error: { code: "not_found" } });
+  const b = req.body || {}; if (!String(b.description || "").trim()) return res.status(422).json({ error: { code: "description_required" } });
+  const id = uid("wmat");
+  db.prepare("INSERT INTO wo_materials (id,workspace_id,work_order_id,description,qty,unit_cost,supplier,billable,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
+    .run(id, req.user.workspace_id, wo.id, String(b.description).slice(0, 200), Number(b.qty) || 1, Number(b.unit_cost) || 0, String(b.supplier || "").slice(0, 120), b.billable ? 1 : 0, req.user.id, now());
+  res.status(201).json(db.prepare("SELECT * FROM wo_materials WHERE id=?").get(id));
+});
+app.delete("/api/materials/:id", requireAuth, modGate("jobs", "edit"), (req: any, res) => {
+  const m = db.prepare("SELECT * FROM wo_materials WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!m) return res.status(404).json({ error: { code: "not_found" } });
+  db.prepare("DELETE FROM wo_materials WHERE id=?").run(m.id); res.json({ ok: true });
+});
+app.post("/api/work-orders/:id/checklist", requireAuth, modGate("jobs", "edit"), (req: any, res) => {
+  const wo = woRow(req); if (!wo) return res.status(404).json({ error: { code: "not_found" } });
+  const label = String((req.body || {}).label || "").trim(); if (!label) return res.status(422).json({ error: { code: "label_required" } });
+  const id = uid("wchk"); const sort = Number((db.prepare("SELECT COALESCE(MAX(sort),0) m FROM wo_checklist WHERE work_order_id=?").get(wo.id) as any).m) + 1;
+  db.prepare("INSERT INTO wo_checklist (id,workspace_id,work_order_id,label,done,sort,created_at) VALUES (?,?,?,?,0,?,?)").run(id, req.user.workspace_id, wo.id, label.slice(0, 200), sort, now());
+  res.status(201).json(db.prepare("SELECT * FROM wo_checklist WHERE id=?").get(id));
+});
+app.patch("/api/wo-checklist/:id", requireAuth, modGate("jobs", "edit"), (req: any, res) => {
+  const c = db.prepare("SELECT * FROM wo_checklist WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!c) return res.status(404).json({ error: { code: "not_found" } });
+  const b = req.body || {};
+  db.prepare("UPDATE wo_checklist SET label=?, done=?, done_by=?, done_at=? WHERE id=?")
+    .run(b.label !== undefined ? String(b.label).slice(0, 200) : c.label, b.done !== undefined ? (b.done ? 1 : 0) : c.done, b.done ? req.user.id : c.done_by, b.done ? now() : c.done_at, c.id);
+  res.json(db.prepare("SELECT * FROM wo_checklist WHERE id=?").get(c.id));
+});
+app.delete("/api/wo-checklist/:id", requireAuth, modGate("jobs", "edit"), (req: any, res) => {
+  const c = db.prepare("SELECT * FROM wo_checklist WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!c) return res.status(404).json({ error: { code: "not_found" } });
+  db.prepare("DELETE FROM wo_checklist WHERE id=?").run(c.id); res.json({ ok: true });
+});
+app.get("/api/wo-templates", requireAuth, (req: any, res) => { res.json(ensureWOTemplates(req.user.workspace_id).map((t: any) => { let items: any[] = []; try { items = JSON.parse(t.items || "[]"); } catch { /* noop */ } return { ...t, items }; })); });
+app.post("/api/wo-templates", requireAuth, (req: any, res) => {
+  if (!permsOf(req.user).can_settings) return res.status(403).json({ error: { code: "forbidden" } });
+  const b = req.body || {}; const id = uid("wotpl");
+  db.prepare("INSERT INTO wo_templates (id,workspace_id,name,items,active,created_at,updated_at) VALUES (?,?,?,?,1,?,?)").run(id, req.user.workspace_id, String(b.name || "Work order template").slice(0, 120), JSON.stringify(Array.isArray(b.items) ? b.items : []), now(), now());
+  res.status(201).json(db.prepare("SELECT * FROM wo_templates WHERE id=?").get(id));
+});
+app.patch("/api/wo-templates/:id", requireAuth, (req: any, res) => {
+  if (!permsOf(req.user).can_settings) return res.status(403).json({ error: { code: "forbidden" } });
+  const t = db.prepare("SELECT * FROM wo_templates WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!t) return res.status(404).json({ error: { code: "not_found" } });
+  const b = req.body || {};
+  db.prepare("UPDATE wo_templates SET name=?, items=?, active=?, updated_at=? WHERE id=?").run(b.name !== undefined ? String(b.name).slice(0, 120) : t.name, b.items !== undefined ? JSON.stringify(Array.isArray(b.items) ? b.items : []) : t.items, b.active !== undefined ? (b.active ? 1 : 0) : t.active, now(), t.id);
+  res.json(db.prepare("SELECT * FROM wo_templates WHERE id=?").get(t.id));
+});
+app.post("/api/jobs/:id/work-orders/from-template", requireAuth, modGate("jobs", "edit"), (req: any, res) => {
+  const job = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!job) return res.status(404).json({ error: { code: "not_found" } });
+  const tpl = db.prepare("SELECT * FROM wo_templates WHERE id=? AND workspace_id=?").get(String((req.body || {}).template_id || ""), req.user.workspace_id) as any;
+  if (!tpl) return res.status(422).json({ error: { code: "template_required" } });
+  let items: any[] = []; try { items = JSON.parse(tpl.items || "[]"); } catch { /* noop */ }
+  const created: any[] = [];
+  let prevId: string | null = null;
+  for (const it of items) {
+    const wo = createWorkOrder(req.user.workspace_id, job, req.user.id, { title: it.title || "Work order", description: it.description || "", status: "planned" });
+    db.prepare("UPDATE work_orders SET est_hours=?, depends_on_id=? WHERE id=?").run(it.est_hours ? Number(it.est_hours) : null, prevId, wo.id);
+    prevId = wo.id; created.push(decorateWO(req.user.workspace_id, db.prepare("SELECT * FROM work_orders WHERE id=?").get(wo.id)));
+  }
+  res.status(201).json({ created });
+});
+
 // ---------- v88: inspections on work orders (INSPECTIONS-SCOPE T1) ----------
 const inspRow = (req: any) => db.prepare("SELECT * FROM inspections WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
 app.get("/api/work-orders/:id/inspections", requireAuth, modGate("jobs"), (req: any, res) => {
@@ -2175,7 +2294,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-export const APP_VERSION = "v88";
+export const APP_VERSION = "v89";
 app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: APP_VERSION, jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {

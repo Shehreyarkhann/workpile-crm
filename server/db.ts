@@ -268,6 +268,9 @@ export function initSchema() {
     "ALTER TABLE attachments ADD COLUMN doc_type TEXT",
     "ALTER TABLE attachments ADD COLUMN item_key TEXT",
     "ALTER TABLE attachments ADD COLUMN tag TEXT",
+    "ALTER TABLE work_orders ADD COLUMN est_hours REAL",
+    "ALTER TABLE work_orders ADD COLUMN percent_complete INTEGER DEFAULT 0",
+    "ALTER TABLE work_orders ADD COLUMN depends_on_id TEXT",
   ]) { try { db.exec(stmt); } catch { /* already present */ } }
   // ---- v3 stage migration (idempotent): v2 states -> v3 stages; ON_HOLD becomes a flag ----
   try {
