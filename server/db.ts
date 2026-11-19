@@ -76,6 +76,7 @@ export function initSchema() {
   CREATE TABLE IF NOT EXISTS subscriptions (id TEXT PRIMARY KEY, workspace_id TEXT, plan TEXT, status TEXT DEFAULT 'trialing', stripe_customer_id TEXT, stripe_subscription_id TEXT, current_period_end TEXT, created_at TEXT, updated_at TEXT);
   CREATE TABLE IF NOT EXISTS oauth_connections (id TEXT PRIMARY KEY, workspace_id TEXT, provider TEXT, account_email TEXT, status TEXT DEFAULT 'not_configured', token_ref TEXT, last_poll_at TEXT, last_error TEXT, created_at TEXT);
   CREATE TABLE IF NOT EXISTS portal_uploads (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, filename TEXT, note TEXT, created_at TEXT);
+  CREATE TABLE IF NOT EXISTS portal_tokens (id TEXT PRIMARY KEY, workspace_id TEXT, account_id TEXT, token TEXT UNIQUE, created_at TEXT, revoked_at TEXT);
   CREATE TABLE IF NOT EXISTS memberships (user_id TEXT, workspace_id TEXT, role TEXT, created_at TEXT, PRIMARY KEY (user_id, workspace_id));
   CREATE TABLE IF NOT EXISTS webhook_deliveries (id TEXT PRIMARY KEY, workspace_id TEXT, endpoint_id TEXT, event TEXT, payload TEXT, attempts INTEGER DEFAULT 0, last_status TEXT DEFAULT 'pending', last_error TEXT, next_attempt_at TEXT, created_at TEXT, delivered_at TEXT);
   CREATE TABLE IF NOT EXISTS messages_outbox (id TEXT PRIMARY KEY, workspace_id TEXT, lead_id TEXT, channel TEXT, to_addr TEXT, subject TEXT, body TEXT, status TEXT DEFAULT 'queued', provider TEXT, provider_id TEXT, error TEXT, created_at TEXT, sent_at TEXT);

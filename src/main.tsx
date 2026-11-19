@@ -3625,6 +3625,23 @@ function WorkspaceDataCard() {
     <p className="muted" style={{ fontSize: 12.5, marginTop: 8 }}>The export contains everything this workspace owns. Sample data loads only into an empty workspace and is clearly labeled “Sample —”.</p>
   </div>;
 }
+function PortalCard({ accountId }: any) {
+  const [link, setLink] = useState<any>(null); const [msg, setMsg] = useState("");
+  const get = async (regenerate = false) => { try { const r = await api(`/api/accounts/${accountId}/portal-link`, { method: "POST", body: { regenerate } }); setLink(r); setMsg(""); } catch (e: any) { setMsg(e.message); } };
+  return <div style={{ marginTop: 14, border: "1px solid #E3E8E3", borderRadius: 12, padding: 12 }}>
+    <b style={{ fontSize: 13.5 }}>🔗 Client portal</b>
+    {msg && <p className="muted" style={{ fontSize: 12.5 }}>{msg}</p>}
+    {!link ? <p className="muted" style={{ fontSize: 12.5, margin: "6px 0" }}>One link where this customer sees their projects, proposals to sign, invoices, and inspection reports.<br /><button className="btn small" style={{ marginTop: 6 }} onClick={() => get(false)}>Get portal link</button></p>
+    : <><p style={{ fontSize: 12.5, wordBreak: "break-all", margin: "6px 0" }}>{location.origin}{link.url}</p>
+      <div className="rowflex">
+        <button className="btn ghost small" onClick={() => { navigator.clipboard?.writeText(location.origin + link.url); setMsg("Portal link copied."); }}>Copy link</button>
+        <a className="btn ghost small" href={link.url} target="_blank" rel="noreferrer">Open portal</a>
+        <button className="btn ghost small" onClick={() => get(true)}>Regenerate</button>
+      </div>
+      {!link.portal_enabled && <p className="muted" style={{ fontSize: 12.5, marginTop: 6 }}>The portal is currently <b>off</b> for your business — the link will not open until it is turned on. <button className="btn ghost small" onClick={async () => { try { await api("/api/settings/portal", { method: "POST", body: { enabled: true } }); setMsg("Portal turned on ✓ — the link works now."); get(false); } catch (e: any) { setMsg(e.message + " (owner only)"); } }}>Turn portal on</button></p>}
+    </>}
+  </div>;
+}
 function inspChip(i: any): [string, string, string] {
   if (i.status === "closed") return i.result === "passed" ? ["Passed", "#E7F2EB", "#0E5C3A"] : i.result === "failed" ? ["Failed", "#FDECEC", "#991B1B"] : ["Passed w/ conditions", "#FEF3C7", "#92400E"];
   return i.status === "submitted" ? ["Awaiting decision", "#FEF3C7", "#92400E"] : i.status === "in_progress" ? ["In progress", "#E0EFFF", "#1D4ED8"] : ["Scheduled", "#EEF2EF", "#5B6B62"];
@@ -4165,6 +4182,7 @@ function CustomerDetail({ id, close, openLead, openJob }: any) {
     <p className="muted" style={{ margin: "6px 0" }}>{a.phone || ""} {a.email ? "· " + a.email : ""} {a.address ? "· " + a.address : ""} · customer since {dOnly(a.created_at)} {d.lifetime_value != null && <> · <b style={{ color: "#14532d" }}>lifetime value {money(d.lifetime_value)}</b></>}</p>
     <div className="formgrid"><div><label className="f">Phone</label><input defaultValue={a.phone || ""} id="ca_phone" /></div><div><label className="f">Email</label><input defaultValue={a.email || ""} id="ca_email" /></div><div><label className="f">Industry / type</label><input defaultValue={a.industry || ""} id="ca_ind" /></div><div><label className="f">Website</label><input defaultValue={a.website || ""} id="ca_web" /></div></div>
     <button className="btn ghost small" style={{ marginTop: 8 }} onClick={async () => { await api("/api/accounts/" + id, { method: "PATCH", body: { phone: (document.getElementById("ca_phone") as HTMLInputElement).value, email: (document.getElementById("ca_email") as HTMLInputElement).value, industry: (document.getElementById("ca_ind") as HTMLInputElement).value, website: (document.getElementById("ca_web") as HTMLInputElement).value } }); load(); }}>Save customer details</button>
+    <PortalCard accountId={id} />
     <h4>People at this customer ({d.contacts.length})</h4>
     {d.contacts.map((c: any) => <p key={c.id} style={{ margin: "4px 0" }}>👤 <b>{c.name}</b> {c.title ? "· " + c.title : ""} <span className="muted">{c.phone || ""} {c.email || ""}</span></p>)}
     <h4>Jobs ({d.jobs.length})</h4>
