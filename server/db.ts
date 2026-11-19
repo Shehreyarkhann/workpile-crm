@@ -208,7 +208,7 @@ export function initSchema() {
     "ALTER TABLE contacts ADD COLUMN account_id TEXT",
     "ALTER TABLE contacts ADD COLUMN title TEXT",
     "ALTER TABLE jobs ADD COLUMN custom TEXT DEFAULT '{}'",
-    "ALTER TABLE users ADD COLUMN permissions TEXT",
+    "ALTER TABLE users ADD COLUMN permissions TEXT", "ALTER TABLE users ADD COLUMN totp_secret TEXT", "ALTER TABLE users ADD COLUMN totp_enabled INTEGER DEFAULT 0",
     "ALTER TABLE users ADD COLUMN password_set INTEGER DEFAULT 1",
     "ALTER TABLE workspaces ADD COLUMN auto_assign INTEGER DEFAULT 0",
     "ALTER TABLE workspaces ADD COLUMN auto_dedupe INTEGER DEFAULT 0",

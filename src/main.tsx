@@ -1677,7 +1677,7 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any)
       <div><label className="f">Sender email (outgoing email)</label><input value={s.workspace.from_email || ""} placeholder="you@yourbusiness.com" onChange={e => setS({ ...s, workspace: { ...s.workspace, from_email: e.target.value } })} /></div>
       <div><label className="f">Slack webhook URL (new-lead + approval alerts)</label><input value={s.workspace.slack_webhook_url || ""} placeholder="https://hooks.slack.com/services/…" onChange={e => setS({ ...s, workspace: { ...s.workspace, slack_webhook_url: e.target.value } })} /></div>
       <div><label className="f">Lead source API key (if required)</label><input value={s.workspace.source_api_key || ""} placeholder="Bearer key for your source system" onChange={e => setS({ ...s, workspace: { ...s.workspace, source_api_key: e.target.value } })} /></div>
-    </div><button className="btn" style={{ marginTop: 14 }} onClick={async () => { await api("/api/settings", { method: "PATCH", body: s.workspace }); if ((s.workspace.nav_layout || "sidebar") !== ((me as any)?.nav_layout || "sidebar")) { setMsg("Navigation layout saved — reloading…"); setTimeout(() => location.reload(), 500); } else setMsg("Workspace settings saved ✓"); }}>Save workspace</button></div>}
+    </div><button className="btn" style={{ marginTop: 14 }} onClick={async () => { await api("/api/settings", { method: "PATCH", body: s.workspace }); if ((s.workspace.nav_layout || "sidebar") !== ((me as any)?.nav_layout || "sidebar")) { setMsg("Navigation layout saved — reloading…"); setTimeout(() => location.reload(), 500); } else setMsg("Workspace settings saved ✓"); }}>Save workspace</button><MfaCard /><WorkspaceDataCard /></div>}
     {tab === "workspace" && canSettings && s && <FollowupSettings key={s.workspace.id} ws={s.workspace} />}
     {tab === "workspace" && <div className="card"><h3 style={{ marginTop: 0 }}>Help & shortcuts</h3><p className="muted" style={{ margin: "4px 0" }}>⌘K — jump anywhere · J/K — move in the Work Queue · Enter — open · The free Backlog Audit lives at <a href="/audit" target="_blank" rel="noreferrer">/audit</a> (share it with prospects). Support: reply to any Workpile email or write to the workspace owner. Every number in this app traces to a record — click through instead of screenshotting.</p></div>}
     {tab === "workspace" && canSettings && s && <BookingSettings key={"bk" + s.workspace.id} ws={s.workspace} />}
@@ -2372,9 +2372,9 @@ function Landing({ onAuth }: any) {
   useEffect(() => { const ae = qs.get("auth_error"); if (ae) { setMode("login"); setErr(({ state_mismatch: "That sign-in attempt expired or didn't match — please try again.", email_unverified: "Your provider didn't verify that email address, so it can't be used to sign in.", cancelled: "Sign-in was cancelled.", account_disabled: "This account has been disabled.", not_configured: "That sign-in option isn't set up yet — use your email and password.", unknown_provider: "Unknown sign-in option." } as any)[ae] || "Social sign-in didn't complete — use your email and password."); history.replaceState({}, "", "/app"); } }, []);
   const [f, setF] = useState<any>({ name: "", email: "", password: "", business_name: "" });
   const [err, setErr] = useState("");
-  const [showPw, setShowPw] = useState(false); const [remember, setRemember] = useState(true);
+  const [showPw, setShowPw] = useState(false); const [remember, setRemember] = useState(true); const [mfa, setMfa] = useState<any>(null); const [mfaCode, setMfaCode] = useState("");
   const pwScore = Math.min(4, (f.password.length >= 8 ? 1 : 0) + (/[a-z]/.test(f.password) && /[A-Z]/.test(f.password) ? 1 : 0) + (/\d/.test(f.password) ? 1 : 0) + (/[^A-Za-z0-9]/.test(f.password) ? 1 : 0)); const pwLabel = ["Too short", "Weak", "Fair", "Good", "Strong"][pwScore];
-  const submit = async () => { try { setErr(""); const r = mode === "register" ? await api("/api/auth/register", { method: "POST", body: f }) : await api("/api/auth/login", { method: "POST", body: { email: f.email, password: f.password } }); onAuth(r.user); } catch (e: any) { setErr(e.message); } };
+  const submit = async () => { try { setErr(""); const r = mode === "register" ? await api("/api/auth/register", { method: "POST", body: f }) : await api("/api/auth/login", { method: "POST", body: { email: f.email, password: f.password } }); if (r && r.mfa_required) { setMfa(r); return; } onAuth(r.user); } catch (e: any) { setErr(e.message); } };
   if (mode !== "home") return (<div className="a2Stage"><div className="a2Card">
     <div className="a2Left">
       <div className="a2Logo" onClick={() => setMode("home")} title="Back to site"><Logo /></div>
@@ -2386,7 +2386,13 @@ function Landing({ onAuth }: any) {
       {mode === "reset" && <><h1 className="a2H1">Choose a new password</h1><p className="a2Sub">Make it at least 8 characters.</p>{authNote && <div className="ok" style={{ margin: "18px 0 0" }}>{authNote}</div>}{err && <div className="err" style={{ marginTop: 14 }}>{err}</div>}
         <div style={{ marginTop: 26 }}><label className="a2Lbl">New password</label><div className="a2Field"><input type={showPw ? "text" : "password"} value={f.password} onChange={e => setF({ ...f, password: e.target.value })} placeholder={mode === "register" || mode === "reset" ? "8+ characters" : "Your password"} /><span className="a2Eye" onClick={() => setShowPw(!showPw)}>{showPw ? "Hide" : "Show"}</span></div>{f.password && <div className="a2Str">{[1, 2, 3, 4].map(i => <i key={i} className={pwScore >= i ? "on" : ""} />)}<em>{pwLabel}</em></div>}
         <button className="btn a2Cta" onClick={async () => { try { await api("/api/auth/reset", { method: "POST", body: { token: resetToken, password: f.password } }); setAuthNote("Password updated \u2014 sign in with it now."); setMode("login"); history.replaceState({}, "", "/app"); } catch (e: any) { setErr(e.message); } }}>Update password</button></div></>}
-      {mode !== "forgot" && mode !== "reset" && <><h1 className="a2H1">{mode === "register" ? "Create Account" : "Welcome Back"}</h1>
+      {mfa && <><h1 className="a2H1">Two-factor check</h1>
+      <p className="a2Sub">Enter the 6-digit code from your authenticator app.</p>
+      {err && <div className="err" style={{ marginTop: 14 }}>{err}</div>}
+      <div style={{ marginTop: 26 }}><label className="a2Lbl">Authenticator code</label><input value={mfaCode} onChange={e => setMfaCode(e.target.value)} placeholder="123456" inputMode="numeric" autoFocus /></div>
+      <button className="btn a2Cta" onClick={async () => { try { setErr(""); const r = await api("/api/auth/mfa/verify", { method: "POST", body: { pending: mfa.pending, code: mfaCode } }); onAuth(r.user); } catch (e: any) { setErr(e.message); } }}>Verify & sign in →</button>
+      <p className="a2Sub" style={{ marginTop: 12 }}><a href="#" onClick={e => { e.preventDefault(); setMfa(null); setMfaCode(""); }}>← Back to sign in</a></p></>}
+      {mode !== "forgot" && mode !== "reset" && !mfa && <><h1 className="a2H1">{mode === "register" ? "Create Account" : "Welcome Back"}</h1>
       <p className="a2Sub">{mode === "register" ? "Start your 30-day free trial. No card required." : "Enter your email and password to access your account."}</p>{authNote && mode === "login" && <div className="ok" style={{ margin: "18px 0 0" }}>{authNote}</div>}
       {err && <div className="err" style={{ marginTop: 14 }}>{err}</div>}
       <div style={{ marginTop: 26 }}>
@@ -3582,6 +3588,37 @@ function JobBilling({ jobId, job, invoices, onDone }: any) {
         {msg && <span className="muted" style={{ fontSize: 12.5 }}>{msg}</span>}
       </div>
     </div>
+  </div>;
+}
+function MfaCard() {
+  const [enabled, setEnabled] = useState<boolean | null>(null); const [setup, setSetup] = useState<any>(null); const [code, setCode] = useState(""); const [pw, setPw] = useState(""); const [msg, setMsg] = useState("");
+  const load = () => { api("/api/auth/mfa/status").then((r: any) => setEnabled(!!r.enabled)).catch(() => setEnabled(false)); };
+  useEffect(load, []);
+  if (enabled === null) return null;
+  return <div className="card" style={{ marginTop: 16 }}><h3 style={{ marginTop: 0 }}>Your two-factor authentication</h3>
+    {msg && <p className="muted">{msg}</p>}
+    {enabled ? <><p className="muted">Two-factor authentication is <b>on</b> for your account — sign-in asks for a 6-digit authenticator code after your password.</p>
+      <div className="rowflex"><input type="password" placeholder="Your password to turn it off" value={pw} onChange={e => setPw(e.target.value)} style={{ flex: 1 }} />
+      <button className="btn ghost" onClick={async () => { try { await api("/api/auth/mfa/disable", { method: "POST", body: { password: pw } }); setPw(""); setMsg("Two-factor authentication turned off."); load(); } catch (e: any) { setMsg(e.message); } }}>Turn off</button></div></>
+    : setup ? <><p className="muted">Add this secret to your authenticator app (or open the link), then enter the 6-digit code it shows:</p>
+      <p style={{ fontFamily: "monospace", fontSize: 15, letterSpacing: 1 }}>{setup.secret}</p>
+      <p className="muted" style={{ fontSize: 12, wordBreak: "break-all" }}>{setup.otpauth_url}</p>
+      <div className="rowflex"><input placeholder="6-digit code" value={code} onChange={e => setCode(e.target.value)} style={{ width: 160 }} />
+      <button className="btn" onClick={async () => { try { await api("/api/auth/mfa/enable", { method: "POST", body: { code } }); setSetup(null); setCode(""); setMsg("Two-factor authentication is on ✓"); load(); } catch (e: any) { setMsg(e.message); } }}>Enable</button>
+      <button className="btn ghost" onClick={() => setSetup(null)}>Cancel</button></div></>
+    : <><p className="muted">Add an authenticator-app code as a second step at sign-in. Recommended for owners and approvers.</p>
+      <button className="btn" onClick={async () => { try { const r = await api("/api/auth/mfa/setup", { method: "POST", body: {} }); setSetup(r); setMsg(""); } catch (e: any) { setMsg(e.message); } }}>Set up two-factor authentication</button></>}
+  </div>;
+}
+function WorkspaceDataCard() {
+  const [msg, setMsg] = useState("");
+  return <div className="card" style={{ marginTop: 16 }}><h3 style={{ marginTop: 0 }}>Your data</h3>
+    {msg && <p className="muted">{msg}</p>}
+    <div className="rowflex">
+      <a className="btn ghost" href="/api/export">Download data export (JSON)</a>
+      <button className="btn ghost" onClick={async () => { try { const r = await api("/api/onboarding/sample", { method: "POST", body: {} }); setMsg(`Sample data loaded — ${r.loaded} sample leads added.`); } catch (e: any) { setMsg(e.message); } }}>Load sample data</button>
+    </div>
+    <p className="muted" style={{ fontSize: 12.5, marginTop: 8 }}>The export contains everything this workspace owns. Sample data loads only into an empty workspace and is clearly labeled “Sample —”.</p>
   </div>;
 }
 function inspChip(i: any): [string, string, string] {

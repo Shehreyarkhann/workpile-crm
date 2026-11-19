@@ -5,6 +5,8 @@ import { db, uid, now, hashPassword, verifyPassword, apiKeyHash, logEvent, audit
 import { triageLead, packetCheck, demandGap, demandPool, injectionScan } from "./agents.ts";
 import { assignLeadNo, assignQuoteNo, assignProjectNo, bumpProjectIteration, ensureNumbers } from "./numbering.ts";
 import { WO_STATUSES, createWorkOrder, listWorkOrders, decorateWO, ensureDefaultWorkOrder, rateForClass, dependencyBlock, openChecklistCount, ensureWOTemplates } from "./work-orders.ts";
+import { buildWorkspaceExport } from "./export.ts";
+import { newTotpSecret, verifyTotp, otpauthUrl, createMfaPending, peekMfaPending, consumeMfaPending } from "./mfa.ts";
 import { ensureInspTemplates, createInspection, decorateInsp, inspProgress, inspectionGateForWO, photoRequiredMissing, logInspEvent, parseSections, INSP_RESULTS } from "./inspections.ts";
 import { ensureReportTemplates, listReportTemplates, buildReportContext, renderReportHtml, generateReport, listReports, sampleReportContext } from "./reports.ts";
 import { jobMoney, estLineCost } from "./money.ts";
@@ -433,12 +435,83 @@ app.post("/api/auth/login", (req, res) => {
   const u = db.prepare("SELECT * FROM users WHERE email=? AND active=1").get((req.body.email || "").toLowerCase()) as any;
   if (!u || !verifyPassword(req.body.password || "", u.password_hash)) return res.status(401).json({ error: { code: "bad_credentials" } });
   if ((u as any).disabled && !(u as any).is_platform_admin) return res.status(403).json({ error: { code: "account_disabled", message: "This account has been disabled by the platform operator." } });
+  if (u.totp_enabled && u.totp_secret) { const pending = createMfaPending(u.id); return res.json({ mfa_required: true, pending }); }
   syncPlatformAdmin();
   const sid = uid("ses") + randomBytes(16).toString("hex");
   db.prepare("INSERT INTO sessions (id,user_id,created_at,expires_at) VALUES (?,?,?,?)").run(sid, u.id, now(), new Date(Date.now() + 7 * 86400000).toISOString());
   res.setHeader("Set-Cookie", sessionCookie(req, sid));
   const wsL = db.prepare("SELECT name, nav_layout FROM workspaces WHERE id=?").get(u.workspace_id) as any;
   res.json({ user: { id: u.id, name: u.name, email: u.email, role: u.role, workspace_id: u.workspace_id, workspace_name: wsL?.name, nav_layout: wsL?.nav_layout || "sidebar", is_platform_admin: !!u.is_platform_admin , email_verified: u.email_verified ?? 0, permissions: permsOf(u) }, session: sid });
+});
+const startSession = (req: any, res: any, u: any) => {
+  const sid = uid("ses") + randomBytes(16).toString("hex");
+  db.prepare("INSERT INTO sessions (id,user_id,created_at,expires_at) VALUES (?,?,?,?)").run(sid, u.id, now(), new Date(Date.now() + 7 * 86400000).toISOString());
+  res.setHeader("Set-Cookie", sessionCookie(req, sid));
+  const wsL = db.prepare("SELECT name, nav_layout FROM workspaces WHERE id=?").get(u.workspace_id) as any;
+  res.json({ user: { id: u.id, name: u.name, email: u.email, role: u.role, workspace_id: u.workspace_id, workspace_name: wsL?.name, nav_layout: wsL?.nav_layout || "sidebar", is_platform_admin: !!u.is_platform_admin, email_verified: u.email_verified ?? 0, permissions: permsOf(u) }, session: sid });
+};
+app.post("/api/auth/mfa/verify", (req: any, res) => {
+  const userId = peekMfaPending(String(req.body?.pending || ""));
+  if (!userId) return res.status(401).json({ error: { code: "mfa_expired", message: "That sign-in challenge expired — sign in again." } });
+  const u = db.prepare("SELECT * FROM users WHERE id=? AND active=1").get(userId) as any;
+  if (!u || !verifyTotp(u.totp_secret, String(req.body?.code || ""))) return res.status(401).json({ error: { code: "bad_code", message: "That code did not match — check the authenticator app and try again." } });
+  consumeMfaPending(String(req.body?.pending || ""));
+  startSession(req, res, u);
+});
+app.get("/api/auth/mfa/status", requireAuth, (req: any, res) => { const u = db.prepare("SELECT totp_enabled FROM users WHERE id=?").get(req.user.id) as any; res.json({ enabled: !!(u && u.totp_enabled) }); });
+app.post("/api/auth/mfa/setup", requireAuth, (req: any, res) => {
+  const secret = newTotpSecret();
+  db.prepare("UPDATE users SET totp_secret=? WHERE id=?").run(secret, req.user.id);
+  res.json({ secret, otpauth_url: otpauthUrl(secret, req.user.email) });
+});
+app.post("/api/auth/mfa/enable", requireAuth, (req: any, res) => {
+  const u = db.prepare("SELECT * FROM users WHERE id=?").get(req.user.id) as any;
+  if (!u?.totp_secret) return res.status(422).json({ error: { code: "no_setup", message: "Start setup first." } });
+  if (!verifyTotp(u.totp_secret, String(req.body?.code || ""))) return res.status(401).json({ error: { code: "bad_code", message: "That code did not match — check the authenticator app and try again." } });
+  db.prepare("UPDATE users SET totp_enabled=1 WHERE id=?").run(u.id);
+  res.json({ enabled: true });
+});
+app.post("/api/auth/mfa/disable", requireAuth, (req: any, res) => {
+  const u = db.prepare("SELECT * FROM users WHERE id=?").get(req.user.id) as any;
+  if (!verifyPassword(String(req.body?.password || ""), u.password_hash)) return res.status(401).json({ error: { code: "bad_credentials" } });
+  db.prepare("UPDATE users SET totp_enabled=0, totp_secret=NULL WHERE id=?").run(u.id);
+  res.json({ enabled: false });
+});
+app.post("/api/onboarding/sample", requireAuth, (req: any, res) => {
+  if (req.user.role !== "OWNER") return res.status(403).json({ error: { code: "owner_only" } });
+  const ws = req.user.workspace_id;
+  const existing = (db.prepare("SELECT COUNT(*) c FROM leads WHERE workspace_id=?").get(ws) as any).c;
+  if (existing > 0) return res.status(409).json({ error: { code: "not_empty", message: "Sample data can only be loaded into an empty workspace." } });
+  const samples = [
+    { name: "Sample — Harbor Point HOA", email: "manager@harborpoint.example", phone: "55501001101", service: "Asbestos survey — boiler room", value: 4500, state: "NEW" },
+    { name: "Sample — Riverside School District", email: "facilities@riverside.example", phone: "55501001102", service: "AHERA re-inspection (3-year)", value: 6800, state: "WORKING" },
+    { name: "Sample — Delta Warehousing LLC", email: "ops@deltawarehousing.example", phone: "55501001103", service: "NESHAP pre-demolition survey", value: 12000, state: "QUALIFIED" },
+    { name: "Sample — St. Mary Medical Offices", email: "admin@stmary.example", phone: "55501001104", service: "Lead paint inspection", value: 3900, state: "PROPOSAL" },
+    { name: "Sample — Bayview Apartments", email: "super@bayview.example", phone: "55501001105", service: "Mold assessment + remediation oversight", value: 18500, state: "WON" },
+  ];
+  const ids: string[] = [];
+  for (const sm of samples) {
+    const r: any = createLead(ws, req.user.id, { contact: { name: sm.name, email: sm.email, phone: sm.phone }, service_requested: sm.service, est_value: sm.value, location: "Sample address — 100 Demo Street" });
+    const leadId = r?.lead?.id || r?.id; if (!leadId) continue;
+    ids.push(leadId);
+    if (sm.state !== "NEW") db.prepare("UPDATE leads SET state=? WHERE id=?").run(sm.state, leadId);
+    if (sm.state === "WON") {
+      const num = ((db.prepare("SELECT COALESCE(MAX(number),1000) m FROM proposals WHERE workspace_id=?").get(ws) as any).m || 1000) + 1;
+      db.prepare("INSERT INTO proposals (id,workspace_id,lead_id,number,version,status,total,line_items,created_at,sent_at,signed_at) VALUES (?,?,?,?,?, 'signed', ?, ?, ?, ?, ?)")
+        .run(uid("prop"), ws, leadId, num, 1, sm.value, JSON.stringify([{ description: sm.service, qty: 1, unit_price: sm.value, line_total: sm.value }]), now(), now(), now());
+      const lead = db.prepare("SELECT * FROM leads WHERE id=?").get(leadId);
+      ensureJobForLeadInner(ws, req.user.id, lead);
+    }
+  }
+  audit(ws, req.user.id, "onboarding.sample_loaded", "workspace", ws, { leads: ids.length });
+  res.status(201).json({ loaded: ids.length, lead_ids: ids });
+});
+app.get("/api/export", requireAuth, (req: any, res) => {
+  if (req.user.role !== "OWNER" && !permsOf(req.user).can_export) return res.status(403).json({ error: { code: "export_denied", message: "Data export is limited to the owner or users with export access." } });
+  const bundle = buildWorkspaceExport(req.user.workspace_id);
+  audit(req.user.workspace_id, req.user.id, "workspace.export", "workspace", req.user.workspace_id, { tables: Object.keys(bundle.tables).length });
+  res.setHeader("Content-Disposition", `attachment; filename="workpile-export-${new Date().toISOString().slice(0, 10)}.json"`);
+  res.type("application/json").send(JSON.stringify(bundle, null, 2));
 });
 app.get("/api/auth/me", requireAuth, (req: any, res) => { ensureMembership(req.user); const ws = db.prepare("SELECT name, nav_layout FROM workspaces WHERE id=?").get(req.user.workspace_id) as any; const __imp = (req as any).session?.impersonated_by ? { by_name: (db.prepare("SELECT name FROM users WHERE id=?").get((req as any).session.impersonated_by) as any)?.name || "platform admin", expires_at: (req as any).session.impersonation_expires_at } : null; res.json({ user: { id: req.user.id, name: req.user.name, email: req.user.email, role: req.user.role, avatar_url: req.user.avatar_url || null, approval_limit: req.user.approval_limit || 0, workspace_id: req.user.workspace_id, workspace_name: ws?.name, nav_layout: ws?.nav_layout || "sidebar", workspace_suspended: !!(db.prepare("SELECT suspended FROM workspaces WHERE id=?").get(req.user.workspace_id) as any)?.suspended, email_verified: req.user.email_verified ?? 0, is_platform_admin: !!req.user.is_platform_admin, impersonation: __imp, permissions: permsOf(req.user) }, workspaces: membershipsOf(req.user.id) }); });
 
@@ -2431,7 +2504,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-export const APP_VERSION = "v95";
+export const APP_VERSION = "v96";
 app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: APP_VERSION, jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {
