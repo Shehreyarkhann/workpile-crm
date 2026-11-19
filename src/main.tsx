@@ -1515,7 +1515,7 @@ function ServicesConsole({ svcs, reload }: any) {
 }
 
 const MOD_LABELS: Record<string, string> = { home: "Home dashboard", queue: "Work Queue", myday: "My Day", inbox: "Inbox", tasks: "Tasks", leads: "Leads / Pipeline", customers: "Customers", proposals: "Proposals", approvals: "Approvals", jobs: "Jobs", schedule: "Schedule & Calendar", ops: "Ops Console", campaigns: "Campaigns", opportunities: "Opportunities", demand: "Demand Gap", pulse: "Pulse", handoffs: "Handoffs", library: "Library & Files", import: "Import", reports: "Reports & Analytics", automations: "Automations & Agent", copilot: "Copilot", settings: "Settings" };
-const PERM_TOGGLES: [string, string, string][] = [["can_approve", "Approve proposals", "Decide approvals routed to them"], ["can_money", "See money figures", "Home money cards, invoices, reports totals"], ["can_complete_others", "Complete others' work", "Mark anyone's tasks, visits and schedule items done"], ["can_export", "Export data", "CSV exports and report downloads"], ["can_billing", "Billing & plan", "Subscription, invoices from Workpile, plan changes"], ["can_settings", "Workspace settings", "Business profile, templates, integrations"], ["can_manage_team", "Manage team", "Invite people, change roles and access"]];
+const PERM_TOGGLES: [string, string, string][] = [["can_approve", "Approve proposals", "Decide approvals routed to them"], ["can_money", "See margin", "Margin and projected margin (all other numbers are visible to everyone)"], ["can_review_inspections", "Review inspections", "Record pass / fail results on submitted inspections"], ["can_complete_others", "Complete others' work", "Mark anyone's tasks, visits and schedule items done"], ["can_export", "Export data", "CSV exports and report downloads"], ["can_billing", "Billing & plan", "Subscription, invoices from Workpile, plan changes"], ["can_settings", "Workspace settings", "Business profile, templates, integrations"], ["can_manage_team", "Manage team", "Invite people, change roles and access"]];
 function PermEditor({ draft, setDraft }: any) {
   const seg = (mod: string) => (<span className="rowflex" style={{ gap: 4 }}>{(["none", "view", "edit"] as const).map(lvl => <button key={lvl} className={"chip" + (draft.modules?.[mod] === lvl ? " on" : "")} style={draft.modules?.[mod] === lvl ? { background: lvl === "none" ? "#991B1B" : "#0E5C3A", color: "#fff", borderColor: "transparent" } : {}} onClick={() => setDraft({ ...draft, modules: { ...draft.modules, [mod]: lvl } })}>{lvl === "none" ? "Hidden" : lvl === "view" ? "View" : "View + Edit"}</button>)}</span>);
   return (<div>
@@ -1548,7 +1548,7 @@ function AccessRoles({ me }: any) {
   useEffect(() => { if (mode === "user" && userEntry) setDraft(JSON.parse(JSON.stringify(userEntry.permissions))); }, [mode, selUser, users.length]);
   const saveRole = async () => { const r = await api("/api/roles/" + selRole, { method: "PUT", body: { perms: draft } }).catch(() => null); if (r && !r.error) { setMsg("✓ Role template saved — everyone with the " + selRole + " role now gets this access (their personal overrides still apply on top)."); load(); } else setMsg("⚠ " + (r?.error?.message || "Only the owner can change role templates.")); };
   const resetRole = async () => { await api("/api/roles/" + selRole, { method: "DELETE" }); setMsg("Role reset to the product defaults."); load(); };
-  const saveUser = async () => { if (!userEntry) return; const base = (roles.find(r => r.role === userEntry.role)?.effective) || {}; const diff: any = {}; for (const k of ["leads_scope", "jobs_scope", "schedule_scope", "can_approve", "can_billing", "can_settings", "can_export", "can_manage_team", "can_money", "can_complete_others"]) if (draft[k] !== base[k]) diff[k] = draft[k]; const mm: any = {}; for (const mod of Object.keys(MOD_LABELS)) if (draft.modules?.[mod] !== base.modules?.[mod]) mm[mod] = draft.modules?.[mod]; if (Object.keys(mm).length) diff.modules = mm; const had = userEntry.has_overrides; const r = await api("/api/team/" + selUser, { method: "PATCH", body: { permissions: Object.keys(diff).length ? diff : (had ? {} : diff) } }).catch(() => null); if (r && !r.error) { setMsg(Object.keys(diff).length ? "✓ Personal access saved for " + userEntry.name + " — it takes effect on their next page load." : "✓ " + userEntry.name + " is back on pure role defaults."); load(); } else setMsg("⚠ " + (r?.error?.message || "Could not save.")); };
+  const saveUser = async () => { if (!userEntry) return; const base = (roles.find(r => r.role === userEntry.role)?.effective) || {}; const diff: any = {}; for (const k of ["leads_scope", "jobs_scope", "schedule_scope", "can_approve", "can_billing", "can_settings", "can_export", "can_manage_team", "can_money", "can_complete_others", "can_review_inspections"]) if (draft[k] !== base[k]) diff[k] = draft[k]; const mm: any = {}; for (const mod of Object.keys(MOD_LABELS)) if (draft.modules?.[mod] !== base.modules?.[mod]) mm[mod] = draft.modules?.[mod]; if (Object.keys(mm).length) diff.modules = mm; const had = userEntry.has_overrides; const r = await api("/api/team/" + selUser, { method: "PATCH", body: { permissions: Object.keys(diff).length ? diff : (had ? {} : diff) } }).catch(() => null); if (r && !r.error) { setMsg(Object.keys(diff).length ? "✓ Personal access saved for " + userEntry.name + " — it takes effect on their next page load." : "✓ " + userEntry.name + " is back on pure role defaults."); load(); } else setMsg("⚠ " + (r?.error?.message || "Could not save.")); };
   const resetUser = async () => { await api("/api/team/" + selUser, { method: "PATCH", body: { permissions: {} } }); setMsg("Personal overrides cleared — role defaults apply."); load(); };
   const isOwner = me?.role === "OWNER";
   return (<div className="card"><h3 style={{ marginTop: 0 }}>🔐 Access & Roles — who can see and do what</h3>
@@ -1665,6 +1665,7 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any)
       <div><label className="f">Vertical</label><input value={s.workspace.vertical || ""} onChange={e => setS({ ...s, workspace: { ...s.workspace, vertical: e.target.value } })} /></div>
       <div><label className="f">Timezone</label><input value={s.workspace.timezone || ""} onChange={e => setS({ ...s, workspace: { ...s.workspace, timezone: e.target.value } })} /></div>
       <div><label className="f">Margin visibility</label><select value={s.workspace.margin_public ? "all" : "money"} onChange={e => setS({ ...s, workspace: { ...s.workspace, margin_public: e.target.value === "all" ? 1 : 0 } })}><option value="money">Money roles only (default)</option><option value="all">Everyone</option></select></div>
+      <div><label className="f">Inspection reviews</label><select value={s.workspace.insp_sod ? "distinct" : "same"} onChange={e => setS({ ...s, workspace: { ...s.workspace, insp_sod: e.target.value === "distinct" ? 1 : 0 } })}><option value="same">Reviewer may be the inspector</option><option value="distinct">Reviewer must differ from the inspector</option></select></div>
       <div><label className="f">Navigation layout</label><select value={s.workspace.nav_layout || "sidebar"} onChange={e => setS({ ...s, workspace: { ...s.workspace, nav_layout: e.target.value } })}><option value="sidebar">Sidebar (left)</option><option value="topbar">Top bar — fixed, category dropdowns</option></select></div>
       <div><label className="f">Deposit % on signed proposals</label><input type="number" value={s.workspace.deposit_pct ?? 25} onChange={e => setS({ ...s, workspace: { ...s.workspace, deposit_pct: Number(e.target.value) } })} /></div>
       <div><label className="f">Autonomy level (1 draft-only · 2 bulk-approve · 3 scoped auto)</label><select value={s.workspace.autonomy_level ?? 1} onChange={e => setS({ ...s, workspace: { ...s.workspace, autonomy_level: Number(e.target.value) } })}><option value={1}>1 — draft only</option><option value={2}>2 — bulk approve</option><option value={3}>3 — scoped auto-approval</option></select></div>
@@ -3503,6 +3504,29 @@ function MoneyStrip({ m, jobId, onSaved }: any) {
     </tbody></table>}
   </div>;
 }
+function InspActions({ inspId, actions, findings, users, onDone }: any) {
+  const [label, setLabel] = useState(""); const [assignee, setAssignee] = useState(""); const [due, setDue] = useState("");
+  const open = (actions || []).filter((a: any) => a.status === "open");
+  const create = async (lbl: string, itemKey?: string) => { if (!lbl.trim()) return; await api("/api/inspections/" + inspId + "/actions", { method: "POST", body: { label: lbl.trim(), item_key: itemKey || null, assignee_id: assignee || null, due_at: due || null } }); setLabel(""); onDone && onDone(); };
+  return <div style={{ marginTop: 14 }}>
+    <b style={{ fontSize: 13 }}>🔧 Corrective actions ({open.length} open)</b>
+    {(actions || []).map((a: any) => <div key={a.id} className="rowflex" style={{ padding: "4px 0", fontSize: 13, borderBottom: "1px solid #F0F3F0" }}>
+      <span style={{ flex: 1 }}>{a.status === "done" ? "✅ " : "⬜ "}{a.label}{a.assignee_name ? ` · ${a.assignee_name}` : ""}{a.due_at ? ` · due ${String(a.due_at).slice(0, 10)}` : ""}</span>
+      <button className="btn ghost small" onClick={async () => { await api("/api/inspection-actions/" + a.id, { method: "PATCH", body: { status: a.status === "done" ? "open" : "done" } }); onDone && onDone(); }}>{a.status === "done" ? "Reopen" : "Mark done"}</button>
+    </div>)}
+    {(findings || []).filter((f: any) => !(actions || []).some((a: any) => a.item_key === f.key)).map((f: any) => <div key={f.key} className="rowflex" style={{ padding: "3px 0", fontSize: 12.5 }}>
+      <span style={{ flex: 1, color: "#991B1B" }}>Finding: {f.label}</span>
+      <button className="btn ghost small" onClick={() => create("Corrective action: " + f.label, f.key)}>+ Create action</button>
+    </div>)}
+    <div className="rowflex" style={{ marginTop: 6 }}>
+      <input style={{ flex: 2 }} placeholder="New corrective action" value={label} onChange={e => setLabel(e.target.value)} />
+      <select style={{ flex: 1 }} value={assignee} onChange={e => setAssignee(e.target.value)}><option value="">Assignee</option>{(users || []).map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}</select>
+      <input style={{ width: 150 }} type="date" value={due} onChange={e => setDue(e.target.value)} />
+      <button className="btn small" onClick={() => create(label)}>Add</button>
+    </div>
+    {open.length > 0 && <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>Open corrective actions block work-order completion (owner/ops override still applies).</p>}
+  </div>;
+}
 function TaxRatesEditor() {
   const [rates, setRates] = useState<any[]>([]); const [nb, setNb] = useState<any>({ name: "", rate: "", is_default: false }); const [msg, setMsg] = useState("");
   const load = () => { api("/api/tax-rates").then((r: any) => setRates(Array.isArray(r) ? r : [])).catch(() => {}); };
@@ -3612,6 +3636,7 @@ function InspectionView({ id, users, onBack, onSwitch }: any) {
       <label className="f">Inspector's summary / conclusion<textarea rows={3} value={ov.summary} onChange={e => setOv({ ...ov, summary: e.target.value })} /></label>
       <button className="btn small" onClick={saveOverview}>Save overview</button>
       <InspReports insp={d.inspection} photos={d.photos || []} />
+      <InspActions inspId={id} actions={d.actions || []} findings={items.filter((it: any) => (answers[it.key] && answers[it.key].v === "fail") || oor(it)).map((it: any) => ({ key: it.key, label: it.label }))} users={users} onDone={load} />
       {(insp.started_at || insp.submitted_at || insp.decided_at) && <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>{insp.started_at ? "Started " + String(insp.started_at).slice(0, 16).replace("T", " ") + " · " : ""}{insp.submitted_at ? "Submitted " + String(insp.submitted_at).slice(0, 16).replace("T", " ") + " · " : ""}{insp.decided_at ? "Decided " + String(insp.decided_at).slice(0, 16).replace("T", " ") : ""}{insp.review_note ? " — " + insp.review_note : ""}</p>}
     </div>}
     {tab === "checklist" && <div style={{ marginTop: 10 }}>
