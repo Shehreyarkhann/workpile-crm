@@ -72,6 +72,21 @@ test("a PM without the money flag sees no numbers anywhere", async () => {
   assert.ok(!("cost" in lines[0]), "proposal line cost stripped");
 });
 
+test("the customer view is gated too: no money360 or lifetime value without the flag", async () => {
+  const list = await callAs(ownerCookie, "GET", "/api/accounts");
+  const acc = list.body.find((a: any) => (a.leads_count || 0) > 0) || list.body[0];
+  assert.ok(acc, "an account exists from the WON lead");
+  const ownerDetail = await callAs(ownerCookie, "GET", `/api/accounts/${acc.id}`);
+  assert.ok(ownerDetail.body.money360 && typeof ownerDetail.body.money360.collected === "number", "owner sees money360");
+  assert.ok(ownerDetail.body.lifetime_value != null, "owner sees lifetime value");
+  const pmList = await callAs(pmCookie, "GET", "/api/accounts");
+  const pmRow = pmList.body.find((a: any) => a.id === acc.id);
+  assert.ok(pmRow && !("lifetime_value" in pmRow), "list row carries no lifetime value");
+  const pmDetail = await callAs(pmCookie, "GET", `/api/accounts/${acc.id}`);
+  assert.equal(pmDetail.body.money360, null, "money360 withheld");
+  assert.equal(pmDetail.body.lifetime_value, null, "lifetime value withheld");
+});
+
 test("granting can_money to that user (Access & Roles override) reveals the numbers", async () => {
   dbm.db.prepare("UPDATE users SET permissions=? WHERE email='pete@v93.test'").run(JSON.stringify({ can_money: true }));
   const d = await callAs(pmCookie, "GET", `/api/jobs/${jobId}`);
