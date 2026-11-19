@@ -22,6 +22,13 @@ if [ "${NODE_MAJOR:-0}" -lt 24 ]; then
 fi
 node -v
 
+# --- Chromium (v91: inspection report PDFs render through headless Chrome) ---
+if ! command -v chromium >/dev/null 2>&1 && ! command -v chromium-browser >/dev/null 2>&1 && ! command -v google-chrome >/dev/null 2>&1; then
+  echo "== Installing Chromium for report PDFs (best effort)"
+  apt-get update -y >/dev/null 2>&1 || true
+  apt-get install -y chromium >/dev/null 2>&1 || apt-get install -y chromium-browser >/dev/null 2>&1 || echo "WARN: Chromium install failed — reports will generate as HTML until a Chromium binary exists"
+fi
+
 # --- Code ---
 if [ -d "$APP_DIR/.git" ]; then
   echo "== Updating existing clone"

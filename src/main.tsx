@@ -1683,7 +1683,7 @@ function Settings({ users, setUsers, priceBook, setPriceBook, onJump, me }: any)
     </tbody></table>
       <div className="rowflex" style={{ marginTop: 12 }}><input style={{ flex: 2 }} placeholder="New item name" value={nb.name} onChange={e => setNb({ ...nb, name: e.target.value })} /><input style={{ width: 90 }} placeholder="unit" value={nb.unit} onChange={e => setNb({ ...nb, unit: e.target.value })} /><input style={{ width: 120 }} type="number" placeholder="standard $" value={nb.standard_price} onChange={e => setNb({ ...nb, standard_price: e.target.value })} /><input style={{ width: 120 }} type="number" placeholder="floor $" value={nb.floor_price} onChange={e => setNb({ ...nb, floor_price: e.target.value })} /><button className="btn" onClick={async () => { await api("/api/price-book", { method: "POST", body: { ...nb, standard_price: Number(nb.standard_price) || 0, floor_price: Number(nb.floor_price) || 0 } }); setNb({ name: "", unit: "job", standard_price: "", floor_price: "" }); loadAll(); }}>Add item</button></div>
       <p className="muted">Proposals can only price from this book — the floor is the margin guardrail the Approval Gate enforces.</p></div>}
-    {tab === "templates" && canSettings && <div className="card"><VerticalPacksCard /><DocTemplatesEditor /><SectionLibraryManager /><InspectionTemplatesEditor /><WOTemplatesEditor /><h3>Message templates</h3>{tpls.map(t => <div key={t.id} style={{ borderBottom: "1px solid #eef2f7", padding: "10px 0" }}><b>{t.name}</b> <span className="muted">· {t.kind} · v{t.version} · {t.active ? "active" : "inactive"}</span>{tplEdit?.id === t.id ? <><textarea rows={5} value={tplEdit.body} onChange={e => setTplEdit({ ...tplEdit, body: e.target.value })} /><span className="rowflex" style={{ marginTop: 6 }}><button className="btn small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "PATCH", body: { body: tplEdit.body } }); setTplEdit(null); loadAll(); }}>Save</button><button className="btn ghost small" onClick={() => setTplEdit(null)}>Cancel</button></span></> : <><p className="muted" style={{ whiteSpace: "pre-wrap" }}>{t.body}</p><button className="btn ghost small" onClick={() => setTplEdit({ id: t.id, body: t.body })}>Edit</button></>} <button className="btn ghost small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></div>)}
+    {tab === "templates" && canSettings && <div className="card"><VerticalPacksCard /><DocTemplatesEditor /><SectionLibraryManager /><InspectionTemplatesEditor /><WOTemplatesEditor /><ReportTemplatesEditor /><h3>Message templates</h3>{tpls.map(t => <div key={t.id} style={{ borderBottom: "1px solid #eef2f7", padding: "10px 0" }}><b>{t.name}</b> <span className="muted">· {t.kind} · v{t.version} · {t.active ? "active" : "inactive"}</span>{tplEdit?.id === t.id ? <><textarea rows={5} value={tplEdit.body} onChange={e => setTplEdit({ ...tplEdit, body: e.target.value })} /><span className="rowflex" style={{ marginTop: 6 }}><button className="btn small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "PATCH", body: { body: tplEdit.body } }); setTplEdit(null); loadAll(); }}>Save</button><button className="btn ghost small" onClick={() => setTplEdit(null)}>Cancel</button></span></> : <><p className="muted" style={{ whiteSpace: "pre-wrap" }}>{t.body}</p><button className="btn ghost small" onClick={() => setTplEdit({ id: t.id, body: t.body })}>Edit</button></>} <button className="btn ghost small" onClick={async () => { await api(`/api/templates/${t.id}`, { method: "DELETE" }); loadAll(); }}>Delete</button></div>)}
       <div className="formgrid" style={{ marginTop: 12 }}><div><label className="f">New template name</label><input value={nt.name} onChange={e => setNt({ ...nt, name: e.target.value })} /></div><div className="full"><label className="f">Body (merge fields: {"{{contact_name}} {{service}} {{total}}"})</label><textarea rows={4} value={nt.body} onChange={e => setNt({ ...nt, body: e.target.value })} /></div></div>
       <button className="btn" style={{ marginTop: 10 }} onClick={async () => { await api("/api/templates", { method: "POST", body: nt }); setNt({ name: "", body: "" }); loadAll(); }}>Add template</button></div>}
     {tab === "services" && canSettings && <ServicesConsole svcs={svcs} reload={loadAll} />}
@@ -3406,6 +3406,66 @@ function InspReports({ insp, photos }: any) {
       <div style={{ maxHeight: 180, overflowY: "auto", marginTop: 4 }}>{imgPhotos.map((p: any) => <label key={p.id} className="rowflex" style={{ fontSize: 12.5, gap: 6 }}><input type="checkbox" checked={!excl.includes(p.id)} onChange={e => setExcl(x => e.target.checked ? x.filter(i => i !== p.id) : [...x, p.id])} /><span style={{ flex: 1 }}>{p.name}</span><span className="muted">{p.tag || ""}</span></label>)}</div></>}
       <div className="rowflex" style={{ marginTop: 12 }}><span style={{ flex: 1 }} /><button className="btn ghost" onClick={() => setReview(false)}>Cancel</button><button className="btn" disabled={busy} onClick={generate}>{busy ? "Generating…" : "Generate PDF"}</button></div>
     </div></div>}
+  </div>;
+}
+function ReportTemplatesEditor() {
+  const [tpls, setTpls] = useState<any[]>([]); const [edit, setEdit] = useState<any>(null); const [msg, setMsg] = useState("");
+  const [focusKey, setFocusKey] = useState("");
+  const load = () => { api("/api/report-templates?all=1").then((t: any) => setTpls(Array.isArray(t) ? t : [])).catch(() => {}); };
+  useEffect(load, []);
+  const BLOCK_LABELS: Record<string, string> = { cover: "Cover page", letter: "Transmittal letter", toc: "Table of contents", summary: "Executive summary", details: "Inspection details", scope: "Scope of work", work_done: "Work done", results: "Results (full checklist)", findings: "Findings & recommendations", photos: "Photo appendix", notes: "Notes", limitations: "Limitations & exclusions", signoff: "Sign-offs", appendix_docs: "Appendix — documents", static: "Custom section (rich text)", pagebreak: "Page break" };
+  const FIELDS = ["client", "site_address", "project_no", "work_order_no", "inspection_no", "inspector", "license_no", "date", "result", "company", "summary"];
+  const save = async () => { try { if (edit.id) await api("/api/report-templates/" + edit.id, { method: "PATCH", body: edit }); else await api("/api/report-templates", { method: "POST", body: edit }); setEdit(null); setMsg("Saved."); load(); } catch (e: any) { setMsg(e.message); } };
+  const move = (i: number, d: number) => { const blocks = [...edit.blocks]; const j = i + d; if (j < 0 || j >= blocks.length) return; [blocks[i], blocks[j]] = [blocks[j], blocks[i]]; setEdit({ ...edit, blocks }); };
+  const setBlock = (i: number, settings: any) => { const blocks = [...edit.blocks]; blocks[i] = { ...blocks[i], settings: { ...(blocks[i].settings || {}), ...settings } }; setEdit({ ...edit, blocks }); };
+  const insertField = (f: string) => {
+    if (!edit) return; const token = `{{${f}}}`;
+    if (focusKey === "footer") { setEdit({ ...edit, branding: { ...edit.branding, footer_text: (edit.branding.footer_text || "") + token } }); return; }
+    const m = focusKey.match(/^(\w+):(\d+)$/); if (!m) { setMsg("Click into a text field first, then tap a merge field to insert it."); return; }
+    const i = Number(m[2]); setBlock(i, { text: ((edit.blocks[i].settings || {}).text || "") + token });
+  };
+  return <div style={{ marginTop: 18 }}>
+    <h3>Report templates</h3>
+    <p className="muted" style={{ fontSize: 12.5 }}>What a generated inspection report looks like — blocks, order, branding. Reports already generated never change when a template is edited.</p>
+    {msg && <p className="muted">{msg}</p>}
+    {tpls.map(t => <div key={t.id} className="rowflex" style={{ padding: "6px 0", borderBottom: "1px solid #EEF2EF" }}>
+      <span style={{ flex: 1 }}><b>{t.name}</b> <span className="muted">· {(t.blocks || []).length} blocks</span> {!t.active && <span className="tinyBadge">inactive</span>}</span>
+      <a className="btn ghost small" href={`/api/report-templates/${t.id}/sample-preview`} target="_blank" rel="noreferrer">Preview</a>
+      <button className="btn ghost small" onClick={() => setEdit(JSON.parse(JSON.stringify(t)))}>Edit</button>
+      <button className="btn ghost small" onClick={async () => { await api("/api/report-templates/" + t.id, { method: "PATCH", body: { active: !t.active } }); load(); }}>{t.active ? "Deactivate" : "Activate"}</button>
+    </div>)}
+    {!edit && <button className="btn ghost small" style={{ marginTop: 8 }} onClick={() => { const std = tpls.find(t => t.name === "Standard Inspection Report"); setEdit({ id: "", name: "New report template", blocks: std ? JSON.parse(JSON.stringify(std.blocks)) : [], branding: std ? JSON.parse(JSON.stringify(std.branding)) : { accent: "#0E5C3A", footer: true, footer_text: "" } }); }}>+ New template (starts as a copy of Standard)</button>}
+    {edit && <div className="card" style={{ padding: 12, marginTop: 8 }}>
+      <label className="f">Name<input value={edit.name} onChange={e => setEdit({ ...edit, name: e.target.value })} /></label>
+      <div className="rowflex" style={{ flexWrap: "wrap", gap: 8 }}>
+        <label className="f" style={{ flex: 1, minWidth: 130 }}>Accent color<input type="color" value={edit.branding.accent || "#0E5C3A"} onChange={e => setEdit({ ...edit, branding: { ...edit.branding, accent: e.target.value } })} /></label>
+        <label className="f" style={{ flex: 2, minWidth: 200 }}>Client logo URL (cover, optional)<input value={edit.branding.client_logo_url || ""} onChange={e => setEdit({ ...edit, branding: { ...edit.branding, client_logo_url: e.target.value } })} placeholder="https://…" /></label>
+        <label className="f" style={{ flex: 2, minWidth: 200 }}>Footer text<input value={edit.branding.footer_text || ""} onFocus={() => setFocusKey("footer")} onChange={e => setEdit({ ...edit, branding: { ...edit.branding, footer_text: e.target.value } })} /></label>
+        <label className="f" style={{ minWidth: 110 }}>Footer on reports<input type="checkbox" checked={edit.branding.footer !== false} onChange={e => setEdit({ ...edit, branding: { ...edit.branding, footer: e.target.checked } })} /></label>
+      </div>
+      <div className="rowflex" style={{ flexWrap: "wrap", gap: 4, margin: "6px 0" }}><span className="muted" style={{ fontSize: 12 }}>Merge fields:</span>{FIELDS.map(f => <button key={f} className="btn ghost small" onClick={() => insertField(f)}>{`{{${f}}}`}</button>)}</div>
+      {(edit.blocks || []).map((b: any, i: number) => <div key={i} className="card" style={{ padding: 8, marginTop: 6 }}>
+        <div className="rowflex"><b style={{ fontSize: 13, flex: 1 }}>{i + 1}. {BLOCK_LABELS[b.type] || b.type}</b>
+          <button className="btn ghost small" onClick={() => move(i, -1)}>↑</button>
+          <button className="btn ghost small" onClick={() => move(i, 1)}>↓</button>
+          <button className="btn ghost small" onClick={() => setEdit({ ...edit, blocks: [...edit.blocks.slice(0, i + 1), JSON.parse(JSON.stringify(b)), ...edit.blocks.slice(i + 1)] })}>Duplicate</button>
+          <button className="btn ghost small" onClick={() => setEdit({ ...edit, blocks: edit.blocks.filter((_: any, j: number) => j !== i) })}>✕</button></div>
+        {b.type === "cover" && <label className="f">Hero photo on cover<input type="checkbox" checked={b.settings?.hero !== false} onChange={e => setBlock(i, { hero: e.target.checked })} /></label>}
+        {b.type === "summary" && <label className="f">Counts dashboard<input type="checkbox" checked={b.settings?.counts !== false} onChange={e => setBlock(i, { counts: e.target.checked })} /></label>}
+        {b.type === "results" && <label className="f">Show unanswered / N-A items<input type="checkbox" checked={b.settings?.show_na !== false} onChange={e => setBlock(i, { show_na: e.target.checked })} /></label>}
+        {b.type === "photos" && <label className="f">Photos per row<select value={b.settings?.layout || 2} onChange={e => setBlock(i, { layout: Number(e.target.value) })}><option value={2}>2</option><option value={3}>3</option></select></label>}
+        {b.type === "limitations" && <label className="f">Text<textarea rows={3} value={b.settings?.text || ""} onFocus={() => setFocusKey(`limitations:${i}`)} onChange={e => setBlock(i, { text: e.target.value })} /></label>}
+        {b.type === "letter" && <label className="f">Letter text<textarea rows={4} value={b.settings?.text || ""} onFocus={() => setFocusKey(`letter:${i}`)} onChange={e => setBlock(i, { text: e.target.value })} placeholder={"Dear {{client}}, …"} /></label>}
+        {b.type === "static" && <><label className="f">Section title<input value={b.settings?.title || ""} onChange={e => setBlock(i, { title: e.target.value })} /></label><label className="f">Text<textarea rows={4} value={b.settings?.text || ""} onFocus={() => setFocusKey(`static:${i}`)} onChange={e => setBlock(i, { text: e.target.value })} /></label></>}
+      </div>)}
+      <div className="rowflex" style={{ marginTop: 8, flexWrap: "wrap", gap: 5 }}>
+        <select id="rtpl-add" style={{ width: "auto" }}>{Object.entries(BLOCK_LABELS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
+        <button className="btn ghost small" onClick={() => { const sel = document.getElementById("rtpl-add") as HTMLSelectElement; setEdit({ ...edit, blocks: [...edit.blocks, { type: sel.value, settings: {} }] }); }}>+ Add block</button>
+        <span style={{ flex: 1 }} />
+        <button className="btn small" onClick={save}>Save template</button>
+        <button className="btn ghost small" onClick={() => setEdit(null)}>Cancel</button>
+      </div>
+    </div>}
   </div>;
 }
 function inspChip(i: any): [string, string, string] {

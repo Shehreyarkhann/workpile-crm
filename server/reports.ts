@@ -31,11 +31,47 @@ export const STANDARD_BLOCKS: any[] = [
 ];
 export const STANDARD_BRANDING: any = { accent: "#0E5C3A", footer: true, footer_text: "{{company}} · Confidential — prepared for {{client}}", header: true, client_logo_url: "" };
 
+export const CARD_BLOCKS: any[] = [
+  { type: "cover", settings: { hero: false } },
+  { type: "summary", settings: { counts: true } },
+  { type: "findings", settings: {} },
+  { type: "photos", settings: { layout: 3 } },
+  { type: "signoff", settings: {} },
+];
+export const CERT_BLOCKS: any[] = [
+  { type: "cover", settings: { hero: false } },
+  { type: "details", settings: {} },
+  { type: "results", settings: { show_na: false } },
+  { type: "limitations", settings: { text: LIMITATIONS_DEFAULT } },
+  { type: "signoff", settings: {} },
+];
 export function ensureReportTemplates(workspaceId: string) {
-  const n = db.prepare("SELECT COUNT(*) AS c FROM report_templates WHERE workspace_id=?").get(workspaceId) as any;
-  if (n.c > 0) return;
-  db.prepare("INSERT INTO report_templates (id,workspace_id,name,blocks,branding,active,created_at,updated_at) VALUES (?,?,?,?,?,1,?,?)")
-    .run(uid("rtpl"), workspaceId, "Standard Inspection Report", JSON.stringify(STANDARD_BLOCKS), JSON.stringify(STANDARD_BRANDING), now(), now());
+  const seeds: [string, any[]][] = [["Standard Inspection Report", STANDARD_BLOCKS], ["Inspection Report Card", CARD_BLOCKS], ["Clearance Certificate", CERT_BLOCKS]];
+  for (const [name, blocks] of seeds) {
+    const exists = db.prepare("SELECT id FROM report_templates WHERE workspace_id=? AND name=?").get(workspaceId, name) as any;
+    if (!exists) db.prepare("INSERT INTO report_templates (id,workspace_id,name,blocks,branding,active,created_at,updated_at) VALUES (?,?,?,?,?,1,?,?)")
+      .run(uid("rtpl"), workspaceId, name, JSON.stringify(blocks), JSON.stringify(STANDARD_BRANDING), now(), now());
+  }
+}
+export function sampleReportContext(workspaceId: string) {
+  const wsRow = db.prepare("SELECT * FROM workspaces WHERE id=?").get(workspaceId) as any;
+  const sections = [{ title: "Work area", items: [
+    { key: "s1", label: "Containment intact", type: "passfail", critical: true },
+    { key: "s2", label: "Debris removed", type: "passfail" },
+    { key: "s3", label: "Final air clearance (PCM)", type: "reading", unit: " f/cc", min: 0, max: 0.01 } ] }];
+  const answers = { s1: { v: "pass" }, s2: { v: "fail", note: "Residue found behind the radiator line." }, s3: { v: "0.008" } };
+  return {
+    insp: { title: "Post-abatement clearance inspection", summary: "Work complete with one corrective item noted below.", conditions: "Ground floor, access via service corridor", result: "passed_with_conditions", submitted_at: now(), created_at: now(), scheduled_start: now(), review_note: "", decided_at: now() },
+    wo: { title: "Full scope of work", description: "Remove asbestos-containing pipe insulation and floor tile per the signed proposal; wet methods, negative-pressure containment, HEPA filtration throughout.", status: "completed", percent_complete: 100 },
+    job: { project_no: "P26-0000-00", title: "Sample project" }, lead: null, ws: wsRow, sections, answers,
+    progress: { total: 3, answered: 3, pct: 100, failed: 1, critical_failed: 0, out_of_range: 0 },
+    inspNo: "P26-0000-00-W01-I01", client: "Sample Client LLC", site: "100 Sample Street", service: "Asbestos abatement",
+    photos: [], docs: [], notes: [], comments: [],
+    findings: [{ section: "Work area", label: "Debris removed", note: "Residue found behind the radiator line.", critical: false, out_of_range: false, value: "fail", unit: "", min: null, max: null }],
+    inspector: "Sample Inspector", license: "NY-AI-0000", reviewer: "Sample Reviewer", result: "passed_with_conditions",
+    signed_total: 64000, signed_sections: [{ title: "Scope & approach" }, { title: "Pricing" }], wo_checklist: [{ label: "Waste manifest signed", done: 1 }, { label: "Clearance photos taken", done: 1 }], wo_hours: 26.5, checklist_name: "AHERA post-abatement clearance",
+    company: wsRow?.name || "Your Company", logo_data: wsRow?.logo_data || "",
+  };
 }
 export function listReportTemplates(workspaceId: string) {
   ensureReportTemplates(workspaceId);
@@ -194,7 +230,7 @@ export function renderReportHtml(ctx: any, template: any, overrides: any = {}) {
     .iphotos { display: flex; gap: 6px; margin-top: 5px; } .iphotos img { width: 110px; height: 82px; object-fit: cover; border-radius: 5px; }
     figcaption { font-size: 10.5px; color: #5B6B62; margin-top: 2px; }
     .sig { color: #5B6B62; } .pb { page-break-after: always; } ol.toc li { margin: 3px 0; }
-  </style></head><body>${body}</body></html>`, footerText };
+  </style></head><body>${body}${footerText ? `<div style="margin-top:28px;padding-top:8px;border-top:1px solid #E5EAE6;text-align:center;color:#8a968e;font-size:10px">${footerText}</div>` : ""}</body></html>`, footerText };
 }
 
 export function findChromium(): string | null {
