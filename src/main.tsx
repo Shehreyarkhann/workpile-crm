@@ -243,7 +243,7 @@ const WIDGET_DEFS: WDef[] = [
   { id: "leads_dupes", icon: "🧬", title: "Duplicates waiting", blurb: "Possible duplicate leads the de-dupe found, waiting for a merge decision.", defW: 4, minW: 3, maxW: 6, group: "Leads" },
   { id: "prop_awaiting", icon: "📨", title: "Awaiting signature", blurb: "Proposals sent and waiting on the customer's signature, oldest first.", defW: 8, minW: 4, maxW: 12, group: "Proposals" },
   { id: "jobs_active", icon: "🔧", title: "Active jobs", blurb: "Jobs in flight with their stage and value — tap to open the job.", defW: 8, minW: 4, maxW: 12, group: "Jobs", multi: true, settings: [{ key: "stage", label: "Stage", def: "all", options: [{ v: "all", label: "All active" }, { v: "scheduled", label: "Scheduled" }, { v: "active", label: "In progress" }, { v: "finishing", label: "Finishing" }] }] },
-  { id: "inspections_kpi", icon: "🔍", title: "Inspections", blurb: "Today's inspections, reviews waiting, overdue, open corrective actions and the 30-day pass rate.", defW: 4, minW: 3, maxW: 8, group: "Jobs" },
+  { id: "inspections_kpi", icon: "🔍", title: "Inspections", blurb: "Today's inspections, reviews waiting, overdue, open corrective actions and the 30-day pass rate.", defW: 6, minW: 4, maxW: 12, group: "Jobs" },
   { id: "sched_agenda", icon: "📅", title: "Today's agenda", blurb: "Everything scheduled for today — visits, crew, tasks, callbacks, due dates.", defW: 4, minW: 3, maxW: 8, group: "Schedule & Ops", multi: true, settings: [{ key: "day", label: "Day", def: "today", options: [{ v: "today", label: "Today" }, { v: "tomorrow", label: "Tomorrow" }] }] },
   { id: "ops_visits", icon: "📍", title: "Site visits — upcoming", blurb: "The next scheduled site visits, straight from the one shared visit record.", defW: 4, minW: 3, maxW: 8, group: "Schedule & Ops" },
   { id: "fin_overdue", icon: "⚠️", title: "Overdue receivables", blurb: "Invoices past due with the exact open balance — the same figures as Money.", defW: 8, minW: 4, maxW: 12, group: "Finances" },
@@ -267,7 +267,7 @@ const DEF_BY_ID = new Map(WIDGET_DEFS.map(d => [d.id, d]));
 // DEF_H estimates and are corrected by live measurement; vertical compaction
 // (gravity) pulls every component up into the space beneath shorter ones, so
 // no dead space survives next to a tall neighbour.
-const DEF_H: Record<string, number> = { onboarding: 15, setup: 13, stat_pipeline: 6, stat_proposals: 6, stat_fpar: 6, stat_won: 6, finances: 14, goal: 12, agent: 13, calendar: 19, activity: 10, quicklinks: 11, recent: 15, periods: 10, clock: 11, wq_queue: 14, wq_approvals: 13, leads_pipeline: 13, leads_recent: 14, leads_dupes: 8, prop_awaiting: 14, jobs_active: 14, sched_agenda: 14, ops_visits: 12, fin_overdue: 14, fin_ar: 14, fin_payments: 14, inbox_recent: 14, camp_perf: 12, demand_gap: 11, dash_insights: 10, dash_funnel: 16, dash_approvals: 10, dash_series: 10, dash_service: 13, dash_team: 12, dash_events: 14, inspections_kpi: 12 };
+const DEF_H: Record<string, number> = { onboarding: 15, setup: 13, stat_pipeline: 6, stat_proposals: 6, stat_fpar: 6, stat_won: 6, finances: 14, goal: 12, agent: 13, calendar: 19, activity: 10, quicklinks: 11, recent: 15, periods: 10, clock: 11, wq_queue: 14, wq_approvals: 13, leads_pipeline: 13, leads_recent: 14, leads_dupes: 8, prop_awaiting: 14, jobs_active: 14, sched_agenda: 14, ops_visits: 12, fin_overdue: 14, fin_ar: 14, fin_payments: 14, inbox_recent: 14, camp_perf: 12, demand_gap: 11, dash_insights: 10, dash_funnel: 16, dash_approvals: 10, dash_series: 10, dash_service: 13, dash_team: 12, dash_events: 14, inspections_kpi: 15 };
 const hFromPx = (px: number) => Math.max(2, Math.ceil((px + 16) / 26));
 const rectOverlap = (a: any, b: any) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 function compactLayout(list: any[], lockIid?: string): any[] {
@@ -547,7 +547,7 @@ function HomeDash({ go, openLead, m, d }: any) {
   const commit = (nextDisp: any[]) => { const byIid = new Map(nextDisp.map(x => [x.iid, { ...x, h: hAdj[x.iid] || x.h }])); const known = new Set(items.map(i => i.iid)); const base = items.map(it => byIid.get(it.iid) || it); for (const nd of nextDisp) if (!known.has(nd.iid)) base.push(byIid.get(nd.iid)); persist(base); };
   const WIDGET_RENDER: Record<string, () => any> = {
     onboarding: () => <OnboardingCard go={go} />,
-    inspections_kpi: () => <InspectionsKpiWidget />,
+    inspections_kpi: () => <InspectionsKpiWidget go={go} />,
     setup: () => <SetupCard go={go} />,
     stat_pipeline: () => (<div className="statCard animIn" style={{ animationDelay: "0ms", ["--glow" as any]: "#22c55e" }} onClick={() => go({ view: "leads", leads: { bucket: "proposal" } })}><div className="ic" style={{ background: "#dcfce7" }}>💵</div><div className="v">${num(pipe)}</div><div className="l">Open pipeline — qualified → sent</div></div>),
     stat_proposals: () => (<div className="statCard animIn" style={{ animationDelay: "60ms", ["--glow" as any]: "#f59e0b" }} onClick={() => go({ view: "leads", leads: { bucket: "proposal" } })}><div className="ic" style={{ background: "#fef9c3" }}>📨</div><div className="v">{home.proposals_sent_week}<span style={{ fontSize: 14, color: "#94a3b8" }}> / {home.proposals_built_week} built</span></div><div className="l">Proposals sent this week ★ North Star{home.proposals_test_week > 0 ? ` — ${home.proposals_test_week} in test mode (not delivered)` : ""}</div></div>),
@@ -3701,14 +3701,33 @@ function SchedulesCard() {
     <p className="muted" style={{ fontSize: 12.5, marginTop: 8 }}>The report is generated from live data at send time — the same figures the Copilot produces — and emailed as a Word document.</p>
   </div>;
 }
-function InspectionsKpiWidget() {
+function InspectionsKpiWidget({ go }: any) {
   const [d, setD] = useState<any>(null);
   useEffect(() => { api("/api/inspections/summary").then(setD).catch(() => {}); }, []);
-  if (!d) return <div className="muted" style={{ fontSize: 12.5 }}>Loading inspections…</div>;
-  const tile = (label: string, value: any, hot = false) => <div style={{ flex: 1, minWidth: 62, background: "#F7F8F6", border: "1px solid #E3E8E3", borderRadius: 10, padding: "7px 8px", textAlign: "center" }}><div style={{ fontSize: 17, fontWeight: 800, color: hot && Number(value) > 0 ? "#B45309" : "#101613" }}>{value}</div><div className="muted" style={{ fontSize: 10.5, lineHeight: 1.25 }}>{label}</div></div>;
+  if (!d) return <div className="muted" style={{ fontSize: 12.5, padding: 6 }}>Loading inspections…</div>;
+  const N = { glow: "#CBD5E1", bg: "#F1F5F9" };
+  const G = { glow: "#22C55E", bg: "#dcfce7" };
+  const P = { glow: "#0E5C3A", bg: "#E7F6EC" };
+  const A = { glow: "#F59E0B", bg: "#FEF3C7" };
+  const R = { glow: "#DC2626", bg: "#FEE2E2" };
+  const tile = (icon: string, label: string, value: any, tone: any) => (
+    <div className="kpiTile" style={{ ["--glow" as any]: tone.glow }} onClick={() => go && go({ view: "jobs" })} title="Open Jobs">
+      <div className="kpiIc" style={{ background: tone.bg }}>{icon}</div>
+      <div className="kpiV">{value}</div>
+      <div className="kpiL">{label}</div>
+    </div>);
   return <div>
-    <div className="rowflex" style={{ gap: 6, flexWrap: "wrap" }}>{tile("Scheduled today", d.scheduled_today)}{tile("In progress", d.in_progress)}{tile("Awaiting review", d.awaiting_review, true)}{tile("Overdue", d.overdue, true)}</div>
-    <div className="rowflex" style={{ gap: 6, flexWrap: "wrap", marginTop: 6 }}>{tile("Open actions", d.open_actions, true)}{tile("Reports pending", d.reports_pending, true)}{tile("Closed · 30d", d.closed_30d)}{tile("Pass rate · 30d", d.pass_rate_30d == null ? "—" : d.pass_rate_30d + "%")}</div>
+    <div className="kpiHead"><span className="kpiHeadIc">🔍</span><span className="kpiHeadT">Inspections</span><span className="muted" style={{ fontSize: 11.5, marginLeft: "auto" }}>live</span></div>
+    <div className="kpiGrid">
+      {tile("📅", "Scheduled today", d.scheduled_today, G)}
+      {tile("🔧", "In progress", d.in_progress, P)}
+      {tile("👀", "Awaiting review", d.awaiting_review, d.awaiting_review > 0 ? A : N)}
+      {tile("⏰", "Overdue", d.overdue, d.overdue > 0 ? R : N)}
+      {tile("🛠️", "Open actions", d.open_actions, d.open_actions > 0 ? A : N)}
+      {tile("📄", "Reports pending", d.reports_pending, d.reports_pending > 0 ? A : N)}
+      {tile("✅", "Closed · 30 days", d.closed_30d, P)}
+      {tile("🎯", "Pass rate · 30 days", d.pass_rate_30d == null ? "—" : d.pass_rate_30d + "%", G)}
+    </div>
   </div>;
 }
 function inspChip(i: any): [string, string, string] {
