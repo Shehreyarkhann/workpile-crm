@@ -9,6 +9,10 @@ ensureAllNumbers();
 import("./work-orders.ts").then(m => m.ensureAllDefaultWorkOrders()).catch(() => {});
 import("./worker.ts").then(w => w.startWorker()).catch(() => {});
 import("./mail-sync.ts").then(ms => { const tick = () => ms.processMailSync((ws: string, actor: string, emails: any[]) => ingestBatch(ws, actor, emails)).catch(() => {}); setInterval(tick, 60000); setTimeout(tick, 15000); }).catch(() => {});
+// v112: an async route rejection must log loudly, never take the process
+// down silently (Express 4 does not forward async throws to the error
+// handler; per-handler try/catch remains the primary defense).
+process.on("unhandledRejection", (e) => console.error("[workpile] unhandledRejection:", e));
 const PORT = Number(process.env.PORT || 4173);
 const dist = path.join(process.cwd(), "dist");
 if (fs.existsSync(dist)) {

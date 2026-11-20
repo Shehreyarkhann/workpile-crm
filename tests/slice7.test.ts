@@ -8,6 +8,7 @@ import http from "node:http";
 import { createHmac } from "node:crypto";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "lf-test7-"));
+process.env.ALLOW_PRIVATE_WEBHOOK_URLS = "1"; // this suite delivers to a local receiver on purpose (v112 guard escape hatch)
 process.env.LEADFLOW_DB = path.join(tmp, "test.db");
 process.chdir(tmp);
 

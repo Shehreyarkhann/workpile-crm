@@ -126,8 +126,19 @@ export function buildReportContext(workspaceId: string, inspectionId: string) {
   };
 }
 
+// v112 (M4): mergeEsc substitutes the same fields as merge() but HTML-escapes
+// every substituted VALUE. The letter/static block bodies render template
+// text as authored rich text, so lead-originated values (contact names, site
+// addresses arriving via inbound email) must never land in the page raw.
+function mergeMap(ctx: any): Record<string, string> {
+  return { client: ctx.client, site_address: ctx.site, project_no: ctx.job?.project_no || "", work_order_no: ctx.wo ? ctx.inspNo.split("-I")[0] : "", inspection_no: ctx.inspNo, inspector: ctx.inspector, license_no: ctx.license, date: dOnly(ctx.insp.submitted_at || ctx.insp.created_at), result: ctx.result, company: ctx.company, summary: ctx.insp.summary || "" };
+}
+function mergeEsc(text: string, ctx: any) {
+  const map = mergeMap(ctx);
+  return String(text || "").replace(/\{\{(\w+)\}\}/g, (_, k) => esc(map[k] ?? ""));
+}
 function merge(text: string, ctx: any) {
-  const map: Record<string, string> = { client: ctx.client, site_address: ctx.site, project_no: ctx.job?.project_no || "", work_order_no: ctx.wo ? ctx.inspNo.split("-I")[0] : "", inspection_no: ctx.inspNo, inspector: ctx.inspector, license_no: ctx.license, date: dOnly(ctx.insp.submitted_at || ctx.insp.created_at), result: ctx.result, company: ctx.company, summary: ctx.insp.summary || "" };
+  const map = mergeMap(ctx);
   return String(text || "").replace(/\{\{(\w+)\}\}/g, (_, k) => map[k] ?? "");
 }
 const RESULT_LABEL: Record<string, string> = { passed: "PASSED", passed_with_conditions: "PASSED WITH CONDITIONS", failed: "FAILED" };
@@ -158,7 +169,7 @@ export function renderReportHtml(ctx: any, template: any, overrides: any = {}) {
       <tr><td>Project</td><td>${esc(ctx.job?.project_no || "")} — ${esc(ctx.job?.title || "")}</td></tr></table>
       ${coverPhoto ? `<img class="hero" src="${coverPhoto.data_uri}" />` : ""}
     </div>`,
-    letter: (s) => `<h2>Transmittal</h2><div class="rich">${merge(s.text || "", ctx)}</div>`,
+    letter: (s) => `<h2>Transmittal</h2><div class="rich">${mergeEsc(s.text || "", ctx)}</div>`,
     toc: () => { const names = (template.blocks || []).filter((b: any) => b.type !== "cover" && b.type !== "toc" && b.type !== "pagebreak").map((b: any) => b.type === "static" ? (b.settings?.title || "Section") : ({ summary: "Executive summary", details: "Inspection details", scope: "Scope of work", work_done: "Work done", results: "Results", findings: "Findings & recommendations", photos: "Photo appendix", notes: "Notes", limitations: "Limitations & exclusions", signoff: "Sign-offs", appendix_docs: "Appendix — documents", letter: "Transmittal" } as any)[b.type] || b.type); return `<h2>Contents</h2><ol class="toc">${names.map((n: string) => `<li>${esc(n)}</li>`).join("")}</ol>`; },
     summary: (s) => `<h2>Executive summary</h2>
       ${ctx.result ? `<p><b>Result:</b> ${chip(RESULT_LABEL[ctx.result] || ctx.result, rc)}</p>` : ""}
@@ -205,7 +216,7 @@ export function renderReportHtml(ctx: any, template: any, overrides: any = {}) {
       ${ctx.reviewer ? `<tr><td>Reviewer</td><td>${esc(ctx.reviewer)}<br/><span class="sig">Signature: ______________________________ &nbsp; Date: ${dOnly(ctx.insp.decided_at)}</span></td></tr>` : ""}
       <tr><td>Client acceptance</td><td><span class="sig">Signature: ______________________________ &nbsp; Date: ____________</span></td></tr></table>`,
     appendix_docs: () => ctx.docs.length ? `<h2>Appendix — documents</h2><ul>${ctx.docs.map((d: any) => `<li>${esc(d.name)} <span class="muted">(${esc(d.category || "document")})</span></li>`).join("")}</ul>` : "",
-    static: (s) => `${s.title ? `<h2>${esc(merge(s.title, ctx))}</h2>` : ""}<div class="rich">${merge(s.text || "", ctx)}</div>`,
+    static: (s) => `${s.title ? `<h2>${esc(merge(s.title, ctx))}</h2>` : ""}<div class="rich">${mergeEsc(s.text || "", ctx)}</div>`,
     pagebreak: () => `<div class="pb"></div>`,
   };
   const body = (template.blocks || []).map((b: any) => (B[b.type] ? B[b.type](b.settings || {}) : "")).join("\n");

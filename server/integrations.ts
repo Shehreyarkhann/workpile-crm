@@ -3,6 +3,7 @@
 // HMAC-signed (X-Workpile-Signature) and only marked delivered on a real 2xx.
 import { db, uid, now } from "./db.ts";
 import { createHmac } from "node:crypto";
+import { assertPublicUrl } from "./netguard.ts";
 
 export const EVENTS = ["lead.created", "lead.state_changed", "approval.decided", "proposal.signed", "deposit.paid", "outcome.final"];
 export function signPayload(secret: string, body: string) { return createHmac("sha256", secret || "no-secret").update(body).digest("hex"); }
@@ -33,6 +34,10 @@ export async function processEventDeliveries(fetchFn: FetchFn = fetch as any): P
   let delivered = 0, failed = 0;
   for (const d of rows) {
     try {
+      // v112 (M2): re-validate at delivery time too (defense in depth — an
+      // endpoint created before the guard, or a DNS change, must not turn
+      // the relay into an internal-network poster).
+      if (process.env.ALLOW_PRIVATE_WEBHOOK_URLS !== "1") { const chk = await assertPublicUrl(d.url); if (!chk.ok) throw new Error("webhook url blocked: " + (chk as any).error); }
       const r = await fetchFn(d.url, { method: "POST", headers: { "Content-Type": "application/json", "X-Workpile-Signature": signPayload(d.secret || "", d.payload), "X-Workpile-Timestamp": String(Math.floor(Date.now() / 1000)), "X-Workpile-Signature-V2": (() => { const ts = String(Math.floor(Date.now() / 1000)); return `t=${ts},v1=${signPayload(d.secret || "", ts + "." + d.payload)}`; })(), "X-Workpile-Delivery": d.id, "X-Workpile-Event": d.event }, body: d.payload });
       if (r.status >= 200 && r.status < 300) { db.prepare("UPDATE webhook_deliveries SET last_status='delivered', delivered_at=?, attempts=attempts+1 WHERE id=?").run(now(), d.id); delivered++; }
       else throw new Error("HTTP " + r.status);

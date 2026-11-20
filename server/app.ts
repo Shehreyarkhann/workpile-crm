@@ -23,6 +23,7 @@ import { proposalDocx, invoiceDocx } from "./docx.ts";
 import { getTemplate, getInvoiceTemplate, proposalDocument, sanitizeHtml, resolveDocTemplateId } from "./proptemplate.ts";
 import { ensureSignToken, getByToken, sign } from "./sign.ts";
 import { createDeposit, createInvoicePayment, markPaid, verifyStripeSignature, handleStripeEvent, stripeMode, depositsAvailable } from "./payments.ts";
+import { connectAccountFor } from "./stripe-connect.ts";
 import { getFlags, setFlag, workspaceHealth, runSynthetics } from "./admin.ts";
 import { billingStatus, createCheckout, handleBillingEvent, PLANS, PLAN_ALIASES, planOf, ensureSubscription, seatCheck } from "./billing.ts";
 import { cleanupPreview, cleanupApply, insights, insightsV2, reactivateStale, scoreLead, nextBestAction, runAutomationsFor, logAgentRun, agentLevel, AGENT_LEVELS } from "./ai.ts";
@@ -42,6 +43,16 @@ import { registerCrm, registerDocTemplates, registerHome, convertLeadToCustomer,
 import { providerStatus, authUrl, listConnections } from "./oauth.ts";
 
 export const app = express();
+app.disable("x-powered-by");
+// v112 (M6): baseline security headers on every response, public pages included.
+app.use((_req: any, res: any, next: any) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
+  next();
+});
 app.use((req: any, _res, next) => { // capture raw body for Stripe signature verification
   if (req.path === "/webhooks/stripe") { let raw = ""; req.on("data", (c: any) => raw += c); req.on("end", () => { req.rawBody = raw; try { req.body = JSON.parse(raw || "{}"); } catch { req.body = {}; } next(); }); }
   else next();
@@ -429,6 +440,12 @@ import { SOCIAL_PROVIDERS, socialConfigured, beginSocial, consumeSocialState, ex
 // TLS proxy, so req.protocol can read http and providers would reject the
 // redirect URI). Falls back to the request for local dev.
 export const publicBase = (req: any) => (process.env.BASE_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
+// v112: HTML escaping for the server-rendered public pages (sign / portal).
+const escH = (v: any) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] as string));
+// v112 (M5): credential-bearing email links (reset / verify) are NEVER built
+// from the request Host header — a spoofed Host would put a genuine token on
+// an attacker's domain. Pinned to BASE_URL or the canonical origin.
+const authLinkBase = () => (process.env.BASE_URL || "https://workpile.claimpaid.io").replace(/\/$/, "");
 const sessionCookie = (req: any, sid: string, maxAge = 604800) => `lf_session=${sid}; HttpOnly; Path=/; Max-Age=${maxAge}; SameSite=Lax${publicBase(req).startsWith("https") ? "; Secure" : ""}`;
 const scopeOwn = (user: any) => permsOf(user).leads_scope === "own";
 const mine = (user: any, l: any) => l.owner_id === user.id || l.pm_id === user.id;
@@ -630,7 +647,8 @@ app.post("/api/leads/:id/touch", requireAuth, (req: any, res) => {
   res.json({ touched: touchLead(req.user.workspace_id, l.id, kind, req.user.id) });
 });
 app.post("/api/leads/:id/contact", requireAuth, (req: any, res) => {
-  const l = db.prepare("SELECT * FROM leads WHERE id=?").get(req.params.id) as any;
+  const l = db.prepare("SELECT * FROM leads WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!l) return res.status(404).json({ error: { code: "not_found" } });
   if (!l.first_response_at) db.prepare("UPDATE leads SET first_response_at=? WHERE id=?").run(now(), l.id);
   touchLead(req.user.workspace_id, l.id, "contact", req.user.id);
   db.prepare("INSERT INTO activities (id,lead_id,workspace_id,user_id,type,body,outcome,created_at) VALUES (?,?,?,?,?,?,?,?)")
@@ -639,7 +657,8 @@ app.post("/api/leads/:id/contact", requireAuth, (req: any, res) => {
   res.json({ ok: true });
 });
 app.post("/api/leads/:id/packet-check", requireAuth, (req: any, res) => {
-  const l = db.prepare("SELECT * FROM leads WHERE id=?").get(req.params.id) as any;
+  const l = db.prepare("SELECT * FROM leads WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!l) return res.status(404).json({ error: { code: "not_found" } });
   const prop = db.prepare("SELECT * FROM proposals WHERE lead_id=? ORDER BY version DESC").get(l.id) as any;
   const sv = db.prepare("SELECT COUNT(*) c FROM site_visits WHERE lead_id=? AND status='completed'").get(l.id) as any; res.json(packetCheck({ ...leadView(l), pm_id: l.pm_id, site_visit_done: sv.c > 0 }, prop));
 });
@@ -1292,6 +1311,9 @@ app.post("/api/users/me/password", requireAuth, (req: any, res) => {
   if (!verifyPassword(cur, req.user.password_hash)) return res.status(403).json({ error: { code: "wrong_password", message: "Current password doesn't match." } });
   if (next.length < 8) return res.status(422).json({ error: { code: "weak_password", message: "New password needs at least 8 characters." } });
   db.prepare("UPDATE users SET password_hash=? WHERE id=?").run(hashPassword(next), req.user.id);
+  // v112 (L5): a password change revokes every OTHER session (a stolen
+  // session must not survive it). Password reset already deletes all.
+  if (req.session?.id) db.prepare("DELETE FROM sessions WHERE user_id=? AND id<>?").run(req.user.id, req.session.id);
   audit(req.user.workspace_id, req.user.id, "profile.password", "user", req.user.id, {});
   res.json({ ok: true });
 });
@@ -2052,8 +2074,12 @@ app.get("/api/outbox", requireAuth, (req: any, res) => res.json(db.prepare("SELE
 
 // ---------- slice 2: webhook endpoints + delivery worker controls ----------
 app.get("/api/webhooks", requireAuth, (req: any, res) => res.json(db.prepare("SELECT id,url,events,active,created_at FROM webhook_endpoints WHERE workspace_id=?").all(req.user.workspace_id)));
-app.post("/api/webhooks", requireAuth, needPerm("can_settings"), (req: any, res) => {
+app.post("/api/webhooks", requireAuth, needPerm("can_settings"), async (req: any, res) => {
   if (!["OWNER", "ADMIN", "OPS_ADMIN"].includes(req.user.role)) return res.status(403).json({ error: { code: "forbidden" } });
+  // v112 (M2): webhook destinations get the same SSRF guard as every other
+  // workspace-configured URL. ALLOW_PRIVATE_WEBHOOK_URLS=1 is a dev/test-only
+  // escape hatch (local receivers); never set it in production.
+  if (process.env.ALLOW_PRIVATE_WEBHOOK_URLS !== "1") { const { assertPublicUrl } = await import("./netguard.ts"); const chk = await assertPublicUrl(String(req.body.url || "")); if (!chk.ok) return res.status(400).json({ error: { code: "url_not_public", message: (chk as any).error } }); }
   const id = uid("whk");
   db.prepare("INSERT INTO webhook_endpoints (id,workspace_id,url,secret,events,created_at) VALUES (?,?,?,?,?,?)").run(id, req.user.workspace_id, req.body.url, req.body.secret || randomBytes(18).toString("hex"), req.body.events || "outcome.final", now());
   res.status(201).json({ id, url: req.body.url });
@@ -2321,10 +2347,10 @@ app.get("/sign/:token", (req, res) => {
   const moneyS = (n: any) => "$" + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const rawItems = JSON.parse(p.line_items || "[]");
   const subtotalS = rawItems.reduce((s: number, i: any) => s + Number(i.unit_price || 0) * (i.qty || 1), 0);
-  const items = rawItems.map((i: any) => `<tr><td>${i.name}</td><td class="c">${i.qty || 1}</td><td class="r">${moneyS(i.unit_price)}</td><td class="r">${moneyS(Number(i.unit_price || 0) * (i.qty || 1))}</td></tr>`).join("");
+  const items = rawItems.map((i: any) => `<tr><td>${escH(i.name)}</td><td class="c">${i.qty || 1}</td><td class="r">${moneyS(i.unit_price)}</td><td class="r">${moneyS(Number(i.unit_price || 0) * (i.qty || 1))}</td></tr>`).join("");
   const itemsTable = `<table class="inv"><thead><tr><th>Description</th><th class="c">Qty</th><th class="r">Unit Price</th><th class="r">Amount</th></tr></thead><tbody>${items}<tr class="sub"><td colspan="2"></td><td class="r">Subtotal</td><td class="r">${moneyS(subtotalS)}</td></tr><tr class="tot"><td colspan="3" class="r">TOTAL INVESTMENT</td><td class="r">${moneyS(p.total)}</td></tr></tbody></table>`;
   let opts: any[] = []; try { opts = JSON.parse(p.options || "[]"); } catch { opts = []; }
-  const optionsHtml = opts.length ? `<h3>Choose your option</h3>` + opts.map((o: any, ix: number) => `<label class="optcard"><input type="radio" name="option" value="${String(o.name).replaceAll('"', "")}" ${ix === 0 ? "checked" : ""} style="width:auto"> <strong>${o.name} — ${moneyS(o.total)}</strong><table>${(o.line_items || []).map((i: any) => `<tr><td>${i.name}</td><td class="c">${i.qty || 1}</td><td class="r">${moneyS(i.unit_price)}</td></tr>`).join("")}</table></label>`).join("") : "";
+  const optionsHtml = opts.length ? `<h3>Choose your option</h3>` + opts.map((o: any, ix: number) => `<label class="optcard"><input type="radio" name="option" value="${escH(o.name)}" ${ix === 0 ? "checked" : ""} style="width:auto"> <strong>${escH(o.name)} — ${moneyS(o.total)}</strong><table>${(o.line_items || []).map((i: any) => `<tr><td>${escH(i.name)}</td><td class="c">${i.qty || 1}</td><td class="r">${moneyS(i.unit_price)}</td></tr>`).join("")}</table></label>`).join("") : "";
   const expired = p.expires_at && new Date(p.expires_at) < new Date() && !s.signed_at;
   const superseded = !s.signed_at && p.status === "withdrawn";
   if ((expired || superseded) && !s.signed_at) return res.type("html").send(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><title>Proposal — ${"update needed"}</title><style>body{font-family:sans-serif;max-width:560px;margin:40px auto;padding:0 16px;line-height:1.6}</style><h1>📄 This proposal ${expired ? "has expired" : "has been replaced"}</h1><p>${expired ? "The signing window for this version has closed." : "A newer version of this proposal has been issued, so this link no longer accepts a signature."} Please contact the business and they'll send you the current proposal — same scope, current version.</p>`);
@@ -2332,9 +2358,9 @@ app.get("/sign/:token", (req, res) => {
   const tplHtml = doc ? `${doc.template.logo ? `<img src="${doc.template.logo}" style="max-height:72px;max-width:260px">` : ""}` : "";
   const introHtml = doc ? doc.template.intro_html : "";
   const termsHtml = doc ? `<h3>Terms & Conditions</h3>${doc.template.terms_html}` : "";
-  const sectionsHtml = doc && (doc as any).sections?.length ? (doc as any).sections.map((sec: any) => `<h3>Section ${sec.number} — ${sec.title}</h3>${sec.body_html || ""}`).join("") : "";
-  const footHtml = doc ? `<p class="docfoot">${doc.template.footer}<br>${doc.template.company} · Proposal ${doc.ref}</p>` : "";
-  res.type("html").send(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><title>Proposal — ${ws.name}</title>
+  const sectionsHtml = doc && (doc as any).sections?.length ? (doc as any).sections.map((sec: any) => `<h3>Section ${escH(sec.number)} — ${escH(sec.title)}</h3>${sec.body_html || ""}`).join("") : "";
+  const footHtml = doc ? `<p class="docfoot">${escH(doc.template.footer)}<br>${escH(doc.template.company)} · Proposal ${escH(doc.ref)}</p>` : "";
+  res.type("html").send(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><title>Proposal — ${escH(ws.name)}</title>
   <style>body{font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;max-width:680px;margin:24px auto;padding:0 16px 40px;color:#101613;line-height:1.5}table{width:100%;border-collapse:collapse}td{padding:6px}
 .lh{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;border-bottom:3px solid #0E5C3A;padding-bottom:10px;margin-bottom:18px}.lh .co{font-size:24px;font-weight:800;color:#0E5C3A;letter-spacing:-.02em}.lh .tag{font-size:13px;color:#5B6B62}.lh .ct{text-align:right;font-size:12.5px;color:#5B6B62}
 h1.pt{font-size:30px;margin:14px 0 2px;letter-spacing:-.01em}h2.sv{font-size:19px;color:#0E5C3A;margin:0 0 6px}h3{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#0E5C3A;border-bottom:2px solid #0E5C3A;padding-bottom:5px;margin:24px 0 10px}
@@ -2379,6 +2405,9 @@ app.post("/sign/:token", express.urlencoded({ extended: false }), (req: any, res
   res.type("html").send(`<!doctype html><h1>Signed ✅</h1><p>Evidence certificate: ${r.certificate.signature_id} · Document hash ${r.certificate.doc_hash.slice(0, 16)}… · ${r.certificate.signed_at}</p><p>Thank you — we've created your job and will be in touch to schedule.</p>`);
 });
 app.get("/api/proposals/:id/certificate", requireAuth, (req: any, res) => {
+  // v112 (L3): the certificate carries signer name + IP — workspace-scope it.
+  const p = db.prepare("SELECT id FROM proposals WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
+  if (!p) return res.status(404).json({ error: { code: "not_found" } });
   const s = db.prepare("SELECT * FROM signatures WHERE proposal_id=? AND signed_at IS NOT NULL").get(req.params.id) as any;
   if (!s) return res.status(404).json({ error: { code: "not_signed" } });
   res.json({ signature_id: s.id, signer: s.signer_name, signed_at: s.signed_at, doc_hash: s.doc_hash, ip: s.ip });
@@ -2580,15 +2609,20 @@ app.post("/api/proposals/:id/deposit", requireAuth, async (req: any, res) => {
   try { const base = `${req.protocol}://${req.get("host")}`; const pay = await createDeposit(req.params.id, base); if (!pay) return res.status(404).json({ error: { code: "not_found" } }); res.status(201).json({ payment: pay, mode: stripeMode() }); }
   catch (e: any) { res.status(502).json({ error: { code: "stripe_error", message: e.message } }); }
 });
+// v112 (M3): the test-pay surface exists only while the deployment has no
+// live payment path. Once a live Stripe key exists, or the payment's
+// workspace takes live Connect charges, a stale test link must not be able
+// to forge a paid state.
+const testPayAllowed = (pay: any) => stripeMode() === "test" && !pay.stripe_account_id && !connectAccountFor(pay.workspace_id);
 app.get("/pay/test/:paymentId", (req, res) => {
   const pay = db.prepare("SELECT * FROM payments WHERE id=?").get(req.params.paymentId) as any;
-  if (!pay) return res.status(404).send("Not found");
+  if (!pay || !testPayAllowed(pay)) return res.status(404).send("Not found");
   res.type("html").send(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:sans-serif;max-width:480px;margin:24px auto;padding:0 16px}button{background:#14532d;color:#fff;border:0;padding:12px 20px;border-radius:8px;width:100%}</style>
   <h1>Test Mode — ${pay.kind === "invoice" ? "Invoice payment" : "Deposit"}</h1><p>Amount: <strong>$${Number(pay.amount).toFixed(2)}</strong> · Status: ${pay.status}</p>
   ${pay.status === "paid" ? "<p>✅ Paid (test mode)</p>" : `<form method="POST" action="/pay/test/${pay.id}"><button>Pay ${pay.kind === "invoice" ? "Invoice" : "Deposit"} (test)</button></form>`}
   <p><small>No real charge. Connect STRIPE_SECRET_KEY and this becomes a live Stripe Checkout link automatically.</small></p>`);
 });
-app.post("/pay/test/:paymentId", express.urlencoded({ extended: false }), (req, res) => { markPaid(req.params.paymentId); res.redirect(`/pay/test/${req.params.paymentId}`); });
+app.post("/pay/test/:paymentId", express.urlencoded({ extended: false }), (req, res) => { const pay = db.prepare("SELECT * FROM payments WHERE id=?").get(req.params.paymentId) as any; if (!pay || !testPayAllowed(pay)) return res.status(404).send("Not found"); markPaid(req.params.paymentId); res.redirect(`/pay/test/${req.params.paymentId}`); });
 app.post("/webhooks/stripe", (req: any, res) => {
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
   if (!secret) return res.status(503).json({ error: { code: "webhook_not_configured", message: "Stripe webhook secret is not configured — events are refused rather than trusted unsigned." } });
@@ -2611,7 +2645,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-export const APP_VERSION = "v111";
+export const APP_VERSION = "v112";
 app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: APP_VERSION, jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {
@@ -2872,11 +2906,11 @@ app.get("/portal/:token", (req, res) => {
   const proj = db.prepare("SELECT * FROM projects WHERE lead_id=?").get(lead.id) as any;
   const visits = db.prepare("SELECT * FROM site_visits WHERE lead_id=? ORDER BY scheduled_at").all(lead.id) as any[];
   res.type("html").send(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:sans-serif;max-width:640px;margin:24px auto;padding:0 16px}</style>
-  <h1>${ws.name} — Your Project Portal</h1>
-  <p>Service: ${lead.service_requested} · Status: ${lead.state}</p>
-  <p>Proposal: $${Number(p.total).toFixed(2)} · ${s.signed_at ? "✅ Signed" : "Awaiting signature"} · Deposit: ${p.payment_status || "—"}</p>
-  ${proj ? `<p>Project reference: ${proj.external_project_id || proj.id} · Project status: ${proj.status}</p>` : ""}
-  <h3>Site visits</h3>${visits.length ? visits.map((v: any) => `<p>${new Date(v.scheduled_at).toLocaleString()} — ${v.status}</p>`).join("") : "<p>None scheduled yet.</p>"}
+  <h1>${escH(ws.name)} — Your Project Portal</h1>
+  <p>Service: ${escH(lead.service_requested)} · Status: ${escH(lead.state)}</p>
+  <p>Proposal: $${Number(p.total).toFixed(2)} · ${s.signed_at ? "✅ Signed" : "Awaiting signature"} · Deposit: ${escH(p.payment_status || "—")}</p>
+  ${proj ? `<p>Project reference: ${escH(proj.external_project_id || proj.id)} · Project status: ${escH(proj.status)}</p>` : ""}
+  <h3>Site visits</h3>${visits.length ? visits.map((v: any) => `<p>${new Date(v.scheduled_at).toLocaleString()} — ${escH(v.status)}</p>`).join("") : "<p>None scheduled yet.</p>"}
   <h3>Send us a document or photo</h3>
   <form method="POST" action="/portal/${req.params.token}/upload"><input name="filename" placeholder="File name (e.g. insurance-cert.pdf)" required style="width:100%;padding:10px;margin:6px 0"><input name="note" placeholder="Note (optional)" style="width:100%;padding:10px;margin:6px 0"><button style="background:#14532d;color:#fff;border:0;padding:12px 20px;border-radius:8px;width:100%">Submit</button></form>
   <p><small>File transfer completes in your confirmation email thread — this form records the document against your job so nothing gets lost.</small></p>`);
@@ -3032,7 +3066,7 @@ app.post("/api/auth/register", (req: any, res) => {
   const sid = uid("ses"); db.prepare("INSERT INTO sessions (id,user_id,created_at,expires_at) VALUES (?,?,?,?)").run(sid, userId, now(), new Date(Date.now() + 7 * 86400000).toISOString());
   res.setHeader("Set-Cookie", sessionCookie(req, sid));
   const vraw = issueAuthToken(userId, "verify", 24);
-  queueAndDeliver(wsId, { channel: "email", to: email, subject: "Verify your Workpile email", body: `Welcome to Workpile, ${name}!\n\nConfirm your email: ${req.protocol}://${req.get("host")}/app?verify=${vraw}` }).catch(() => {});
+  queueAndDeliver(wsId, { channel: "email", to: email, subject: "Verify your Workpile email", body: `Welcome to Workpile, ${name}!\n\nConfirm your email: ${authLinkBase()}/app?verify=${vraw}` }).catch(() => {});
   res.status(201).json({ user: { id: userId, name, email, role: "OWNER", workspace_id: wsId }, workspaces: membershipsOf(userId) });
 });
 // ---------- social sign-in (v55): Continue with Google / Microsoft ----------
@@ -3222,7 +3256,7 @@ app.post("/api/auth/forgot", async (req: any, res) => {
   const u = db.prepare("SELECT * FROM users WHERE email=? AND active=1").get(String(req.body.email || "").toLowerCase()) as any;
   if (u) {
     const raw = issueAuthToken(u.id, "reset", 1);
-    const link = `${req.protocol}://${req.get("host")}/app?reset=${raw}`;
+    const link = `${authLinkBase()}/app?reset=${raw}`;
     await queueAndDeliver(u.workspace_id, { channel: "email", to: u.email, subject: "Reset your Workpile password", body: `Hi ${u.name},\n\nReset your password within the next hour: ${link}\n\nIf you didn't ask for this, ignore this email.` });
     if (!emailConfigured()) return res.json({ ok: true, test_mode: true, reset_url: link, message: "Email is in test mode on this deployment, so the reset link is shown here instead of emailed." });
   }
@@ -3246,7 +3280,7 @@ app.post("/api/auth/verify", (req: any, res) => {
 });
 app.post("/api/auth/resend-verify", requireAuth, async (req: any, res) => {
   const raw = issueAuthToken(req.user.id, "verify", 24);
-  const link = `${req.protocol}://${req.get("host")}/app?verify=${raw}`;
+  const link = `${authLinkBase()}/app?verify=${raw}`;
   const r: any = await queueAndDeliver(req.user.workspace_id, { channel: "email", to: req.user.email, subject: "Verify your Workpile email", body: `Hi ${req.user.name},\n\nConfirm your email: ${link}` });
   res.json({ ok: true, delivery: r.status, ...(!emailConfigured() ? { verify_url: link } : {}) });
 });
@@ -3741,3 +3775,8 @@ app.get("/api/health", (_req, res) => res.json({ ok: true, service: "leadflow-os
 registerCrm(app, requireAuth, needPerm);
 registerDocTemplates(app, requireAuth, needPerm);
 registerHome(app, requireAuth);
+
+// v112: global error handler — a synchronously thrown route error returns a
+// clean 500 JSON (and is logged) instead of Express's default HTML page.
+// Registered last so it sits behind every route above.
+app.use((err: any, _req: any, res: any, _next: any) => { console.error("[workpile] route error:", err?.stack || err); if (!res.headersSent) res.status(500).json({ error: { code: "internal", message: "Something went wrong on our side — the error has been logged." } }); });
