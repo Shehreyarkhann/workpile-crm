@@ -1858,9 +1858,9 @@ function IntegrationConfig({ id, s, setS, keys, hooks, oauth, loadAll, onJump, m
 
 const PLANS_FALLBACK: any[] = [
   { key: "starter", name: "Starter", users: 2, active_requests: 150, list_price: 49, annual_price: 39, save_pct: 20, blurb: "For the small office getting its pile under control.", highlights: ["Price book, proposals, e-sign + deposits", "Email follow-ups + cadences", "Work Queue + AI agent (rules mode)", "Field crew always free"] },
-  { key: "pro", name: "Pro", users: 5, active_requests: 750, list_price: 149, annual_price: 119, save_pct: 20, blurb: "The full execution system for a working office.", highlights: ["Everything in Starter", "SMS follow-ups", "API, webhooks + QuickBooks", "Your own sending domain", "Approval policies in full"] },
-  { key: "business", name: "Business", users: 15, active_requests: 3000, list_price: 349, annual_price: 299, save_pct: 14, blurb: "For multi-crew operations that run on the numbers.", highlights: ["Everything in Pro", "Audit-log export", "Advanced permissions", "Priority support + onboarding call"] },
-  { key: "enterprise", name: "Enterprise", users: 0, active_requests: 1000000, list_price: 0, annual_price: 0, save_pct: 0, custom: true, blurb: "Priced to your operation.", highlights: ["SSO/SAML + SCIM", "DPA + SLA", "Multiple locations", "Custom integrations"] },
+  { key: "pro", name: "Pro", users: 5, active_requests: 750, list_price: 149, annual_price: 119, save_pct: 20, blurb: "The full execution system for a working office.", highlights: ["Everything in Starter", "SMS follow-ups", "API, webhooks + QuickBooks", "Gmail + Outlook inbox sync", "Approval policies in full"] },
+  { key: "business", name: "Business", users: 15, active_requests: 3000, list_price: 349, annual_price: 299, save_pct: 14, blurb: "For multi-crew operations that run on the numbers.", highlights: ["Everything in Pro", "Full audit log + activity history", "Advanced permissions", "Scheduled reports + full data export"] },
+  { key: "enterprise", name: "Enterprise", users: 0, active_requests: 1000000, list_price: 0, annual_price: 0, save_pct: 0, custom: true, blurb: "Priced to your operation.", highlights: ["Everything in Business", "Unlimited active requests", "Custom agreement", "Multi-workspace operations"] },
 ];
 function PlanCards({ onAction, currentKey }: any) {
   const [period, setPeriod] = useState<"monthly" | "annual">("annual");
@@ -2368,7 +2368,7 @@ function LpPricing({ onRegister }: any) {
   const plans = [
     { name: "Starter", tag: "For a tight crew getting the backlog under control", a: 39, m: 49, feats: ["150 active requests", "2 office users included — crew always free", "Work Queue, pipeline & proposals with e-sign", "Jobs, scheduling & timesheets", "Email campaigns & the review playbook", "CSV import, form embed, booking page"] },
     { name: "Pro", tag: "The full revenue engine for a growing shop", a: 119, m: 149, hot: true, feats: ["750 active requests", "5 office users included", "Everything in Starter, plus:", "Outreach sequences, A/B testing & labels", "Playbooks: reviews, referrals, reactivation", "SMS + missed-call text-back", "Gmail / Outlook sync & QuickBooks push", "AI agent drafts & the setup wizard"] },
-    { name: "Business", tag: "Multiple crews, heavier volume, full controls", a: 299, m: 349, feats: ["3,000 active requests", "15 office users included", "Everything in Pro, plus:", "Full audit log & audit export", "Advanced access templates per role", "Deliverability suite & sender rotation", "Priority onboarding with our team"] },
+    { name: "Business", tag: "Multiple crews, heavier volume, full controls", a: 299, m: 349, feats: ["3,000 active requests", "15 office users included", "Everything in Pro, plus:", "Full audit log & activity history", "Advanced access templates per role", "Scheduled reports & full data export", "Custom roles & permissions"] },
   ];
   return (<section className="lp2Sec" id="pricing">
     <p className="lpKick" style={{ textAlign: "center" }}>Pricing</p>
@@ -2459,7 +2459,7 @@ function Landing({ onAuth }: any) {
     ["🏢", "Multi-Business Ready", "Multiple workspaces under one login, per-business price books, teams, and roles. Owners see everything; staff see their work."],
   ];
   return (<div className="lp">
-    <header className="lpNav"><Logo /><nav className="lpLinks"><a href="#product">Product</a><a href="#integrations">Integrations</a><a href="#stories">Stories</a><a href="#compare">Compare</a><a href="#pricing">Pricing</a><a href="#faq">FAQ</a></nav><div className="lpNavCtas"><button className="btn ghost" onClick={() => setMode("login")}>Sign in</button><button className="btn" onClick={() => setMode("register")}>Start free</button></div></header>
+    <header className="lpNav"><Logo /><nav className="lpLinks"><a href="#product">Product</a><a href="#integrations">Integrations</a><a href="#stories">Why Workpile</a><a href="#compare">Compare</a><a href="#pricing">Pricing</a><a href="#faq">FAQ</a></nav><div className="lpNavCtas"><button className="btn ghost" onClick={() => setMode("login")}>Sign in</button><button className="btn" onClick={() => setMode("register")}>Start free</button></div></header>
 
     <section className="lp3Hero">
       <p className="lpEyebrow">The Revenue Execution OS for field-service teams</p>
@@ -2475,11 +2475,11 @@ function Landing({ onAuth }: any) {
 
     <section className="lp3Stats">
       <div className="lp3StatsIn">
-        <div><b>450+</b><span>companies run on Workpile</span></div>
-        <div><b>3,000+</b><span>solo business owners</span></div>
-        <div><b>1.4M+</b><span>follow-ups sent & tracked</span></div>
-        <div><b>27 hrs</b><span>saved per office, every month</span></div>
-        <div><b>4.9/5</b><span>owner rating</span></div>
+        <div><b>10</b><span>job stages, tracked end to end</span></div>
+        <div><b>13</b><span>inspection standards built in</span></div>
+        <div><b>5</b><span>money views — never blended</span></div>
+        <div><b>L→Q→P</b><span>chain numbering on every record</span></div>
+        <div><b>30 days</b><span>free Pro trial, no card required</span></div>
       </div>
     </section>
 
@@ -2525,12 +2525,12 @@ function Landing({ onAuth }: any) {
 
     <section className="lp3Stories" id="stories">
       <div className="lp2Sec" style={{ paddingTop: 8 }}>
-        <p className="lpKick" style={{ textAlign: "center" }}>Owner stories</p>
-        <h2 className="lp2H2">Shops like yours, queues at zero</h2>
+        <p className="lpKick" style={{ textAlign: "center" }}>Why it exists</p>
+        <h2 className="lp2H2">Built for the way shops actually run</h2>
         <div className="lp3StoryGrid">
-          <div className="lp3Story"><div className="lp3Stars">★★★★★</div><p>“We had 200+ leads sitting in a shared inbox nobody owned. Workpile's queue had us at zero in eleven days — and the agent writes first drafts better than our old office manager did.”</p><b>Owner</b><span>Environmental services · Long Island, NY</span></div>
-          <div className="lp3Story"><div className="lp3Stars">★★★★★</div><p>“Proposals used to take my evenings. Now they go out the same day, priced off our book, and I approve them from the truck. Deposits land before the crew even rolls.”</p><b>Owner-operator</b><span>HVAC & plumbing · 14 technicians</span></div>
-          <div className="lp3Story"><div className="lp3Stars">★★★★★</div><p>“The review playbook alone paid for the year. Jobs finish, the ask goes out by itself, and our Google rating climbed while I was busy doing the actual work.”</p><b>Solo owner</b><span>Home inspections · One-man operation</span></div>
+          <div className="lp3Story"><b style={{ display: "block", fontSize: 15, marginBottom: 6 }}>The shared-inbox pile</b><p>Leads land in an inbox nobody owns and age quietly. Workpile gives every request an owner, a next step, and a due time — the Work Queue works it to zero, and the agent drafts the first touch in minutes.</p></div>
+          <div className="lp3Story"><b style={{ display: "block", fontSize: 15, marginBottom: 6 }}>Evenings spent on proposals</b><p>Proposals priced off your book, built from your sections, approved from your phone. The deposit is requested the moment a proposal is signed — before the crew rolls, not after the job.</p></div>
+          <div className="lp3Story"><b style={{ display: "block", fontSize: 15, marginBottom: 6 }}>Jobs done, paperwork open</b><p>Inspections with the standards built in, reports generated from the record, and the review ask sent when the job closes. The loop finishes itself — you approve the steps that matter.</p></div>
         </div>
       </div>
     </section>
@@ -2577,7 +2577,7 @@ function Landing({ onAuth }: any) {
 
     <section className="lp2Cta">
       <h2>The backlog ends here.</h2>
-      <p>Join 450+ companies and 3,000+ solo owners running their work on Workpile. Start the free trial, finish setup with the wizard, and work tomorrow's queue before your coffee cools.</p>
+      <p>Your backlog doesn't need another tool — it needs an operator. Start the free trial, finish setup with the wizard, and work tomorrow's queue before your coffee cools.</p>
       <button className="btn lpBig" style={{ background: "#fff", color: "#083B25" }} onClick={() => setMode("register")}>Start free — no card required</button>
     </section>
 
@@ -2697,7 +2697,7 @@ function DocTemplatesEditor() {
     </div>
     {showPrev && <div className="printdoc" style={{ marginTop: 14, border: "1px solid #dbe4ee" }}>
       <div className="pd-head">{form.include_logo && head.logo && <img src={head.logo} alt="" style={{ maxHeight: 60, maxWidth: 220, marginBottom: 6 }} />}<div className="pd-company">{head.company}</div>{head.tagline && <div className="pd-tag">{head.tagline}</div>}{head.contact_line && <div className="pd-meta">{head.contact_line}</div>}{head.address && <div className="pd-meta">{head.address}</div>}</div>
-      <h2>{kind === "invoice" ? "Invoice — Mold Testing · INV-0001" : "Proposal — Mold remediation · PROP-1001"}</h2>
+      <h2>{kind === "invoice" ? "Invoice — Mold Testing · INV-0001" : "Proposal — Mold remediation · Q26-0001"}</h2>
       <p className="pd-meta">Prepared for: Angela Ruiz · Bay Shore, NY · Nov 10, 2026 · Template: {form.name}</p>
       <div dangerouslySetInnerHTML={{ __html: sample(form.intro_html) }} />
       <table className="pd-table"><thead><tr><th>Item</th><th>Qty</th><th>Unit price</th><th>Amount</th></tr></thead><tbody><tr><td>Mold remediation — primary bath</td><td>1</td><td>$3,900.00</td><td>$3,900.00</td></tr><tr><td>HEPA air scrubber (per day)</td><td>3</td><td>$300.00</td><td>$900.00</td></tr></tbody></table>
@@ -4822,7 +4822,7 @@ export function refChips(s: any): { kind: string; id: string; label: string }[] 
   push("job", r.job_id, "🛠 Open job"); arr(r.job_ids).forEach((id: string) => push("job", id, "🛠 Job"));
   arr(r.invoices).forEach((iv: any) => { if (iv.lead_id) push("lead", iv.lead_id, "🧾 " + (iv.number || "Invoice")); });
   arr(r.overdue).forEach((o: any) => { if (o && typeof o === "object") push("lead", r.lead_id || a.lead_id, "🧾 " + (o.number || "Invoice")); });
-  if (r.proposal) push("lead", r.lead_id || a.lead_id, "📄 Proposal " + (r.proposal.number ? "PROP-" + r.proposal.number : ""));
+  if (r.proposal) push("lead", r.lead_id || a.lead_id, "📄 Proposal " + (r.proposal.quote_no || (r.proposal.number ? "PROP-" + r.proposal.number : "")));
   push("inbox", r.item_id || a.item_id, "📥 Open inbox item");
   return out.slice(0, 6);
 }

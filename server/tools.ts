@@ -218,7 +218,7 @@ export const TOOLS: Record<string, ToolDef> = {
     parameters: { type: "object", properties: { proposal_id: { type: "string" }, channel: { type: "string", enum: ["email", "sms"] } }, required: ["proposal_id"] },
     async run(ws, actor, args) { const p = db.prepare("SELECT * FROM proposals WHERE id=? AND workspace_id=?").get(args.proposal_id, ws) as any; if (!p) throw new Error("proposal not found in this workspace");
       if (p.status === "signed") throw new Error("proposal is already signed");
-      if (p.status === "sent") return { summary: `Proposal ${p.number ? "PROP-" + p.number : p.id} was already sent — not re-sent.`, refs: { proposal_id: p.id, lead_id: p.lead_id, already: true } };
+      if (p.status === "sent") return { summary: `Proposal ${p.quote_no || (p.number ? "PROP-" + p.number : p.id)} was already sent — not re-sent.`, refs: { proposal_id: p.id, lead_id: p.lead_id, already: true } };
       const l = leadOf(ws, p.lead_id); const w = db.prepare("SELECT * FROM workspaces WHERE id=?").get(ws) as any;
       const policy = w?.approval_policy || "always";
       const gateNeeded = policy === "always" || (policy === "amount" && (p.total || 0) > (w?.approval_threshold ?? 25000));
@@ -238,7 +238,7 @@ export const TOOLS: Record<string, ToolDef> = {
       db.prepare("UPDATE proposals SET status='withdrawn' WHERE workspace_id=? AND lead_id=? AND id<>? AND status IN ('draft','sent')").run(ws, l.id, p.id);
       try { const { enrollFollowup } = await import("./followups.ts"); enrollFollowup(ws, l.id, p.id); } catch { /* best-effort */ }
       if (["NEW", "WORKING", "QUALIFIED", "PROPOSAL"].includes(l.state)) db.prepare("UPDATE leads SET state='SENT', updated_at=? WHERE id=?").run(now(), l.id);
-      return { summary: `Proposal ${p.number ? "PROP-" + p.number : ""} sent to ${l.contact_name || to} via ${channel} (${r.status === "test_mode" ? "test mode — no live provider" : r.status}) with its signing link. Follow-up cadence enrolled.`, refs: { proposal_id: p.id, lead_id: l.id, delivery: r.status, sign_link: link } }; } },
+      return { summary: `Proposal ${p.quote_no || (p.number ? "PROP-" + p.number : "")} sent to ${l.contact_name || to} via ${channel} (${r.status === "test_mode" ? "test mode — no live provider" : r.status}) with its signing link. Follow-up cadence enrolled.`, refs: { proposal_id: p.id, lead_id: l.id, delivery: r.status, sign_link: link } }; } },
   send_invoice: { name: "send_invoice", description: "Email the customer their invoice with the pay link. Customer-facing — ALWAYS requires human approval of the step. Reports the real delivery state (test mode labeled).", control: "approval",
     parameters: { type: "object", properties: { invoice_id: { type: "string" } }, required: ["invoice_id"] },
     async run(ws, actor, args) { const inv = db.prepare("SELECT * FROM invoices WHERE id=? AND workspace_id=?").get(args.invoice_id, ws) as any; if (!inv) throw new Error("invoice not found in this workspace");
@@ -279,9 +279,9 @@ export const TOOLS: Record<string, ToolDef> = {
       return { summary: `Task completed: "${t.title}".`, refs: { task_id: t.id, lead_id: t.lead_id } }; } },
   list_approvals: { name: "list_approvals", description: "Read the human approval queue: what is waiting, for how much, and how long it has waited. Read-only — deciding stays with the humans.", control: "read",
     parameters: { type: "object", properties: {} },
-    run(ws) { const rows = db.prepare("SELECT a.*, p.total, p.number FROM approvals a LEFT JOIN proposals p ON p.id=a.proposal_id WHERE a.workspace_id=? AND a.decision IS NULL ORDER BY a.submitted_at LIMIT 10").all(ws) as any[];
+    run(ws) { const rows = db.prepare("SELECT a.*, p.total, p.number, p.quote_no FROM approvals a LEFT JOIN proposals p ON p.id=a.proposal_id WHERE a.workspace_id=? AND a.decision IS NULL ORDER BY a.submitted_at LIMIT 10").all(ws) as any[];
       if (!rows.length) return { summary: "Approval queue is empty — nothing waiting on a human.", refs: { count: 0 } };
-      const lines = rows.map(r => { const hrs = Math.max(0, Math.round((Date.now() - new Date(r.submitted_at).getTime()) / 3600000)); return `• ${r.number ? "PROP-" + r.number : "Proposal"} — ${money(r.total || 0)} · ${r.tier || "ops"} tier · waiting ${hrs}h`; });
+      const lines = rows.map(r => { const hrs = Math.max(0, Math.round((Date.now() - new Date(r.submitted_at).getTime()) / 3600000)); return `• ${r.quote_no || (r.number ? "PROP-" + r.number : "Proposal")} — ${money(r.total || 0)} · ${r.tier || "ops"} tier · waiting ${hrs}h`; });
       return { summary: `${rows.length} approval(s) waiting:\n${lines.join("\n")}`, refs: { count: rows.length, approval_ids: rows.map(r => r.id) } }; } },
   remember_fact: { name: "remember_fact", description: "Record a durable fact about this business that every future operator run should know (preferences, policies, people, quirks). Use when the user teaches you something lasting — not for one-off task details.", control: "draft",
     parameters: { type: "object", properties: { fact: { type: "string" } }, required: ["fact"] },

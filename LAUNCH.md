@@ -1,24 +1,28 @@
 # LAUNCH — Workpile, US Market Readiness
-**Date:** November 9, 2026 · **State:** All code complete. Remaining items are accounts/keys/decisions only — listed honestly at the bottom.
+**Updated:** November 20, 2026 · **State:** Live in production at workpile.claimpaid.io (v112+). Full launch audit: `~/workspace/goals/workpile-lead-backlog-saas/files/workpile-launch-audit-2026-11-20.md`.
 
-## What is built and verified (tests 20/20 + end-to-end smoke + live HTTP checks)
-- Core loop: ingestion (API/form/CSV/inbox) → triage/dedupe → qualification → Completeness Gate → Approval Inbox → proposals (price-book only) → e-sign → deposit → follow-ups → finals delivered to the customer's own platform (pull API + signed webhooks + ack) — Won/Lost/No Response/N/A/Junk/Duplicate
-- Gregory P0s: field reports + timesheets chase, full inbox triage (7 categories), site visits, documents, no-code handoff data (API + monitor), DOCX-editable proposals, 6-bucket owner board, Weekly Status Report data (metrics service)
-- §26 production layer: prompt-injection invariant + red-team tests, outbox + DLQ + replay, admin console, feature-flag canary, SLO synthetics, billing completeness
-- Money: customer deposits via Stripe (test mode until live key) + Workpile's own subscriptions ($299/$599/$999, 30-day no-card trial, plan caps with 80% soft-warn, checkout + signed webhooks, past-due handling, Stripe Tax enabled on checkout)
-- Customer portal (flag-gated): proposal status, project reference, site visits, document intake
-- Change orders: price-book deltas through the same approval discipline
-- Marketing: public landing with pricing + trial positioning, /terms /privacy /dpa draft pages, website embed snippet with TCPA consent language
-- Deploy: Dockerfile + compose, GitHub Actions CI (test/build/smoke), nightly backup script, db/postgres-schema.sql + cutover guide, deploy/check-env.mjs readiness report
+## What is built, tested, and live (125 test files)
+- Core loop: ingestion (API/form/CSV/spreadsheet/inbox) → smart triage gate → Work Queue → proposals (price-book only, approval-gated, content-hash invalidation) → e-sign (document-hash-bound links) → jobs → work orders → inspections (13 standards templates, reviewer separation-of-duties, corrective actions) → invoicing (tax + milestone billing) → payments.
+- Chain model: Lead L→Quote Q→Project P numbering on every record; five separated money views (pipeline / proposal / contract / invoiced / collected), each drillable to its records.
+- Copilot: multi-turn AI operator with approval-gated tools, business memory, self-learning; per-tool earned autonomy.
+- Mail: Gmail connected (90-day paginated backfill, quota backoff); Outlook OAuth built. Public Gmail for all customers awaits Google verification + CASA (test-user cap 100 until then).
+- Money integrations (coded, dormant on keys): per-workspace Stripe Connect (client payments land in the client's own account), QuickBooks invoice + payment sync, Workpile's own subscription billing.
+- Pricing V2: per-workspace Starter $39 / Pro $119 / Business $299 per month billed annually (monthly $49/$149/$349), metered on active requests (150/750/3,000), office users 2/5/15 the only hard cap, 30-day no-card Pro trial, legacy keys grandfathered.
+- Security (v112): parameterized SQL throughout, allowlist HTML sanitizer, attachment MIME allowlist + safe downloads, SSRF-guarded outbound URLs, security headers (CSP/HSTS/nosniff), workspace-scoped authorization, TOTP MFA, fail-closed webhooks.
+- Customer portal (flag-gated), tenant data export (secrets stripped), scheduled Word reports, offline field write queue, PWA.
 
-## Launch checklist — founder actions only (no code left)
-1. **Name + domain:** Clear "Workpile" (trademark + domain) or pick a final name; buy domain; point DNS at the host.
-2. **Hosting:** Deploy the Docker image (DigitalOcean/AWS). Set LEADFLOW_DB volume or run the Postgres cutover (db/MIGRATION.md).
-3. **Stripe (one account, ~30 min):** Create account, 3 subscription prices + deposit capability, paste STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PRICE_* into .env, register webhook → /webhooks/stripe. Everything flips from test/not-configured to live automatically.
-4. **Inbox OAuth apps (optional at launch):** Register Google + Microsoft apps, set client IDs/secrets — connections activate; until then manual/API/CSV ingestion is fully live.
-5. **Legal:** Attorney pass on /terms /privacy /dpa drafts (they are marked Draft in-product until this is done). Do not market "SOC 2" or any certification not held.
-6. **Design Partner #1:** Run the §19/§25 pilot: Backlog Clear fee + 90 days, before/after numbers (FPAR, approval cycle, backlog clear date) as the renewal + case-study gate — case study only with written permission.
-7. **GitHub:** On the founder's word, create the private repo and push `main` (code is committed locally; CI workflow ships with it).
+## Open items — founder actions
+1. **Name + domain:** "Workpile" trademark clearance + workpile.io registration still open. Product currently lives on workpile.claimpaid.io.
+2. **Legal:** Attorney pass on /terms /privacy /dpa (still marked Draft in-product). Do not market certifications not held.
+3. **Stripe go-live:** Platform STRIPE_SECRET_KEY + webhook secret + the six Pricing V2 price IDs + Connect events on the webhook. Activates subscription charging and per-workspace client payments.
+4. **Sending:** Resend domain verification (DNS first, key second — see runbook), then Twilio out of test mode, then Intuit PRODUCTION keys for QuickBooks sync.
+5. **Google verification pack:** Privacy/terms pages + scope justification + demo video → verification + CASA for gmail.readonly (2–6 weeks).
+6. **Support channel:** A real support address on a verified domain, linked in-product, before paid customers arrive.
+
+## Open items — code/ops
+- Schedule deploy/backup.sh in the deploy (script exists; not wired) + run one restore drill (gates the Postgres cutover).
+- Plan-feature enforcement for sms / sending_domain flags (api flag is enforced today).
+- Postgres cutover rehearsal before national scale (schema pack: db/postgres-schema.sql, 66 tables).
 
 ## Run the readiness check anytime
 `node deploy/check-env.mjs` — prints exactly which external accounts are still unset; the app never fakes a live integration.
