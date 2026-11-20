@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from "react";
 import { createRoot } from "react-dom/client";
+import { createPortal } from "react-dom";
 import "./styles.css";
 
 // Topic bus (v59): every successful mutation publishes the data topics it touched;
@@ -3849,69 +3850,155 @@ function InspectionView({ id, users, onBack, onSwitch }: any) {
     </div>}
   </div>;
 }
-function WOInspections({ woId, users }: any) {
-  const [list, setList] = useState<any[]>([]); const [tpls, setTpls] = useState<any[]>([]); const [openId, setOpenId] = useState(""); const [form, setForm] = useState<any>({ template_id: "", title: "", inspector_id: "" }); const [msg, setMsg] = useState("");
+// CONCEPT (v108 exploration, local branch only) — inspection as its own
+// field-first modal: one section per step, 52px+ controls, sticky action
+// bar, review before submit. Same API contract as InspectionView.
+function InspectionModal({ id, users, woLabel, onClose }: any) {
+  const [d, setD] = useState<any>(null); const [step, setStep] = useState(0); const [msg, setMsg] = useState("");
+  const [answers, setAnswers] = useState<any>({}); const [ov, setOv] = useState<any>({});
+  const [decide, setDecide] = useState<any>({ result: "passed", note: "" }); const [noteText, setNoteText] = useState("");
+  const load = () => { api("/api/inspections/" + id).then((r: any) => { setD(r); try { setAnswers(JSON.parse(r.inspection.answers || "{}")); } catch { setAnswers({}); } setOv({ inspector_id: r.inspection.inspector_id || "", license_no: r.inspection.license_no || "", scheduled_start: r.inspection.scheduled_start ? String(r.inspection.scheduled_start).slice(0, 16) : "", scheduled_end: r.inspection.scheduled_end ? String(r.inspection.scheduled_end).slice(0, 16) : "", conditions: r.inspection.conditions || "", summary: r.inspection.summary || "" }); }).catch((e: any) => setMsg(e.message)); };
+  useEffect(load, [id]);
+  if (!d) return createPortal(<div className="cx-mscrim"><div className="cx-modal" style={{ padding: 26 }}><span className="muted">Loading inspection…</span></div></div>, document.body);
+  const insp = d.inspection; const [chipLabel, chipBg, chipFg] = inspChip(insp);
+  const sections: any[] = d.sections || [];
+  const items: any[] = []; sections.forEach((s: any) => (s.items || []).forEach((it: any) => items.push({ ...it, section: s.title })));
+  const answered = items.filter(it => answers[it.key] && answers[it.key].v !== undefined && answers[it.key].v !== "").length;
+  const pct = items.length ? Math.round((answered / items.length) * 100) : 0;
+  const oor = (it: any) => { const a = answers[it.key]; if (!a || it.type !== "reading" || a.v === "" || a.v === undefined) return false; const n = Number(a.v); if (Number.isNaN(n)) return false; return (it.min != null && n < it.min) || (it.max != null && n > it.max); };
+  const itemPhotos = (key: string) => (d.photos || []).filter((p: any) => p.item_key === key);
+  const missingPhotos = items.filter(it => it.photo_required && itemPhotos(it.key).length === 0);
+  const fails = items.filter(it => answers[it.key]?.v === "fail" || oor(it));
+  const saveAnswer = async (key: string, patchA: any) => { const next = { ...(answers[key] || {}), ...patchA }; const all = { ...answers, [key]: next }; setAnswers(all); try { await api("/api/inspections/" + id, { method: "PATCH", body: { answers: { [key]: next } } }); } catch (e: any) { setMsg(e.message); } };
+  const act = async (path: string, body?: any) => { setMsg(""); try { await api("/api/inspections/" + id + path, { method: "POST", body: body || {} }); load(); } catch (e: any) { setMsg(e.message); } };
+  const submit = () => { if (missingPhotos.length) { setMsg("Photos required before submitting: " + missingPhotos.map((i: any) => i.label).join("; ")); return; } act("/submit"); };
+  const uploadPhoto = (f: File, itemKey?: string) => { const r = new FileReader(); r.onload = async () => { try { const b64 = String(r.result || "").split(",")[1] || ""; await api("/api/attachments", { method: "POST", body: { entity_type: "inspection", entity_id: id, name: f.name, mime: f.type || "application/octet-stream", data_base64: b64, item_key: itemKey || null, tag: itemKey ? undefined : "during" } }); load(); } catch (e: any) { setMsg(e.message); } }; r.readAsDataURL(f); };
+  const saveOverview = async () => { try { await api("/api/inspections/" + id, { method: "PATCH", body: { inspector_id: ov.inspector_id || null, license_no: ov.license_no || null, scheduled_start: ov.scheduled_start ? new Date(ov.scheduled_start).toISOString() : null, scheduled_end: ov.scheduled_end ? new Date(ov.scheduled_end).toISOString() : null, conditions: ov.conditions || null, summary: ov.summary || null } }); load(); } catch (e: any) { setMsg(e.message); } };
+  const totalSteps = sections.length + 2; const isReview = step === totalSteps - 1; const sec = step >= 1 && step <= sections.length ? sections[step - 1] : null;
+  const segBtn = (it: any, v: string, l: string) => { const a = answers[it.key] || {}; const cls = a.v === v ? (v === "fail" || v === "no" ? "on-fail" : v === "na" ? "on-na" : "on-pass") : ""; return <button key={v} className={cls} onClick={() => saveAnswer(it.key, { v })}>{l}</button>; };
+  return createPortal(<div className="cx-mscrim" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className="cx-modal">
+      <div className="cx-mhead">
+        <div className="rowflex" style={{ gap: 10 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 12, fontWeight: 800, color: "#0E5C3A", letterSpacing: ".04em" }}>{insp.display_no} · INSPECTION</div>
+            <div style={{ fontSize: 18, fontWeight: 800, lineHeight: 1.2, marginTop: 2 }}>{insp.title}</div>
+            {woLabel ? <div className="muted" style={{ fontSize: 12.5, marginTop: 2 }}>on {woLabel}</div> : null}
+          </div>
+          <span className="tinyBadge" style={{ background: chipBg, color: chipFg, fontSize: 12, padding: "5px 11px" }}>{chipLabel}</span>
+          <button className="cx-x" onClick={onClose} aria-label="Close">✕</button>
+        </div>
+        <div className="cx-steps">{Array.from({ length: totalSteps }, (_, i) => <i key={i} className={i < step ? "done" : i === step ? "cur" : ""} />)}</div>
+        <div className="muted" style={{ fontSize: 12.5, marginTop: 7 }}>{step === 0 ? "Details" : isReview ? "Review & submit" : `Section ${step} of ${sections.length} — ${sec?.title}`} · {answered} of {items.length} items · {pct}%</div>
+      </div>
+      <div className="cx-mbody">
+        {msg && <p style={{ color: "#991B1B", fontSize: 13.5, background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 10, padding: "9px 12px" }}>{msg}</p>}
+        {insp.status === "submitted" && <div style={{ background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 12, padding: 12, marginBottom: 12 }}>
+          <b style={{ fontSize: 13.5 }}>Awaiting decision</b>
+          <div className="rowflex" style={{ gap: 8, marginTop: 8, flexWrap: "wrap" }}><select value={decide.result} onChange={e => setDecide({ ...decide, result: e.target.value })} style={{ minHeight: 44 }}><option value="passed">Passed</option><option value="passed_with_conditions">Passed with conditions</option><option value="failed">Failed</option></select>
+          <input placeholder="Decision note" value={decide.note} onChange={e => setDecide({ ...decide, note: e.target.value })} style={{ flex: 1, minWidth: 150, minHeight: 44 }} />
+          <button className="cx-openbtn" onClick={() => act("/decide", decide)}>Record result</button></div>
+        </div>}
+        {insp.status === "closed" && <div style={{ background: insp.result === "failed" ? "#FEF2F2" : "#F0FDF4", border: `1px solid ${insp.result === "failed" ? "#FECACA" : "#BBF7D0"}`, borderRadius: 12, padding: 12, marginBottom: 12 }}>
+          <b style={{ fontSize: 13.5 }}>{insp.result === "failed" ? "Result: FAILED" : "Result: " + String(insp.result || "closed").replaceAll("_", " ")}</b>
+          {insp.result === "failed" && <button className="cx-openbtn ghost" style={{ marginLeft: 10 }} onClick={async () => { try { await api("/api/inspections/" + id + "/reinspect", { method: "POST", body: {} }); onClose(); } catch (e: any) { setMsg(e.message); } }}>Schedule re-inspection</button>}
+          <InspReports insp={d.inspection} photos={d.photos || []} />
+        </div>}
+        {step === 0 && <div>
+          <div className="cx-secttl">Inspection details</div>
+          <div className="cx-field"><label>Inspector</label><select value={ov.inspector_id} onChange={e => setOv({ ...ov, inspector_id: e.target.value })}><option value="">— Unassigned —</option>{(users || []).map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}</select></div>
+          <div className="cx-field"><label>License / cert no.</label><input value={ov.license_no} onChange={e => setOv({ ...ov, license_no: e.target.value })} /></div>
+          <div className="rowflex" style={{ gap: 10 }}><div className="cx-field" style={{ flex: 1 }}><label>Scheduled start</label><input type="datetime-local" value={ov.scheduled_start} onChange={e => setOv({ ...ov, scheduled_start: e.target.value })} /></div>
+          <div className="cx-field" style={{ flex: 1 }}><label>Scheduled end</label><input type="datetime-local" value={ov.scheduled_end} onChange={e => setOv({ ...ov, scheduled_end: e.target.value })} /></div></div>
+          <div className="cx-field"><label>Conditions observed</label><textarea rows={2} value={ov.conditions} onChange={e => setOv({ ...ov, conditions: e.target.value })} placeholder="Weather, access, containment state…" /></div>
+          <div className="cx-field"><label>Inspector's summary</label><textarea rows={3} value={ov.summary} onChange={e => setOv({ ...ov, summary: e.target.value })} placeholder="Conclusion the client report will carry…" /></div>
+          <button className="cx-openbtn ghost" onClick={saveOverview}>Save details</button>
+        </div>}
+        {sec && <div>
+          <div className="cx-secttl">{sec.title}</div>
+          {(sec.items || []).map((it: any, ix: number) => { const a = answers[it.key] || {}; const out = oor(it); const photos = itemPhotos(it.key); const isDone = a.v !== undefined && a.v !== ""; return <div key={it.key} className={`cx-item ${a.v === "fail" || out ? "fail" : ""} ${isDone && a.v !== "fail" && !out ? "done" : ""}`}>
+            <div className="rowflex" style={{ gap: 8, alignItems: "flex-start" }}><span className="idx">{step}.{ix + 1}</span><span className="cx-item-lab" style={{ flex: 1 }}>{it.label}</span>{isDone && <span className="answered">✓ Answered</span>}{it.critical && <span className="cx-crit">Critical</span>}{it.photo_required && <span className="cx-crit" style={{ color: "#B45309", background: "#FEF3C7" }}>Photo req.</span>}</div>
+            {it.type === "passfail" && <div className="cx-seg">{segBtn(it, "pass", "✓ Pass")}{segBtn(it, "fail", "✗ Fail")}{segBtn(it, "na", "N/A")}</div>}
+            {it.type === "yesno" && <div className="cx-seg">{segBtn(it, "yes", "Yes")}{segBtn(it, "no", "No")}{segBtn(it, "na", "N/A")}</div>}
+            {it.type === "reading" && <><div className="cx-reading"><input type="number" inputMode="decimal" defaultValue={a.v ?? ""} onBlur={e => saveAnswer(it.key, { v: e.target.value })} placeholder="0.00" /><span className="unit">{it.unit || ""}{it.min != null || it.max != null ? ` · acceptable ${it.min ?? "—"} to ${it.max ?? "—"}` : ""}</span></div>{out && <div className="cx-oor">⚠ Reading is outside the acceptable range</div>}</>}
+            {it.type === "text" && <input className="cx-notein" style={{ minHeight: 52, fontSize: 15 }} defaultValue={a.v ?? ""} onBlur={e => saveAnswer(it.key, { v: e.target.value })} placeholder="Record…" />}
+            <div className="cx-photorow">
+              <span className="cx-thumbs">{photos.map((p: any) => <img key={p.id} src={`/api/attachments/${p.id}/download?inline=1`} alt={p.name} />)}</span>
+              <label className={`cx-photobtn ${it.photo_required && photos.length === 0 ? "req" : ""}`}>📷 {photos.length ? `${photos.length} photo${photos.length > 1 ? "s" : ""} · Add` : it.photo_required ? "Add photo — required" : "Add photo"}<input type="file" accept="image/*" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) uploadPhoto(f, it.key); e.target.value = ""; }} /></label>
+            </div>
+            <input className="cx-notein" defaultValue={a.note || ""} onBlur={e => saveAnswer(it.key, { note: e.target.value })} placeholder="Item note (optional)" />
+          </div>; })}
+          {(sec.items || []).length === 0 && <p className="muted">This section has no items.</p>}
+        </div>}
+        {isReview && <div>
+          <div className="cx-secttl">Review before submitting</div>
+          <div className="cx-reviewrow"><span>Items answered</span><b>{answered} of {items.length}</b></div>
+          <div className="cx-reviewrow"><span>Failed / out of range</span><b style={{ color: fails.length ? "#B91C1C" : undefined }}>{fails.length}</b></div>
+          <div className="cx-reviewrow"><span>Photos attached</span><b>{(d.photos || []).length}</b></div>
+          <div className="cx-reviewrow"><span>Required photos missing</span><b style={{ color: missingPhotos.length ? "#B45309" : undefined }}>{missingPhotos.length}</b></div>
+          {fails.length > 0 && <div style={{ marginTop: 12 }}><b style={{ fontSize: 13.5 }}>Findings</b>{fails.map((it: any) => <div key={it.key} style={{ fontSize: 13.5, padding: "6px 0", borderBottom: "1px solid #EDF1EE" }}>✗ {it.label} <span className="muted">· {it.section}</span></div>)}</div>}
+          {(d.notes || []).length > 0 && <div style={{ marginTop: 12 }}><b style={{ fontSize: 13.5 }}>Field notes</b>{(d.notes || []).map((n: any) => <div key={n.id} style={{ fontSize: 13.5, padding: "5px 0", borderBottom: "1px solid #EDF1EE" }}>{n.body}</div>)}</div>}
+          <div style={{ marginTop: 14 }}><b style={{ fontSize: 13.5 }}>By section</b>
+            {sections.map((s2: any, si: number) => { const its = s2.items || []; const ans = its.filter((it: any) => answers[it.key]?.v !== undefined && answers[it.key]?.v !== "").length; const fl = its.filter((it: any) => answers[it.key]?.v === "fail" || oor(it)).length; return <div key={si} className="cx-revsec"><span style={{ flex: 1 }}>{si + 1}. {s2.title}</span><span className="muted">{ans} of {its.length} answered</span>{fl > 0 && <b style={{ color: "#B91C1C" }}>{fl} finding{fl > 1 ? "s" : ""}</b>}<button className="btn ghost small" onClick={() => setStep(si + 1)}>Open</button></div>; })}
+          </div>
+          <div className="cx-signoff"><b>Inspector sign-off</b><div className="muted" style={{ marginTop: 3 }}>{(users || []).find((u: any) => u.id === insp.inspector_id)?.name || "Unassigned inspector"}{insp.license_no ? ` · License ${insp.license_no}` : ""}{insp.started_at ? ` · Started ${String(insp.started_at).slice(0, 16).replace("T", " ")}` : ""}</div><div className="muted" style={{ marginTop: 3 }}>Submitting sends this inspection to a reviewer. Answers and photos are already saved — nothing is lost if you close this now.</div></div>
+          <div className="rowflex" style={{ marginTop: 12, gap: 8 }}><input style={{ flex: 1, minHeight: 48 }} placeholder="Add a field note…" value={noteText} onChange={e => setNoteText(e.target.value)} /><button className="cx-openbtn ghost" onClick={async () => { if (!noteText.trim()) return; try { await api("/api/inspections/" + id + "/notes", { method: "POST", body: { body: noteText } }); setNoteText(""); load(); } catch (e: any) { setMsg(e.message); } }}>Add note</button></div>
+          <InspActions inspId={id} actions={d.actions || []} findings={fails.map((it: any) => ({ key: it.key, label: it.label }))} users={users} onDone={load} />
+        </div>}
+      </div>
+      <div className="cx-mfoot">
+        {step > 0 && <button className="cx-bigbtn ghost" onClick={() => setStep(step - 1)}>← Back</button>}
+        <span className="muted" style={{ flex: 1, fontSize: 12.5 }}>{pct}% complete{missingPhotos.length ? ` · ${missingPhotos.length} required photo${missingPhotos.length > 1 ? "s" : ""} missing` : ""}</span>
+        {insp.status === "scheduled" && step === 0 && <button className="cx-bigbtn" onClick={() => act("/start")}>▶ Start inspection</button>}
+        {!isReview && <button className="cx-bigbtn" onClick={() => setStep(step + 1)}>Continue →</button>}
+        {isReview && (insp.status === "in_progress" || insp.status === "scheduled") && <button className="cx-bigbtn" disabled={missingPhotos.length > 0} onClick={submit}>Submit for review</button>}
+        {isReview && insp.status === "submitted" && <span style={{ fontSize: 13.5, fontWeight: 700, color: "#B45309" }}>Submitted — awaiting a reviewer's decision above</span>}
+        {isReview && insp.status === "closed" && <span style={{ fontSize: 13.5, fontWeight: 700, color: "#0E5C3A" }}>Closed — report available in the banner above</span>}
+      </div>
+    </div>
+  </div>, document.body);
+}
+
+// CONCEPT — inspections attached to a work order: designed cards, the
+// inspection itself opens as the field-first modal.
+function InspList({ woId, users, onOpen }: any) {
+  const [list, setList] = useState<any[]>([]); const [tpls, setTpls] = useState<any[]>([]); const [msg, setMsg] = useState("");
+  const [form, setForm] = useState<any>({ template_id: "", title: "", inspector_id: "" });
   const load = () => { api("/api/work-orders/" + woId + "/inspections").then(setList).catch(() => {}); };
   useEffect(load, [woId]);
   useEffect(() => { api("/api/inspection-templates").then((t: any) => { setTpls(Array.isArray(t) ? t : []); if (Array.isArray(t) && t[0]) setForm((f: any) => ({ ...f, template_id: f.template_id || t[0].id })); }).catch(() => {}); }, []);
-  const create = async () => { try { const c = await api("/api/work-orders/" + woId + "/inspections", { method: "POST", body: { template_id: form.template_id || undefined, title: form.title || undefined, inspector_id: form.inspector_id || undefined } }); setForm({ ...form, title: "" }); load(); if (c?.id) setOpenId(c.id); } catch (e: any) { setMsg(e.message); } };
-  return <div style={{ marginTop: 10 }}>
-    <b style={{ fontSize: 13 }}>🔍 Inspections ({list.length})</b>
-    {msg && <p className="muted" style={{ color: "#991B1B" }}>{msg}</p>}
-    {list.map((i: any) => { const [l, bg, fg] = inspChip(i); return <div key={i.id}>
-      <div className="rowflex" style={{ gap: 8, padding: "5px 0", cursor: "pointer" }} onClick={() => setOpenId(openId === i.id ? "" : i.id)}>
-        <b style={{ color: "#0E5C3A", fontSize: 12.5 }}>{i.display_no}</b><span style={{ flex: 1, fontSize: 13 }}>{i.title}</span>
-        <span className="muted" style={{ fontSize: 12 }}>{i.progress?.pct ?? 0}% · 📷 {i.photo_count}</span>
-        <span className="tinyBadge" style={{ background: bg, color: fg }}>{l}</span>
-      </div>
-      {openId === i.id && <InspectionView id={i.id} users={users} onBack={() => { setOpenId(""); load(); }} onSwitch={(nid: string) => { load(); setOpenId(nid); }} />}
+  const create = async () => { try { const c = await api("/api/work-orders/" + woId + "/inspections", { method: "POST", body: { template_id: form.template_id || undefined, title: form.title || undefined, inspector_id: form.inspector_id || undefined } }); setForm({ ...form, title: "" }); load(); if (c?.id) onOpen(c.id); } catch (e: any) { setMsg(e.message); } };
+  const groups: [string, any[]][] = [["Needs attention", list.filter(i => i.status === "closed" && i.result === "failed")], ["In progress", list.filter(i => i.status === "in_progress" || i.status === "submitted")], ["Scheduled", list.filter(i => i.status === "scheduled")], ["Closed", list.filter(i => i.status === "closed" && i.result !== "failed")]];
+  return <div>
+    {msg && <p style={{ color: "#991B1B", fontSize: 13 }}>{msg}</p>}
+    {list.length > 0 && <p className="muted" style={{ fontSize: 13, margin: "0 0 10px" }}>{list.length} inspection{list.length > 1 ? "s" : ""} on this work order · {list.filter(i => i.status === "closed").length} closed · {list.filter(i => i.status === "closed" && i.result === "failed").length} failed</p>}
+    {groups.filter(([, gs]) => gs.length > 0).map(([gname, gs]) => <div key={gname}><div className="cx-grouphd" style={gname === "Needs attention" ? { color: "#B91C1C" } : undefined}>{gname}</div>
+    {gs.map((i: any) => { const [l, bg, fg] = inspChip(i); const p = i.progress?.pct ?? 0; return <div key={i.id} className="cx-inspcard">
+      <span className="cx-ring" style={{ "--p": p } as any}><b>{p}%</b></span>
+      <span className="grow"><b style={{ color: "#0E5C3A", fontSize: 12.5 }}>{i.display_no}</b> <b style={{ fontSize: 14 }}>{i.title}</b>
+        <div className="muted" style={{ fontSize: 12.5, marginTop: 2 }}>📷 {i.photo_count} photos{i.inspector_name ? ` · ${i.inspector_name}` : ""}{i.scheduled_start ? ` · ${String(i.scheduled_start).slice(0, 10)}` : ""}</div>
+        <span className="tinyBadge" style={{ background: bg, color: fg, marginTop: 5, display: "inline-block" }}>{l}</span></span>
+      <button className="cx-openbtn" onClick={() => onOpen(i.id)}>{i.status === "in_progress" ? "Continue" : i.status === "scheduled" ? "Open" : "View"}</button>
     </div>; })}
-    <div className="rowflex" style={{ gap: 6, marginTop: 6, flexWrap: "wrap" }}>
-      <select value={form.template_id} onChange={e => setForm({ ...form, template_id: e.target.value })} style={{ width: "auto" }}>{tpls.map((t: any) => <option key={t.id} value={t.id}>{t.name}</option>)}</select>
-      <input placeholder="Title (optional)" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} style={{ flex: 1, minWidth: 130 }} />
-      <select value={form.inspector_id} onChange={e => setForm({ ...form, inspector_id: e.target.value })} style={{ width: "auto" }}><option value="">Inspector…</option>{(users || []).map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}</select>
-      <button className="btn ghost small" onClick={create}>+ Add inspection</button>
+    </div>)}
+    {list.length === 0 && <p className="muted" style={{ fontSize: 13.5 }}>No inspections on this work order yet. Add the one the job requires — clearance, visual, air sampling — and it rides with the work order from here.</p>}
+    <div style={{ border: "1.5px dashed #C9D6CC", borderRadius: 14, padding: 12, marginTop: 6 }}>
+      <div className="cx-secttl" style={{ margin: "0 0 8px" }}>Add an inspection</div>
+      <div className="rowflex" style={{ gap: 8, flexWrap: "wrap" }}>
+        <select value={form.template_id} onChange={e => setForm({ ...form, template_id: e.target.value })} style={{ minHeight: 44, flex: 1, minWidth: 170 }}>{tpls.map((t: any) => <option key={t.id} value={t.id}>{t.name}</option>)}</select>
+        <select value={form.inspector_id} onChange={e => setForm({ ...form, inspector_id: e.target.value })} style={{ minHeight: 44 }}><option value="">Inspector…</option>{(users || []).map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}</select>
+      </div>
+      <div className="rowflex" style={{ gap: 8, marginTop: 8 }}><input placeholder="Title (optional)" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} style={{ flex: 1, minHeight: 44 }} /><button className="cx-openbtn" onClick={create}>+ Add</button></div>
     </div>
   </div>;
 }
-function InspectionTemplatesEditor() {
-  const [tpls, setTpls] = useState<any[]>([]); const [edit, setEdit] = useState<any>(null); const [msg, setMsg] = useState("");
-  const load = () => { api("/api/inspection-templates").then((t: any) => setTpls(Array.isArray(t) ? t : [])).catch(() => {}); };
-  useEffect(load, []);
-  const startEdit = (t: any) => setEdit(JSON.parse(JSON.stringify({ id: t.id || "", name: t.name || "", standard_ref: t.standard_ref || "", sections: t.sections || [] })));
-  const save = async () => { try { if (edit.id) await api("/api/inspection-templates/" + edit.id, { method: "PATCH", body: edit }); else await api("/api/inspection-templates", { method: "POST", body: edit }); setEdit(null); setMsg("Saved."); load(); } catch (e: any) { setMsg(e.message); } };
-  const updItem = (si: number, ii: number, patchI: any) => { const s = [...edit.sections]; s[si] = { ...s[si], items: s[si].items.map((it: any, j: number) => j === ii ? { ...it, ...patchI } : it) }; setEdit({ ...edit, sections: s }); };
-  return <div style={{ marginTop: 18 }}>
-    <h3>Inspection templates</h3>
-    <p className="muted" style={{ fontSize: 12.5 }}>Checklists that inspections run against. An inspection freezes its template when created — edits here never rewrite an issued inspection.</p>
-    {msg && <p className="muted">{msg}</p>}
-    {tpls.map(t => <div key={t.id} className="rowflex" style={{ padding: "6px 0", borderBottom: "1px solid #EEF2EF" }}><span style={{ flex: 1 }}><b>{t.name}</b> <span className="muted">· {(t.sections || []).reduce((n: number, s: any) => n + (s.items || []).length, 0)} items{t.standard_ref ? " · " + t.standard_ref : ""}</span></span><button className="btn ghost small" onClick={() => startEdit(t)}>Edit</button></div>)}
-    {!edit && <button className="btn ghost small" style={{ marginTop: 8 }} onClick={() => setEdit({ id: "", name: "", standard_ref: "", sections: [{ title: "Section 1", items: [] }] })}>+ New template</button>}
-    {edit && <div className="card" style={{ padding: 10, marginTop: 8 }}>
-      <div className="rowflex"><label className="f" style={{ flex: 1 }}>Name<input value={edit.name} onChange={e => setEdit({ ...edit, name: e.target.value })} /></label>
-      <label className="f" style={{ flex: 1 }}>Standard / reference<input value={edit.standard_ref} onChange={e => setEdit({ ...edit, standard_ref: e.target.value })} placeholder="e.g. OSHA 29 CFR 1926.1101" /></label></div>
-      {edit.sections.map((s: any, si: number) => <div key={si} style={{ border: "1px solid #E3EAE5", borderRadius: 8, padding: 8, marginTop: 8 }}>
-        <div className="rowflex"><input style={{ flex: 1, fontWeight: 700 }} value={s.title} onChange={e => { const ss = [...edit.sections]; ss[si] = { ...ss[si], title: e.target.value }; setEdit({ ...edit, sections: ss }); }} /><button className="btn ghost small" onClick={() => setEdit({ ...edit, sections: edit.sections.filter((_: any, j: number) => j !== si) })}>✕ section</button></div>
-        {(s.items || []).map((it: any, ii: number) => <div key={ii} className="rowflex" style={{ gap: 5, marginTop: 5, flexWrap: "wrap" }}>
-          <input style={{ flex: 2, minWidth: 170 }} value={it.label} placeholder="Checklist item" onChange={e => updItem(si, ii, { label: e.target.value, key: it.key || ("item_" + si + "_" + ii) })} />
-          <select style={{ width: "auto" }} value={it.type || "passfail"} onChange={e => updItem(si, ii, { type: e.target.value })}><option value="passfail">Pass/Fail</option><option value="yesno">Yes/No</option><option value="reading">Reading</option><option value="text">Text</option></select>
-          {it.type === "reading" && <><input style={{ width: 64 }} placeholder="Unit" value={it.unit || ""} onChange={e => updItem(si, ii, { unit: e.target.value })} /><input style={{ width: 64 }} placeholder="Min" value={it.min ?? ""} onChange={e => updItem(si, ii, { min: e.target.value })} /><input style={{ width: 64 }} placeholder="Max" value={it.max ?? ""} onChange={e => updItem(si, ii, { max: e.target.value })} /></>}
-          <label className="muted" style={{ fontSize: 12 }}><input type="checkbox" checked={!!it.critical} onChange={e => updItem(si, ii, { critical: e.target.checked })} /> critical</label>
-          <label className="muted" style={{ fontSize: 12 }}><input type="checkbox" checked={!!it.photo_required} onChange={e => updItem(si, ii, { photo_required: e.target.checked })} /> 📷 req</label>
-          <button className="btn ghost small" onClick={() => { const ss = [...edit.sections]; ss[si] = { ...ss[si], items: ss[si].items.filter((_: any, j: number) => j !== ii) }; setEdit({ ...edit, sections: ss }); }}>✕</button>
-        </div>)}
-        <button className="btn ghost small" style={{ marginTop: 6 }} onClick={() => { const ss = [...edit.sections]; ss[si] = { ...ss[si], items: [...(ss[si].items || []), { key: "item_" + si + "_" + (ss[si].items || []).length + "_" + Math.floor(Math.random() * 9999), label: "", type: "passfail" }] }; setEdit({ ...edit, sections: ss }); }}>+ Item</button>
-      </div>)}
-      <div className="rowflex" style={{ marginTop: 8 }}><button className="btn ghost small" onClick={() => setEdit({ ...edit, sections: [...edit.sections, { title: "New section", items: [] }] })}>+ Section</button><span style={{ flex: 1 }} /><button className="btn small" onClick={save}>Save template</button><button className="btn ghost small" onClick={() => setEdit(null)}>Cancel</button></div>
-    </div>}
-  </div>;
-}
+
 function JobWorkOrders({ jobId, users }: any) {
   const [list, setList] = useState<any[]>([]); const [workers, setWorkers] = useState<any[]>([]); const [openId, setOpenId] = useState<string>("");
   const [detail, setDetail] = useState<any>(null); const [creating, setCreating] = useState(false); const [msg, setMsg] = useState("");
   const [form, setForm] = useState<any>({ title: "", description: "", pm_id: "", scheduled_start: "", scheduled_end: "", location: "" });
   const [crewPick, setCrewPick] = useState<any>({ user_id: "", worker_id: "" });
-  const [woTpls, setWoTpls] = useState<any[]>([]); const [tplPick, setTplPick] = useState("");
+  const [woTpls, setWoTpls] = useState<any[]>([]); const [tplPick, setTplPick] = useState(""); const [sheetTab, setSheetTab] = useState("overview"); const [inspId, setInspId] = useState("");
   useEffect(() => { api("/api/wo-templates").then((t: any) => { setWoTpls(Array.isArray(t) ? t : []); if (Array.isArray(t) && t[0]) setTplPick(t[0].id); }).catch(() => {}); }, []);
   const load = () => { api("/api/jobs/" + jobId + "/work-orders").then(setList).catch(() => {}); };
   useEffect(load, [jobId]);
@@ -3929,10 +4016,12 @@ function JobWorkOrders({ jobId, users }: any) {
   };
   const create = async () => { if (!form.title.trim()) return setMsg("Give the work order a title"); try { const wo = await api("/api/jobs/" + jobId + "/work-orders", { method: "POST", body: { ...form, scheduled_start: form.scheduled_start ? new Date(form.scheduled_start).toISOString() : null, scheduled_end: form.scheduled_end ? new Date(form.scheduled_end).toISOString() : null } }); setCreating(false); setForm({ title: "", description: "", pm_id: "", scheduled_start: "", scheduled_end: "", location: "" }); load(); setMsg(""); if (wo?.id) openWO(wo.id); } catch (e: any) { setMsg(e.message); } };
   const upload = (woId: string, f: File) => { const r = new FileReader(); r.onload = async () => { try { const b64 = String(r.result || "").split(",")[1] || ""; await api("/api/attachments", { method: "POST", body: { entity_type: "work_order", entity_id: woId, name: f.name, mime: f.type || "application/octet-stream", data_base64: b64 } }); setDetail(await api("/api/work-orders/" + woId)); load(); } catch (e: any) { setMsg(e.message); } }; r.readAsDataURL(f); };
+  const woStatusPill = (st: string) => ({ planned: ["#F1F5F2", "#475569"], scheduled: ["#E0EAFF", "#1D4ED8"], in_progress: ["#E7F6EC", "#0E5C3A"], on_hold: ["#FEF3C7", "#B45309"], completed: ["#0E5C3A", "#FFFFFF"], cancelled: ["#F1F5F2", "#94A3B8"] } as any)[st] || ["#F1F5F2", "#475569"];
+  const openDetail = detail && openId ? detail : null;
   return <div>
-    <div className="rowflex" style={{ justifyContent: "space-between", margin: "4px 0 8px" }}><b>🔨 Work orders ({list.length})</b><span className="rowflex" style={{ gap: 5 }}><select value={tplPick} onChange={e => setTplPick(e.target.value)} style={{ width: "auto" }}>{woTpls.map((t: any) => <option key={t.id} value={t.id}>{t.name}</option>)}</select><button className="btn ghost small" onClick={async () => { if (!tplPick) return; try { await api(`/api/jobs/${jobId}/work-orders/from-template`, { method: "POST", body: { template_id: tplPick } }); load(); } catch (e: any) { setMsg(e.message); } }}>Apply template</button></span><button className="btn small" onClick={() => setCreating(c => !c)}>+ New work order</button></div>
+    <div className="rowflex" style={{ justifyContent: "space-between", margin: "4px 0 10px" }}><b style={{ fontSize: 15 }}>Work orders ({list.length})</b><span className="rowflex" style={{ gap: 6 }}><select value={tplPick} onChange={e => setTplPick(e.target.value)} style={{ width: "auto" }}>{woTpls.map((t: any) => <option key={t.id} value={t.id}>{t.name}</option>)}</select><button className="btn ghost small" onClick={async () => { if (!tplPick) return; try { await api(`/api/jobs/${jobId}/work-orders/from-template`, { method: "POST", body: { template_id: tplPick } }); load(); } catch (e: any) { setMsg(e.message); } }}>+ From template</button><button className="btn small" onClick={() => setCreating(!creating)}>+ New work order</button></span></div>
     {msg && <p className="muted" style={{ color: "#991B1B" }}>{msg}</p>}
-    {creating && <div className="card" style={{ padding: 10, marginBottom: 10 }}>
+    {creating && <div className="card" style={{ padding: 12, marginBottom: 10 }}>
       <input placeholder="Title — e.g. Phase 1: containment & removal" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} />
       <textarea placeholder="Scope / description" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} rows={2} />
       <div className="rowflex"><label className="f" style={{ flex: 1 }}>Project manager<select value={form.pm_id} onChange={e => setForm({ ...form, pm_id: e.target.value })}><option value="">—</option>{(users || []).map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}</select></label>
@@ -3942,56 +4031,133 @@ function JobWorkOrders({ jobId, users }: any) {
       <button className="btn small" onClick={create}>Create work order</button>
     </div>}
     {list.length === 0 && <p className="muted">No work orders yet — every project opens with a full-scope W01; split it as the work gets planned.</p>}
-    {list.map((wo: any) => { const [bg, fg] = String(woPill(wo.status)).split("|"); const open = openId === wo.id; return <div key={wo.id} style={{ border: "1px solid #E3EAE5", borderRadius: 10, padding: "8px 10px", marginBottom: 8 }}>
-      <div className="rowflex" style={{ gap: 8, flexWrap: "wrap" }}>
-        <b style={{ color: "#0E5C3A", cursor: "pointer" }} onClick={() => openWO(wo.id)}>{wo.display_no}</b>
-        <span style={{ flex: 1, minWidth: 120, cursor: "pointer" }} onClick={() => openWO(wo.id)}>{wo.title}</span>
-        <select value={wo.status} onChange={e => patch(wo.id, { status: e.target.value })} style={{ background: bg, color: fg, border: 0, borderRadius: 999, padding: "2px 8px", fontWeight: 700, fontSize: 12, width: "auto" }}>{WO_STATUSES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+    {list.map((wo: any) => { const [bg, fg] = woStatusPill(wo.status); const insp = wo.inspections || {}; return <div key={wo.id} className="cx-wo" onClick={() => { setSheetTab("overview"); openWO(wo.id); }}>
+      <div className="cx-wo-top"><span className="cx-wo-no">{wo.display_no}</span><span className="cx-wo-title">{wo.title}</span><span className="cx-status" style={{ background: bg, color: fg }}>{String(wo.status).replaceAll("_", " ")}</span></div>
+      <div className="cx-wo-meta">
+        {wo.pm_name && <span>PM · {wo.pm_name}</span>}
+        {wo.scheduled_start && <span>🗓 {String(wo.scheduled_start).slice(0, 10)}{wo.scheduled_end ? " → " + String(wo.scheduled_end).slice(0, 10) : ""}</span>}
+        {wo.location && <span>📍 {wo.location}</span>}
+        {wo.scheduled_start && ["planned", "scheduled", "in_progress"].includes(wo.status) && String(wo.scheduled_start).slice(0, 10) < new Date().toISOString().slice(0, 10) && <span className="cx-health warn">● Past start</span>}
+        <span style={{ flex: 1 }} />
+        {insp.total > 0 && <span className={`cx-wo-insp ${insp.failed ? "bad" : insp.open === 0 ? "ok" : ""}`}>🔍 {(insp.total || 0) - (insp.open || 0)}/{insp.total} inspections{insp.failed ? ` · ${insp.failed} failed` : ""}</span>}
+        <span>Progress · {wo.percent_complete ?? 0}%</span>
       </div>
-      <div className="muted" style={{ fontSize: 12, marginTop: 3 }}>{wo.pm_name ? "PM: " + wo.pm_name + " · " : ""}{wo.scheduled_start ? "🗓 " + String(wo.scheduled_start).slice(0, 10) + " " + String(wo.scheduled_start).slice(11, 16) : "🗓 not scheduled"}{(wo.crew || []).length ? " · 👷 " + wo.crew.map((c: any) => c.name).join(", ") : ""}{wo.photo_count ? ` · 📷 ${wo.photo_count}` : ""}{wo.inspections?.total ? ` · 🔍 ${wo.inspections.total}${wo.inspections.open ? ` (${wo.inspections.open} open)` : ""}${wo.inspections.failed ? ` · ❌ ${wo.inspections.failed} failed` : ""}` : ""}{wo.time?.actual_hours ? ` · ⏱ ${wo.time.actual_hours}${wo.est_hours ? "/" + wo.est_hours : ""}h` : ""}{wo.percent_complete ? ` · ${wo.percent_complete}%` : ""}{wo.cost_total ? ` · 💲${Number(wo.cost_total).toLocaleString()} cost` : ""}</div>
-      {open && detail && detail.id === wo.id && <div style={{ borderTop: "1px dashed #D8E2DB", marginTop: 8, paddingTop: 8 }}>
-        <label className="f">Scope / description<textarea defaultValue={detail.description || ""} rows={3} onBlur={e => patch(wo.id, { description: e.target.value })} /></label>
-        <div className="rowflex"><label className="f" style={{ flex: 1 }}>Project manager<select value={detail.pm_id || ""} onChange={e => patch(wo.id, { pm_id: e.target.value || null })}><option value="">—</option>{(users || []).map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}</select></label>
-        <label className="f" style={{ flex: 1 }}>Location<input defaultValue={detail.location || ""} onBlur={e => patch(wo.id, { location: e.target.value })} /></label></div>
-        <div className="rowflex"><label className="f" style={{ flex: 1 }}>Starts<input type="datetime-local" defaultValue={detail.scheduled_start ? String(detail.scheduled_start).slice(0, 16) : ""} onBlur={e => patch(wo.id, { scheduled_start: e.target.value ? new Date(e.target.value).toISOString() : null })} /></label>
-        <label className="f" style={{ flex: 1 }}>Ends<input type="datetime-local" defaultValue={detail.scheduled_end ? String(detail.scheduled_end).slice(0, 16) : ""} onBlur={e => patch(wo.id, { scheduled_end: e.target.value ? new Date(e.target.value).toISOString() : null })} /></label></div>
-        <label className="f">Notes<textarea defaultValue={detail.notes || ""} rows={2} onBlur={e => patch(wo.id, { notes: e.target.value })} /></label>
-        <WOCosts wo={detail} users={users} workers={workers} siblings={list} onPatch={patch} refresh={async () => { try { setDetail(await api("/api/work-orders/" + wo.id)); } catch { /* noop */ } load(); }} />
-        <div style={{ marginTop: 6 }}><b style={{ fontSize: 13 }}>👷 Crew</b>
-          <div className="rowflex" style={{ flexWrap: "wrap", gap: 6, marginTop: 4 }}>{(detail.crew || []).map((c: any) => <span key={c.id} className="tinyBadge" style={{ background: "#E7F2EB", color: "#0E5C3A" }}>{c.name} <button className="btn ghost small" style={{ padding: "0 4px" }} onClick={async () => { await api(`/api/work-orders/${wo.id}/crew/${c.id}`, { method: "DELETE" }); setDetail(await api("/api/work-orders/" + wo.id)); load(); }}>✕</button></span>)}</div>
-          <div className="rowflex" style={{ marginTop: 6 }}>
-            <select value={crewPick.user_id} onChange={e => setCrewPick({ user_id: e.target.value, worker_id: "" })}><option value="">Team member…</option>{(users || []).map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}</select>
-            <select value={crewPick.worker_id} onChange={e => setCrewPick({ worker_id: e.target.value, user_id: "" })}><option value="">Roster worker…</option>{workers.map((w: any) => <option key={w.id} value={w.id}>{w.name}</option>)}</select>
-            <button className="btn ghost small" onClick={async () => { if (!crewPick.user_id && !crewPick.worker_id) return; await api(`/api/work-orders/${wo.id}/crew`, { method: "POST", body: crewPick }); setCrewPick({ user_id: "", worker_id: "" }); setDetail(await api("/api/work-orders/" + wo.id)); load(); }}>+ Assign</button>
-          </div>
-        </div>
-        <div style={{ marginTop: 8 }}><b style={{ fontSize: 13 }}>📷 Photos & files ({(detail.files || []).length})</b>
-          {(detail.files || []).map((f: any) => <div key={f.id} className="rowflex" style={{ fontSize: 12.5 }}><span style={{ flex: 1 }}>{f.name}</span><a href={`/api/attachments/${f.id}/download`} target="_blank" rel="noreferrer">Download</a></div>)}
-          <label className="btn ghost small" style={{ marginTop: 4, display: "inline-block" }}>+ Upload<input type="file" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) upload(wo.id, f); e.target.value = ""; }} /></label>
-        </div>
-        <WOInspections woId={wo.id} users={users} />
-      </div>}
+      <div className="cx-prog" style={{ width: "100%", marginTop: 9 }}><i style={{ width: (wo.percent_complete ?? 0) + "%" }} /></div>
     </div>; })}
+    {openDetail && createPortal(<div className="cx-scrim" onClick={e => { if (e.target === e.currentTarget) { setOpenId(""); setDetail(null); } }}>
+      <div className="cx-sheet">
+        <div className="cx-sheet-head">
+          <div className="rowflex" style={{ gap: 10 }}>
+            <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 12, fontWeight: 800, color: "#0E5C3A", letterSpacing: ".04em" }}>{openDetail.display_no} · WORK ORDER</div>
+            <div style={{ fontSize: 19, fontWeight: 800, lineHeight: 1.25, marginTop: 2 }}>{openDetail.title}</div></div>
+            <button className="cx-x" onClick={() => { setOpenId(""); setDetail(null); load(); }}>✕</button>
+          </div>
+          <div className="cx-tabs">{[["overview", "Overview"], ["inspections", "Inspections"], ["costs", "Time & costs"], ["files", "Files & crew"]].map(([k, l]) => <button key={k} className={sheetTab === k ? "on" : ""} onClick={() => setSheetTab(k)}>{l}</button>)}</div>
+        </div>
+        <div className="cx-sheet-body">
+          {sheetTab === "overview" && <div>
+            <div className="cx-card">
+              <div className="cx-card-h">Status & progress</div>
+              <div className="rowflex" style={{ gap: 8 }}><select value={openDetail.status} onChange={e => patch(openDetail.id, { status: e.target.value })} style={{ minHeight: 46, fontWeight: 700, flex: 1 }}>{["planned", "scheduled", "in_progress", "on_hold", "completed", "cancelled"].map(st => <option key={st} value={st}>{st.replaceAll("_", " ")}</option>)}</select>
+              {(openDetail.status === "planned" || openDetail.status === "scheduled") && <button className="cx-openbtn" onClick={() => patch(openDetail.id, { status: "in_progress" })}>▶ Start work</button>}
+              {openDetail.status === "in_progress" && <button className="cx-openbtn" onClick={() => patch(openDetail.id, { status: "completed" })}>✓ Mark complete</button>}</div>
+              <div className="rowflex" style={{ gap: 12, marginTop: 14 }}><span className="cx-stepper"><button onClick={() => patch(openDetail.id, { percent_complete: Math.max(0, (openDetail.percent_complete || 0) - 10) })}>−</button><span className="val">{openDetail.percent_complete ?? 0}%</span><button onClick={() => patch(openDetail.id, { percent_complete: Math.min(100, (openDetail.percent_complete || 0) + 10) })}>+</button></span>
+              <div style={{ flex: 1 }}><div className="cx-prog" style={{ width: "100%" }}><i style={{ width: (openDetail.percent_complete ?? 0) + "%" }} /></div></div></div>
+            </div>
+            <div className="cx-card">
+              <div className="cx-card-h">At a glance</div>
+              <div className="cx-glance">
+                <div><div className="k">Cost so far</div><div className="v">{money(openDetail.cost_total || 0)}</div></div>
+                <div><div className="k">Time logged</div><div className="v">{openDetail.time?.actual_hours ?? 0}h</div></div>
+                <div><div className="k">Checklist</div><div className="v">{openDetail.checklist?.done ?? 0} of {openDetail.checklist?.total ?? 0}</div></div>
+                <div><div className="k">Inspections</div><div className="v">{(openDetail.inspections?.total || 0) - (openDetail.inspections?.open || 0)} of {openDetail.inspections?.total || 0} closed</div></div>
+              </div>
+              <div className="cx-meta" style={{ marginBottom: 0 }}>
+                <div><div className="k">Project manager</div><div className="v">{openDetail.pm_name || "—"}</div></div>
+                <div><div className="k">Location</div><div className="v">{openDetail.location || "—"}</div></div>
+                <div><div className="k">Scheduled</div><div className="v">{openDetail.scheduled_start ? String(openDetail.scheduled_start).slice(0, 10) : "—"}{openDetail.scheduled_end ? " → " + String(openDetail.scheduled_end).slice(0, 10) : ""}</div></div>
+                <div><div className="k">Estimated</div><div className="v">{openDetail.est_hours ?? 0}h</div></div>
+              </div>
+            </div>
+            <div className="cx-card">
+              <div className="cx-card-h">Details</div>
+              <div className="rowflex"><label className="f" style={{ flex: 1 }}>Scope / description<textarea defaultValue={openDetail.description || ""} rows={2} onBlur={e => patch(openDetail.id, { description: e.target.value })} /></label>
+              <label className="f" style={{ flex: 1 }}>Notes<textarea defaultValue={openDetail.notes || ""} rows={2} onBlur={e => patch(openDetail.id, { notes: e.target.value })} /></label></div>
+              <div className="rowflex"><label className="f" style={{ flex: 1 }}>Project manager<select value={openDetail.pm_id || ""} onChange={e => patch(openDetail.id, { pm_id: e.target.value || null })}><option value="">—</option>{(users || []).map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}</select></label>
+              <label className="f" style={{ flex: 1 }}>Location<input defaultValue={openDetail.location || ""} onBlur={e => patch(openDetail.id, { location: e.target.value })} /></label></div>
+              <div className="rowflex"><label className="f" style={{ flex: 1 }}>Starts<input type="datetime-local" defaultValue={openDetail.scheduled_start ? String(openDetail.scheduled_start).slice(0, 16) : ""} onBlur={e => patch(openDetail.id, { scheduled_start: e.target.value ? new Date(e.target.value).toISOString() : null })} /></label>
+              <label className="f" style={{ flex: 1 }}>Ends<input type="datetime-local" defaultValue={openDetail.scheduled_end ? String(openDetail.scheduled_end).slice(0, 16) : ""} onBlur={e => patch(openDetail.id, { scheduled_end: e.target.value ? new Date(e.target.value).toISOString() : null })} /></label></div>
+            </div>
+          </div>}
+          {sheetTab === "inspections" && <InspList woId={openDetail.id} users={users} onOpen={(iid: string) => setInspId(iid)} />}
+          {sheetTab === "costs" && <WOCosts wo={openDetail} users={users} workers={workers} siblings={list} onPatch={patch} refresh={async () => { try { setDetail(await api("/api/work-orders/" + openDetail.id)); } catch { /* noop */ } load(); }} />}
+          {sheetTab === "files" && <div>
+            <b style={{ fontSize: 13.5 }}>👷 Crew</b>
+            <div className="rowflex" style={{ flexWrap: "wrap", gap: 6, marginTop: 6 }}>{(openDetail.crew || []).map((c: any) => <span key={c.id} className="tinyBadge" style={{ background: "#E7F2EA", color: "#0E5C3A", fontSize: 12.5, padding: "5px 10px" }}>{c.name}</span>)}{(openDetail.crew || []).length === 0 && <span className="muted" style={{ fontSize: 13 }}>No crew assigned yet.</span>}</div>
+            <div className="rowflex" style={{ marginTop: 8, gap: 6 }}>
+              <select value={crewPick.user_id} onChange={e => setCrewPick({ user_id: e.target.value, worker_id: "" })} style={{ minHeight: 44 }}><option value="">Team member…</option>{(users || []).map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}</select>
+              <select value={crewPick.worker_id} onChange={e => setCrewPick({ worker_id: e.target.value, user_id: "" })} style={{ minHeight: 44 }}><option value="">Roster worker…</option>{workers.map((w: any) => <option key={w.id} value={w.id}>{w.name}</option>)}</select>
+              <button className="cx-openbtn ghost" onClick={async () => { if (!crewPick.user_id && !crewPick.worker_id) return; await api(`/api/work-orders/${openDetail.id}/crew`, { method: "POST", body: crewPick }); setCrewPick({ user_id: "", worker_id: "" }); setDetail(await api("/api/work-orders/" + openDetail.id)); }}>Add</button>
+            </div>
+            <b style={{ fontSize: 13.5, display: "block", marginTop: 18 }}>📷 Photos & files ({(openDetail.files || []).length})</b>
+            {(openDetail.files || []).map((f: any) => <div key={f.id} className="rowflex" style={{ fontSize: 13, padding: "5px 0", borderBottom: "1px solid #EDF1EE" }}><span style={{ flex: 1 }}>{f.name}</span><a href={`/api/attachments/${f.id}/download`}>Download</a></div>)}
+            <label className="cx-photobtn" style={{ marginTop: 10 }}>+ Upload file<input type="file" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) upload(openDetail.id, f); e.target.value = ""; }} /></label>
+          </div>}
+        </div>
+      </div>
+    </div>, document.body)}
+        {inspId && <InspectionModal id={inspId} users={users} woLabel={openDetail ? `${openDetail.display_no} · ${openDetail.title}` : ""} onClose={() => { setInspId(""); load(); }} />}
   </div>;
 }
+
 function ProjectsPage({ openJob }: any) {
   const [rows, setRows] = useState<any[]>([]); const [users, setUsers] = useState<any[]>([]); const [stage, setStage] = useState("all");
+  const [view, setView] = useState("table"); const [q, setQ] = useState("");
   const load = () => { api("/api/projects").then(setRows).catch(() => {}); };
   useEffect(load, []); useLive(load);
   useEffect(() => { api("/api/users").then((u: any) => setUsers(Array.isArray(u) ? u : [])).catch(() => {}); }, []);
   const uname = (id: any) => users.find((u: any) => u.id === id)?.name || "";
+  const initials = (n: string) => n.split(" ").map(w => w[0]).slice(0, 2).join("").toUpperCase();
   const active = rows.filter(r => !["CLOSED", "CANCELLED"].includes(r.stage));
-  const shown = stage === "all" ? rows : rows.filter(r => r.stage === stage);
-  const stat = (lab: string, val: any, hint: string) => <div className="kpi"><div className="lab">{lab}</div><div className="val">{val}</div><div className="hint">{hint}</div></div>;
-  return <div><h2 className="pt">Projects</h2><p className="sub">Every won lead becomes a numbered project here — with its quote, work orders, crew and paperwork chained to it. Click a project to run it.</p>
-    <div className="kpis">{stat("Active projects", active.length, "not closed / cancelled")}{stat("In progress", rows.filter(r => r.stage === "IN_PROGRESS").length, "crews on site now")}{stat("Awaiting scheduling", rows.filter(r => r.stage === "AWAITING_SCHEDULING").length, "won, needs a date")}{stat("Open work orders", rows.reduce((s, r) => s + (r.wo_open || 0), 0), "across all projects")}{stat("Active value", money(active.reduce((s, r) => s + (r.value || 0), 0)), "signed, not yet closed")}</div>
-    <div className="rowflex" style={{ margin: "10px 0" }}><label className="f">Stage<select value={stage} onChange={e => setStage(e.target.value)}><option value="all">All stages</option>{JOB_STAGES.map((st: string) => <option key={st} value={st}>{st.replaceAll("_", " ")}</option>)}</select></label></div>
-    {shown.length === 0 && <div className="card" style={{ textAlign: "center", padding: 30 }}><h3 style={{ margin: "4px 0" }}>No projects here yet</h3><p className="muted">Projects are born the moment a quote is signed (or a lead is marked Won) — numbered P… and carrying everything before them.</p></div>}
-    {shown.map((r: any) => <div className="wRow" key={r.id} onClick={() => openJob(r.id)}>
-      <span style={{ flex: 1, minWidth: 0 }}><b style={{ fontSize: 13.5, color: "#0E5C3A" }}>{r.project_no || "Project"}</b> <b style={{ fontSize: 13.5 }}>{r.service_requested}</b><div className="muted" style={{ fontSize: 12 }}>{r.contact_name || "Customer"}{r.location ? " · " + r.location : ""}{r.lead_no ? " · from " + r.lead_no : ""}</div></span>
-      <span className="muted" style={{ fontSize: 12, textAlign: "right" }}>🔨 {r.wo_open || 0} open / {r.wo_total || 0} WOs{r.pm_id ? <><br />PM: {uname(r.pm_id)}</> : null}{(r.wo_next || r.scheduled_start) ? <><br />🗓 {String(r.wo_next || r.scheduled_start).slice(0, 10)}</> : null}</span>
-      <span style={{ textAlign: "right", minWidth: 130 }}><Badge s={r.stage} /><div><b style={{ fontSize: 13.5 }}>{money(r.value)}</b></div>{r.margin !== undefined && <div style={{ fontSize: 11.5, color: r.margin < 0 ? "#B91C1C" : "#0E5C3A" }}>margin {money(r.margin)}{r.margin_pct != null ? ` (${r.margin_pct}%)` : ""} · cost {money(r.actual_cost)}</div>}</span>
-    </div>)}
+  const today = new Date().toISOString().slice(0, 10);
+  const matches = (r: any) => !q || `${r.project_no} ${r.service_requested} ${r.contact_name} ${r.location}`.toLowerCase().includes(q.toLowerCase());
+  const shown = rows.filter(r => (stage === "all" || r.stage === stage) && matches(r));
+  const stageTone = (st: string) => st === "IN_PROGRESS" ? "" : ["AWAITING_SCHEDULING", "ON_HOLD", "DOCUMENTATION_PENDING"].includes(st) ? "warn" : ["WORK_COMPLETED", "READY_TO_INVOICE", "INVOICED", "CLOSED"].includes(st) ? "done" : "mut";
+  const stageLabel = (st: string) => st.replaceAll("_", " ").toLowerCase().replace(/^\w/, c => c.toUpperCase());
+  const stat = (lab: string, val: any, glow: string) => <div className="statCard" style={{ "--glow": glow } as any}><div><div className="v">{val}</div><div className="l">{lab}</div></div></div>;
+  const pipeStages = JOB_STAGES.filter(st => rows.some(r => r.stage === st));
+  const health = (r: any) => r.insp_failed > 0 ? <span className="cx-health bad">● Inspection failed</span> : (r.wo_next && String(r.wo_next).slice(0, 10) < today && !["CLOSED", "CANCELLED", "INVOICED"].includes(r.stage)) ? <span className="cx-health warn">● Overdue</span> : null;
+  const woCell = (r: any) => { const done = (r.wo_total || 0) - (r.wo_open || 0); const pct = r.wo_total ? Math.round((done / r.wo_total) * 100) : 0; return <><div className="cx-prog"><i style={{ width: pct + "%" }} /></div><div className="muted" style={{ fontSize: 12, marginTop: 3 }}>{done} of {r.wo_total || 0} complete</div></>; };
+  return <div><h2 className="pt">Projects</h2><p className="sub">Every won lead becomes a numbered project — quote, work orders, inspections and billing chained to it.</p>
+    <div className="cx-stats">{stat("Active projects", active.length, "#22C55E")}{stat("In progress", rows.filter(r => r.stage === "IN_PROGRESS").length, "#0E5C3A")}{stat("Awaiting scheduling", rows.filter(r => r.stage === "AWAITING_SCHEDULING").length, "#F59E0B")}{stat("Open inspections", rows.reduce((a, r) => a + (r.insp_open || 0), 0), "#2563EB")}</div>
+    <div className="cx-pipe">{pipeStages.map(st => { const rs = rows.filter(r => r.stage === st); return <div key={st} className={`cx-pipe-seg ${stage === st ? "on" : ""}`} onClick={() => setStage(stage === st ? "all" : st)}><div className="t">{stageLabel(st)}</div><div className="n">{rs.length}</div><div className="amt">{money(rs.reduce((a, r) => a + (r.contract ?? r.value ?? 0), 0))} in stage</div></div>; })}</div>
+    <div className="cx-viewbar">
+      <input className="cx-search" placeholder="Search projects, clients, locations…" value={q} onChange={e => setQ(e.target.value)} />
+      <div className="cx-vtoggle"><button className={view === "table" ? "on" : ""} onClick={() => setView("table")}>Table</button><button className={view === "board" ? "on" : ""} onClick={() => setView("board")}>Board</button></div>
+    </div>
+    <div className="cx-filterchips">{["all", ...pipeStages].map(st => <button key={st} className={`cx-fchip ${stage === st ? "on" : ""}`} onClick={() => setStage(st)}>{st === "all" ? `All · ${rows.length}` : `${stageLabel(st)} · ${rows.filter(r => r.stage === st).length}`}</button>)}</div>
+    {shown.length === 0 && <div className="card" style={{ textAlign: "center", padding: 30 }}><h3 style={{ margin: "4px 0" }}>No projects here</h3><p className="muted">Nothing matches this stage and search. Projects are born the moment a proposal is signed.</p></div>}
+    {view === "table" && shown.length > 0 && <div className="cx-tablewrap"><table className="cx-table"><thead><tr><th>Project</th><th>Client</th><th>Stage</th><th>Work orders</th><th>Inspections</th><th>PM</th><th style={{ textAlign: "right" }}>Contract</th><th>Next</th></tr></thead><tbody>
+      {shown.map((r: any) => <tr key={r.id} onClick={() => openJob(r.id)}>
+        <td><span className="cx-pno">{r.project_no || "Project"}</span><div style={{ fontWeight: 650, marginTop: 1 }}>{r.service_requested}</div>{health(r)}</td>
+        <td>{r.contact_name || "Customer"}{r.location ? <div className="muted" style={{ fontSize: 12 }}>{r.location}</div> : null}</td>
+        <td><span className={`cx-stage ${stageTone(r.stage)}`}><i />{stageLabel(r.stage)}</span></td>
+        <td>{woCell(r)}</td>
+        <td>{r.insp_total ? <span style={{ fontSize: 12.5 }}>{r.insp_open ? `${r.insp_open} open` : "All closed"}{r.insp_failed ? <div style={{ color: "#B91C1C", fontWeight: 700 }}>{r.insp_failed} failed</div> : null}</span> : <span className="muted">—</span>}</td>
+        <td>{r.pm_id ? <span className="cx-avatars"><span>{initials(uname(r.pm_id) || "?")}</span></span> : <span className="muted">—</span>}</td>
+        <td style={{ textAlign: "right" }}><b>{money(r.contract ?? r.value)}</b>{(r.collected ?? 0) > 0 && <div style={{ fontSize: 11.5, color: "#0E5C3A" }}>{money(r.collected)} collected</div>}{r.margin !== undefined && <div style={{ fontSize: 11.5, color: r.margin < 0 ? "#B91C1C" : "#0E5C3A" }}>margin {money(r.margin)}</div>}</td>
+        <td className="muted" style={{ fontSize: 12.5, whiteSpace: "nowrap" }}>{r.wo_next ? String(r.wo_next).slice(0, 10) : r.scheduled_start ? String(r.scheduled_start).slice(0, 10) : "—"}</td>
+      </tr>)}
+    </tbody></table></div>}
+    {view === "board" && shown.length > 0 && <div className="cx-board">{pipeStages.filter(st => stage === "all" || stage === st).map(st => <div key={st} className="cx-bcol"><h4>{stageLabel(st)}<span>{shown.filter(r => r.stage === st).length}</span></h4>
+      {shown.filter(r => r.stage === st).map((r: any) => <div key={r.id} className="cx-bcard" onClick={() => openJob(r.id)}>
+        <span className="cx-pno">{r.project_no}</span><div style={{ fontWeight: 700, fontSize: 14, margin: "2px 0" }}>{r.service_requested}</div>
+        <div className="muted" style={{ fontSize: 12.5 }}>{r.contact_name}{r.location ? " · " + r.location : ""}</div>
+        <div style={{ margin: "9px 0 4px" }}>{woCell(r)}</div>
+        <div className="rowflex" style={{ justifyContent: "space-between", marginTop: 7 }}><b style={{ fontSize: 13.5 }}>{money(r.contract ?? r.value)}</b>{r.insp_failed > 0 ? <span className="cx-health bad">● {r.insp_failed} failed</span> : r.insp_open > 0 ? <span className="muted" style={{ fontSize: 12 }}>🔍 {r.insp_open} open</span> : null}</div>
+      </div>)}
+      {shown.filter(r => r.stage === st).length === 0 && <p className="muted" style={{ fontSize: 12.5, padding: "0 4px" }}>No projects in this stage.</p>}
+    </div>)}</div>}
   </div>;
 }
 
@@ -4004,7 +4170,7 @@ function JobDetail({ id, users, me, priceBook, close, refresh, openLead }: any) 
   useEffect(load, [id]);
   useLive(load);
   useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key === "Escape") close(); }; window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, []);
-  if (!d) return <div className="modalWrap"><div className="modal">Loading job… {msg}</div></div>;
+  if (!d) return <div className="modalWrap"><div className="modal cxJob">Loading job… {msg}</div></div>;
   const j = d.job;
   const visitGateOn = !!(j as any).requires_site_visit && !gateOff && !(d.site_visits || []).some((v: any) => ["scheduled", "completed"].includes(v.status));
   const stageTo = async (st: string) => { if (st === "SCHEDULED" && visitGateOn) { const tmr = new Date(Date.now() + 86400000); setVisitPick({ date: tmr.toISOString().slice(0, 10), time: "09:00", assigned_to: "", notes: "" }); toast("📍 This job needs a site visit first — book it below (or schedule the job anyway)."); return; } if (st === "SCHEDULED" && !j.scheduled_start) { const tmr = new Date(Date.now() + 86400000); setSchedPick({ date: tmr.toISOString().slice(0, 10), time: "09:00" }); return; } await api(`/api/jobs/${id}/stage`, { method: "POST", body: { to: st } }); toast(`Job moved to ${st.replaceAll("_", " ")} ✓`); load(); refresh && refresh(); };
@@ -4012,7 +4178,7 @@ function JobDetail({ id, users, me, priceBook, close, refresh, openLead }: any) 
   kbRef.current = (key: string) => { if (key === "ArrowRight" && JNEXT) stageTo(JNEXT); else if (key === "ArrowLeft" && JPREV) stageTo(JPREV); else if (["1", "2", "3", "4"].includes(key)) setTab(["overview", "crew", "schedule", "feed"][Number(key) - 1]); };
   const stageToForce = async () => { if (!j.scheduled_start) { const tmr = new Date(Date.now() + 86400000); setSchedPick({ date: tmr.toISOString().slice(0, 10), time: "09:00" }); return; } await api(`/api/jobs/${id}/stage`, { method: "POST", body: { to: "SCHEDULED" } }); toast("Job moved to SCHEDULED ✓"); load(); refresh && refresh(); };
   const doSchedule = async () => { if (!schedPick) return; const r = await api(`/api/jobs/${id}/stage`, { method: "POST", body: { to: "SCHEDULED", scheduled_start: `${schedPick.date}T${schedPick.time}:00` } }); setSchedPick(null); toast(`🗓 Scheduled for ${schedPick.date} at ${schedPick.time} — crew synced to the Ops schedule${r.scheduling?.crew_scheduled ? ` (${r.scheduling.crew_scheduled} crew)` : ""}, timesheets ready for that week`); load(); refresh && refresh(); };
-  return (<div className="modalWrap"><div className="modal">
+  return (<div className="modalWrap"><div className="modal cxJob">
     <div className="rowflex" style={{ justifyContent: "space-between" }}><h3 style={{ margin: 0 }}>{j.project_no ? j.project_no + " · " : ""}{j.service_requested} — {j.contact_name}</h3><button className="btn ghost small" onClick={close}>✕ Close</button></div>
     <p className="muted" style={{ margin: "6px 0" }}>{j.contact_phone || ""} {j.contact_email ? "· " + j.contact_email : ""} · {j.location || ""} · job value <b style={{ color: "#14532d" }}>{money(j.value)}</b> · labor {money(j.labor_cost)} ({j.labor_pct ?? 0}% of value)</p>
     {d.origin && <div className="crumbs"><span className="clickable" onClick={() => openLead && openLead(d.origin.lead_id)}>🎯 {d.origin.lead_no || "Lead"}: {d.origin.service_requested || "originating lead"}</span>{d.origin.proposal_id ? <span className="clickable" onClick={() => openLead && openLead(d.origin.lead_id)}>→ 📄 {d.origin.quote_no || "Proposal"} · {money(d.origin.proposal_total)} · {d.origin.proposal_status}</span> : <span className="muted">→ no signed proposal (manual / legacy win)</span>}<span>→ 🔧 {j.project_no || "This project"}</span></div>}
