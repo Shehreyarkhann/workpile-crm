@@ -1003,3 +1003,7 @@ aside.rail button.on .nshort { background:#ffffff22; }
 .cx-glance .k { font-size:10.5px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--cx-mut); }
 .cx-glance .v { font-size:17px; font-weight:800; margin-top:2px; }
 @media (max-width: 700px) { .cx-glance { grid-template-columns:1fr 1fr; gap:11px 0; } .cx-glance > div:nth-child(3) { padding-left:0; border-left:0; } }
+
+.cx-bcol.candrop { outline:2px dashed #B9CDBB; outline-offset:-6px; }
+.cx-bcard[draggable="true"] { cursor:grab; }
+.cx-bcard[draggable="true"]:active { cursor:grabbing; }

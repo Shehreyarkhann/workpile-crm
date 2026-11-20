@@ -425,8 +425,8 @@ function WJobsActive({ go, onForbidden, settings }: any) {
   const stage = (settings && settings.stage) || "all";
   const SG: Record<string, string[]> = { scheduled: ["AWAITING_SCHEDULING", "SCHEDULED"], active: ["IN_PROGRESS", "ON_HOLD"], finishing: ["WORK_COMPLETED", "DOCUMENTATION_PENDING", "READY_TO_INVOICE", "INVOICED"] };
   const rows = asArr(data).filter((j: any) => !["CLOSED", "CANCELLED"].includes(j.stage)).filter((j: any) => stage === "all" || (SG[stage] || []).includes(j.stage)).slice(0, 6);
-  const open = (j: any) => { const w = window as any; if (w.wpOpenJob) w.wpOpenJob(j.id); else go({ view: "jobs" }); };
-  return (<WShell icon="🔧" title="Active jobs" sub={stage !== "all" ? "Stage: " + stage : undefined} onAll={() => go({ view: "jobs" })}>
+  const open = (j: any) => { const w = window as any; if (w.wpOpenJob) w.wpOpenJob(j.id); else go({ view: "projects" }); };
+  return (<WShell icon="🔧" title="Active jobs" sub={stage !== "all" ? "Stage: " + stage : undefined} onAll={() => go({ view: "projects" })}>
     {!data && !err && <WLoad />}{err && <WErr />}
     {data && rows.length === 0 && <p className="muted" style={{ fontSize: 13 }}>{stage === "all" ? "No active jobs — won proposals become jobs automatically." : "No jobs at this stage right now."}</p>}
     {rows.map((j: any) => <div className="wRow" key={j.id} onClick={() => open(j)}><span style={{ flex: 1, minWidth: 0 }}><b style={{ fontSize: 13.5 }}>{j.contact_name || j.service_requested || "Job"}</b><div className="muted" style={{ fontSize: 12 }}>{j.service_requested || ""}</div></span><span className="st info">{String(j.stage || "").replaceAll("_", " ")}</span><b style={{ fontSize: 13 }}>{money(j.value)}</b></div>)}
@@ -2903,7 +2903,7 @@ function CommandPalette({ close, go, openLead, newLead }: any) {
   const [q, setQ] = useState(""); const [leads, setLeads] = useState<any[]>([]); const [recents, setRecents] = useState<any[]>([]); const [idx, setIdx] = useState(0);
   const ACTIONS = [
     { label: "Work Queue", hint: "G then Q", run: () => go({ view: "queue" }) },
-    { label: "Jobs", hint: "G then J", run: () => go({ view: "jobs" }) },
+    { label: "Projects", hint: "G then J", run: () => go({ view: "projects" }) },
     { label: "Log time", hint: "T", run: () => (window as any).wpLogTime?.() },
     { label: "Customers", hint: "", run: () => go({ view: "customers" }) },
     { label: "People", hint: "", run: () => (window as any).wpGoTab?.("customers", "people") },
@@ -3165,26 +3165,6 @@ function WorkQueue({ openLead, openJob, go, me }: any) {
     {handlingProp && <ProposalHandleModal item={handlingProp} onClose={() => setHandlingProp(null)} onDone={() => { setHandlingProp(null); load(); }} openLead={openLead} />}
   </div>);
 }
-
-function JobsBoard({ openJob, signal, onChange }: any) {
-  const [jobs, setJobs] = useState<any[]>([]); const [dragId, setDragId] = useState(""); const [hideEmpty, setHideEmpty] = useState(() => { try { return localStorage.getItem("wp_board_hide_empty") === "1"; } catch { return false; } });
-  const load = () => { api("/api/jobs").then(setJobs).catch(() => {}); };
-  useEffect(load, []);
-  useEffect(load, [signal]);
-  useLive(load);
-  const drop = async (st: string) => { if (!dragId) return; const j = jobs.find(x => x.id === dragId); await api(`/api/jobs/${dragId}/stage`, { method: "POST", body: { to: st } }).catch(() => {}); setDragId(""); load(); onChange && onChange(); if (st === "SCHEDULED" && j && !j.scheduled_start) openJob(j.id); };
-  const BP = JOB_STAGES.filter(s2 => s2 !== "ON_HOLD" && s2 !== "CANCELLED"); const bnext = (j: any) => { const eff = j.stage === "ON_HOLD" ? "IN_PROGRESS" : j.stage; const ci = BP.indexOf(eff); return j.stage === "ON_HOLD" ? "IN_PROGRESS" : (ci >= 0 && ci < BP.length - 1 ? BP[ci + 1] : null); };
-  const advance = async (j: any) => { const nx = bnext(j); if (!nx) return; await api(`/api/jobs/${j.id}/stage`, { method: "POST", body: { to: nx } }).catch(() => {}); load(); onChange && onChange(); if (nx === "SCHEDULED" && !j.scheduled_start) openJob(j.id); };
-  const cols = JOB_STAGES.filter(st => !hideEmpty || dragId || jobs.some(j => j.stage === st));
-  return (<div><h2 className="pt">Jobs</h2><p className="sub">Won work, run as operations: schedule it, crew it, work it, paper it, invoice it. Drag cards to move — both directions, always.</p>
-    <label className="muted" style={{ fontSize: 12.5, display: "inline-flex", gap: 6, alignItems: "center", marginBottom: 8 }}><input type="checkbox" style={{ width: "auto" }} checked={hideEmpty} onChange={e => { setHideEmpty(e.target.checked); try { localStorage.setItem("wp_board_hide_empty", e.target.checked ? "1" : "0"); } catch {} }} /> Hide empty columns</label>
-    <div className="kanban">{cols.map(st => <div className="kcol" key={st} onDragOver={e => e.preventDefault()} onDrop={() => drop(st)}><h4>{st.replaceAll("_", " ")}<span>{num(jobs.filter(j => j.stage === st).length)}</span></h4>
-      {jobs.filter(j => j.stage === st).map((j: any) => { const nx = bnext(j); return <div className="kcard" key={j.id} draggable onDragStart={() => setDragId(j.id)} onClick={() => openJob(j.id)}><b>{j.project_no ? j.project_no + " · " : ""}{j.service_requested}</b><span className="m">{j.contact_name} · {money(j.value)}<br />{j.labor_hours ? `⏱ ${j.labor_hours}h · ${money(j.labor_cost)} labor (${j.labor_pct ?? 0}%)` : "no time logged"} · 📄 {j.docs_received}/{j.docs_total} docs{(j as any).requires_site_visit ? <><br />📍 site visit required</> : null}{j.scheduled_start ? <><br />🗓 {String(j.scheduled_start).slice(0, 10)} · {String(j.scheduled_start).slice(11, 16)}</> : null}</span>{nx && <button className="qact" onClick={e => { e.stopPropagation(); advance(j); }}>⏭ {nx.replaceAll("_", " ")}</button>}</div>; })}
-    </div>)}</div>
-    {jobs.length === 0 && <div className="card" style={{ textAlign: "center", padding: 30 }}><h3 style={{ margin: "4px 0" }}>No jobs yet</h3><p className="muted">Jobs are born the moment a proposal is signed (or a lead is marked Won). Win something and it lands here, ready to schedule.</p></div>}
-  </div>);
-}
-
 
 function Avatar({ u, size = 30 }: any) {
   if (u?.avatar_url) return <img className="avatar" style={{ width: size, height: size }} src={u.avatar_url} alt={u?.name || ""} />;
@@ -3729,7 +3709,7 @@ function InspectionsKpiWidget({ go }: any) {
   const A = { glow: "#F59E0B", bg: "#FEF3C7" };
   const R = { glow: "#DC2626", bg: "#FEE2E2" };
   const tile = (icon: string, label: string, value: any, tone: any) => (
-    <div className="kpiTile" style={{ ["--glow" as any]: tone.glow }} onClick={() => go && go({ view: "jobs" })} title="Open Jobs">
+    <div className="kpiTile" style={{ ["--glow" as any]: tone.glow }} onClick={() => go && go({ view: "projects" })} title="Open Projects">
       <div className="kpiIc" style={{ background: tone.bg }}>{icon}</div>
       <div className="kpiV">{value}</div>
       <div className="kpiL">{label}</div>
@@ -4146,6 +4126,8 @@ function JobWorkOrders({ jobId, users }: any) {
 function ProjectsPage({ openJob }: any) {
   const [rows, setRows] = useState<any[]>([]); const [users, setUsers] = useState<any[]>([]); const [stage, setStage] = useState("all");
   const [view, setView] = useState("table"); const [q, setQ] = useState("");
+  const [dragId, setDragId] = useState(""); const [hideEmpty, setHideEmpty] = useState(() => { try { return localStorage.getItem("wp_proj_hide_empty") === "1"; } catch { return false; } });
+  const moveStage = async (id: string, to: string) => { const r = rows.find((x: any) => x.id === id); setDragId(""); if (!r || r.stage === to) return; await api(`/api/jobs/${id}/stage`, { method: "POST", body: { to } }).catch(() => {}); load(); };
   const load = () => { api("/api/projects").then(setRows).catch(() => {}); };
   useEffect(load, []); useLive(load);
   useEffect(() => { api("/api/users").then((u: any) => setUsers(Array.isArray(u) ? u : [])).catch(() => {}); }, []);
@@ -4167,6 +4149,8 @@ function ProjectsPage({ openJob }: any) {
     <div className="cx-viewbar">
       <input className="cx-search" placeholder="Search projects, clients, locations…" value={q} onChange={e => setQ(e.target.value)} />
       <div className="cx-vtoggle"><button className={view === "table" ? "on" : ""} onClick={() => setView("table")}>Table</button><button className={view === "board" ? "on" : ""} onClick={() => setView("board")}>Board</button></div>
+      {view === "board" && <label className="muted" style={{ fontSize: 12.5, display: "inline-flex", gap: 6, alignItems: "center" }}><input type="checkbox" style={{ width: "auto" }} checked={hideEmpty} onChange={e => { setHideEmpty(e.target.checked); try { localStorage.setItem("wp_proj_hide_empty", e.target.checked ? "1" : "0"); } catch {} }} /> Hide empty stages</label>}
+      {view === "board" && <span className="muted" style={{ fontSize: 12.5 }}>Drag a card to move it between stages.</span>}
     </div>
     <div className="cx-filterchips">{["all", ...pipeStages].map(st => <button key={st} className={`cx-fchip ${stage === st ? "on" : ""}`} onClick={() => setStage(st)}>{st === "all" ? `All · ${rows.length}` : `${stageLabel(st)} · ${rows.filter(r => r.stage === st).length}`}</button>)}</div>
     {shown.length === 0 && <div className="card" style={{ textAlign: "center", padding: 30 }}><h3 style={{ margin: "4px 0" }}>No projects here</h3><p className="muted">Nothing matches this stage and search. Projects are born the moment a proposal is signed.</p></div>}
@@ -4182,8 +4166,8 @@ function ProjectsPage({ openJob }: any) {
         <td className="muted" style={{ fontSize: 12.5, whiteSpace: "nowrap" }}>{r.wo_next ? String(r.wo_next).slice(0, 10) : r.scheduled_start ? String(r.scheduled_start).slice(0, 10) : "—"}</td>
       </tr>)}
     </tbody></table></div>}
-    {view === "board" && shown.length > 0 && <div className="cx-board">{pipeStages.filter(st => stage === "all" || stage === st).map(st => <div key={st} className="cx-bcol"><h4>{stageLabel(st)}<span>{shown.filter(r => r.stage === st).length}</span></h4>
-      {shown.filter(r => r.stage === st).map((r: any) => <div key={r.id} className="cx-bcard" onClick={() => openJob(r.id)}>
+    {view === "board" && shown.length > 0 && <div className="cx-board">{JOB_STAGES.filter(st => (stage === "all" || stage === st) && (!hideEmpty || dragId || shown.some(r => r.stage === st))).map(st => <div key={st} className={`cx-bcol ${dragId ? "candrop" : ""}`} onDragOver={e => e.preventDefault()} onDrop={() => dragId && moveStage(dragId, st)}><h4>{stageLabel(st)}<span>{shown.filter(r => r.stage === st).length}</span></h4>
+      {shown.filter(r => r.stage === st).map((r: any) => <div key={r.id} className="cx-bcard" draggable onDragStart={() => setDragId(r.id)} onDragEnd={() => setDragId("")} onClick={() => openJob(r.id)}>
         <span className="cx-pno">{r.project_no}</span><div style={{ fontWeight: 700, fontSize: 14, margin: "2px 0" }}>{r.service_requested}</div>
         <div className="muted" style={{ fontSize: 12.5 }}>{r.contact_name}{r.location ? " · " + r.location : ""}</div>
         <div style={{ margin: "9px 0 4px" }}>{woCell(r)}</div>
@@ -5033,7 +5017,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       if (e.key.toLowerCase() === "t") { setLtOpen(true); return; }
       if (e.key.toLowerCase() === "n") { setCreating(true); return; }
       if (e.key.toLowerCase() === "g") { gAt = Date.now(); return; }
-      if (gAt && Date.now() - gAt < 900) { const m: Record<string, string> = { m: "myday", d: "dashboard", p: "pulse", l: "leads", a: "approvals", r: "reports", s: "settings", b: "billing", q: "queue", j: "jobs" }; const v = m[e.key.toLowerCase()]; if (v) { setNav({ view: v }); gAt = 0; } }
+      if (gAt && Date.now() - gAt < 900) { const m: Record<string, string> = { m: "myday", d: "dashboard", p: "pulse", l: "leads", a: "approvals", r: "reports", s: "settings", b: "billing", q: "queue", j: "projects" }; const v = m[e.key.toLowerCase()]; if (v) { setNav({ view: v }); gAt = 0; } }
     };
     window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, [user, palOpen]);
   const [workspaces, setWorkspaces] = useState<any[]>([]); const [newWs, setNewWs] = useState("");
@@ -5048,7 +5032,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
   useEffect(() => { if (!openMenu) return; const close = () => setOpenMenu(""); const key = (e: KeyboardEvent) => { if (e.key === "Escape") close(); }; window.addEventListener("scroll", close, true); window.addEventListener("resize", close); window.addEventListener("keydown", key); return () => { window.removeEventListener("scroll", close, true); window.removeEventListener("resize", close); window.removeEventListener("keydown", key); }; }, [openMenu ]);
   const go = (n: Nav) => setNav(n);
   if (!user) return <Landing onAuth={(u: any) => { setUser(u); }} />;
-  const APPS: Record<string, string[]> = { sales: ["queue", "myday", "dashboard", "pulse", "leads", "proposals", "jobs", "customers", "campaigns", "planner", "library", "reports", "approvals", "ai", "inbox"], ops: ["queue", "jobs", "ops", "planner", "leads", "proposals", "inbox", "library", "handoffs", "imports", "demand"], marketing: ["dashboard", "campaigns", "leads", "customers", "proposals", "imports", "demand", "reports", "library"] };
+  const APPS: Record<string, string[]> = { sales: ["queue", "myday", "dashboard", "pulse", "leads", "proposals", "projects", "customers", "campaigns", "planner", "library", "reports", "approvals", "ai", "inbox"], ops: ["queue", "projects", "ops", "planner", "leads", "proposals", "inbox", "library", "handoffs", "imports", "demand"], marketing: ["dashboard", "campaigns", "leads", "customers", "proposals", "imports", "demand", "reports", "library"] };
   const VIEW_MODULE: Record<string, string> = { copilot: "automations", dashboard: "home", home: "home", queue: "queue", myday: "myday", inbox: "inbox", tasks: "tasks", calendar: "schedule", leads: "leads", customers: "customers", people: "customers", proposals: "proposals", approvals: "approvals", jobs: "jobs", projects: "jobs", schedule: "schedule", ops: "ops", campaigns: "campaigns", opportunities: "opportunities", demand: "demand", pulse: "pulse", handoffs: "handoffs", library: "library", notes: "library", files: "library", imports: "import", import: "import", reports: "reports", ai: "automations", automations: "automations", settings: "settings" };
   const modLvl = (v: string) => { const mods = user?.permissions?.modules || {}; if (v === "planner") { const t = mods.tasks ?? "edit", s = mods.schedule ?? "edit"; return (t === "none" && s === "none") ? "none" : (t === "edit" || s === "edit") ? "edit" : "view"; } const mod = VIEW_MODULE[v]; if (!mod) return "edit"; return (mods[mod] ?? "edit") as string; };
   const viewOK = modLvl(nav.view) !== "none" || ["settings", "billing", "admin"].includes(nav.view);
@@ -5064,7 +5048,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
   const NAV_MODEL: any[] = [
     { id: "work", label: "Work", items: [{ v: "dashboard", short: "🏠", label: "Home" }, { v: "queue", short: "🗂", label: "Work Queue" }, { v: "myday", short: "☀️", label: "My Day" }, { v: "inbox", short: "💬", label: "Inbox" }, { v: "planner", short: "✅", label: "Tasks", tab: "tasks" }] },
     { id: "pipe", label: "Pipeline", items: [{ v: "leads", short: "🎯", label: "Leads" }, { v: "customers", short: "👥", label: "Customers" }, { v: "proposals", short: "📄", label: "Proposals" }, { v: "approvals", short: "🖊", label: "Approvals", cnt: pending || undefined }, { v: "opportunities", short: "💼", label: "Opportunities" }] },
-    { id: "ops", label: "Operations", items: [{ v: "projects", short: "🔧", label: "Projects" }, { v: "jobs", short: "🛠", label: "Jobs" }, { v: "planner", short: "🗓", label: "Schedule", tab: "calendar" }, { v: "ops", short: "🖥", label: "Ops Console" }] },
+    { id: "ops", label: "Operations", items: [{ v: "projects", short: "🔧", label: "Projects" }, { v: "planner", short: "🗓", label: "Schedule", tab: "calendar" }, { v: "ops", short: "🖥", label: "Ops Console" }] },
     { id: "growth", label: "Growth", items: [{ v: "campaigns", short: "📣", label: "Campaigns" }, { v: "demand", short: "🔍", label: "Demand Gap" }, { v: "pulse", short: "📊", label: "Pulse" }, { v: "handoffs", short: "🤝", label: "Handoffs" }, { v: "library", short: "📚", label: "Library" }, { v: "imports", short: "📥", label: "Import CSV" }] },
     { id: "insights", label: "Insights", items: [{ v: "reports", short: "📈", label: "Reports" }] },
     { id: "system", label: "System", items: [{ v: "copilot", short: "✦", label: "Copilot" }, { v: "ai", short: "🤖", label: "Automations" }, { v: "settings", short: "⚙️", label: "Settings" }, ...(user.is_platform_admin ? [{ v: "admin", short: "🛡", label: "Platform Admin" }] : [])] },
@@ -5093,7 +5077,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
         <NavB v="leads" short="🎯">Leads</NavB><NavB v="customers" short="👥">Customers</NavB><NavB v="proposals" short="📄">Proposals</NavB><NavB v="approvals" short="🖊" cnt={pending || undefined}>Approvals</NavB><NavB v="opportunities" short="💼">Opportunities</NavB>
       </NavGroup>
       <NavGroup id="ops" label="OPERATIONS">
-        <NavB v="projects" short="🔧">Projects</NavB><NavB v="jobs" short="🛠">Jobs</NavB><NavB v="planner" short="🗓" onGo={() => { go({ view: "planner" }); (window as any).wpGoTab?.("planner", "calendar"); }}>Schedule</NavB><NavB v="ops" short="🖥">Ops Console</NavB>
+        <NavB v="projects" short="🔧">Projects</NavB><NavB v="planner" short="🗓" onGo={() => { go({ view: "planner" }); (window as any).wpGoTab?.("planner", "calendar"); }}>Schedule</NavB><NavB v="ops" short="🖥">Ops Console</NavB>
       </NavGroup>
       <NavGroup id="growth" label="GROWTH">
         <NavB v="campaigns" short="📣">Campaigns</NavB><NavB v="demand" short="🔍">Demand Gap</NavB><NavB v="pulse" short="📊">Pulse</NavB><NavB v="handoffs" short="🤝">Handoffs</NavB><NavB v="library" short="📚">Library</NavB><NavB v="imports" short="📥">Import CSV</NavB>
@@ -5120,7 +5104,7 @@ const [pending, setPending] = useState(0); const [creating, setCreating] = useSt
       <EB key={nav.view}>
       {!viewOK && <div className="card" style={{ maxWidth: 560, margin: "40px auto", textAlign: "center", padding: 28 }}><div style={{ fontSize: 30 }}>🔒</div><h3 style={{ margin: "8px 0" }}>This area isn't part of your access</h3><p className="mut">Your role doesn't include this module. If you need it, the owner can grant it in Settings → Access &amp; Roles.</p></div>}
       {nav.view === "queue" && viewOK && <WorkQueue openLead={openLead} openJob={(id: string) => setJobOpen(id)} go={go} me={user} />}
-      {nav.view === "jobs" && viewOK && <JobsBoard openJob={(id: string) => setJobOpen(id)} signal={tick} onChange={() => setTick(t => t + 1)} />}
+      {nav.view === "jobs" && viewOK && <ProjectsPage openJob={(id: string) => setJobOpen(id)} />}
       {nav.view === "projects" && viewOK && <ProjectsPage openJob={(id: string) => setJobOpen(id)} />}
       {nav.view === "customers" && viewOK && <Customers openCustomer={(id: string) => setCustOpen(id)} tabSignal={tabSignal} />}
       {(nav.view === "people") && viewOK && <Customers openCustomer={(id: string) => setCustOpen(id)} tabSignal={{ view: "customers", tab: "people", n: 1 }} />}
