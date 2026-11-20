@@ -2393,9 +2393,51 @@ function SnapPhone() {
     <div className="nwPhoneRow"><span>📍 Next: Tank Removal</span><b>1:30 PM</b></div>
     <p className="nwPhoneFoot">No signal in the basement? Work saves on the phone and syncs itself later.</p></div>);
 }
+function HeroField() {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const cv = ref.current; if (!cv) return;
+    const ctx = cv.getContext("2d"); if (!ctx) return;
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let w = 0, h = 0, raf = 0, run = true, mx = -9999, my = -9999;
+    let pts: { x: number; y: number; vx: number; vy: number }[] = [];
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const size = () => { const r = cv.parentElement!.getBoundingClientRect(); w = r.width; h = r.height; cv.width = w * dpr; cv.height = h * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0); const n = Math.min(85, Math.floor(w / 16)); pts = Array.from({ length: n }, () => ({ x: Math.random() * w, y: Math.random() * h, vx: (Math.random() - .5) * .22, vy: (Math.random() - .5) * .22 })); };
+    const draw = () => {
+      ctx.clearRect(0, 0, w, h);
+      for (const p of pts) {
+        p.x += p.vx; p.y += p.vy;
+        if (p.x < 0 || p.x > w) p.vx *= -1; if (p.y < 0 || p.y > h) p.vy *= -1;
+        const dm = Math.hypot(p.x - mx, p.y - my); if (dm < 110 && dm > 1) { p.x += (p.x - mx) / dm * .5; p.y += (p.y - my) / dm * .5; }
+      }
+      for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) { const a = pts[i], b = pts[j]; const d = Math.hypot(a.x - b.x, a.y - b.y); if (d < 118) { ctx.strokeStyle = "rgba(14,92,58," + ((1 - d / 118) * .13).toFixed(3) + ")"; ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); } }
+      for (const p of pts) { ctx.fillStyle = "rgba(14,92,58,.34)"; ctx.beginPath(); ctx.arc(p.x, p.y, 1.6, 0, 7); ctx.fill(); }
+      if (run && !reduced) raf = requestAnimationFrame(draw);
+    };
+    const onMove = (e: MouseEvent) => { const r = cv.getBoundingClientRect(); mx = e.clientX - r.left; my = e.clientY - r.top; };
+    size(); draw();
+    window.addEventListener("resize", size);
+    window.addEventListener("mousemove", onMove);
+    const io = new IntersectionObserver(es => { const vis = es[0].isIntersecting; if (vis && !run && !reduced) { run = true; draw(); } if (!vis) { run = false; cancelAnimationFrame(raf); } });
+    io.observe(cv);
+    return () => { run = false; cancelAnimationFrame(raf); window.removeEventListener("resize", size); window.removeEventListener("mousemove", onMove); io.disconnect(); };
+  }, []);
+  return (<canvas ref={ref} className="heroField" aria-hidden="true" />);
+}
+
+const FID_GROUPS: [string, [string, string][]][] = [
+  ["Win the work", [["Lead capture, built in", "Website forms and an API drop new requests straight into the queue — no retyping, no middleman."], ["Spreadsheet importer", "Your existing tracker imports in its own language — Lead, Quote, Sent, Survey land where they belong."], ["Smart mail triage", "Spam, marketing and auto-mail never become leads. Real requests always do."], ["Demand-gap insights", "See what customers keep asking for that you don't sell yet — your next service line, evidenced."]]],
+  ["Run the work", [["Projects & work orders", "Every job is a real object: time, materials, dependencies, photos — not a row in a sheet."], ["Crew scheduling", "Who is where, today and this week. Site visits live inside the job, not in a group text."], ["Inspections", "13 standards built in — AHERA, NESHAP, ICR 56, lead, mold, tanks. The report generates from the record."], ["Files & report cards", "Photos, documents and inspection reports, named so anyone can find them in seconds."]]],
+  ["Get paid", [["Invoicing & deposits", "Milestone billing and sales tax handled; the deposit is requested the moment a proposal is signed."], ["Card payments", "Customers pay invoices into your own Stripe account — Workpile never touches the money."], ["QuickBooks sync", "Every payment and deposit lands in QuickBooks, matched to its invoice."], ["Expenses & margin", "Receipts flow into true job cost. Margin stays visible to exactly the roles you choose."]]],
+  ["Stay in control", [["Custom roles", "Your titles and your access rules — not a vendor's template with your name on it."], ["Two-factor sign-in", "TOTP two-factor available on every account, enforced where you want it."], ["Full audit log", "Every action recorded, in order. Nothing happens off the books."], ["Reports & full export", "Scheduled Word reports computed from your real numbers — and your entire dataset exports whenever you ask."]]],
+];
+
 function SiteHome({ onLogin, onRegister, onEmail }: any) {
   const [email, setEmail] = useState(""); const [annual, setAnnual] = useState(true); const [tab, setTab] = useState(0);
+  const [calc, setCalc] = useState({ leads: 40, job: 2800, rate: 25 });
   const rootRef = useRef<HTMLDivElement>(null);
+  const tourRef = useRef<HTMLElement>(null);
+  const tiltRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const root = rootRef.current; if (!root || !("IntersectionObserver" in window)) return;
     const els = root.querySelectorAll(".nwSec, .nwField, .nwCta, .swOp, .nwProbCard, .nwPrice, .nwStep, .nwTrust");
@@ -2403,6 +2445,16 @@ function SiteHome({ onLogin, onRegister, onEmail }: any) {
     const io = new IntersectionObserver(es => { es.forEach(e => { if (e.isIntersecting) { e.target.classList.add("rvIn"); io.unobserve(e.target); } }); }, { threshold: 0.1 });
     els.forEach(el => io.observe(el));
     return () => io.disconnect();
+  }, []);
+  useEffect(() => {
+    const onScroll = () => {
+      const el = tourRef.current; if (!el || window.innerWidth < 901) return;
+      const r = el.getBoundingClientRect(); const total = r.height - window.innerHeight; if (total <= 0) return;
+      const p = Math.min(1, Math.max(0, -r.top / total)); const idx = Math.min(4, Math.floor(p * 5));
+      setTab(prev => (prev === idx ? prev : idx));
+    };
+    window.addEventListener("scroll", onScroll, { passive: true }); onScroll();
+    return () => window.removeEventListener("scroll", onScroll);
   }, []);
   const tours: [string, string, string, string[], any][] = [
     ["The Work Queue", "Everything that needs a human — worst first.", "Your day, sorted. Approvals, overdue invoices, failed inspections, visits to book — one queue that works to zero instead of an inbox that works to chaos.", ["Every request gets an owner, a next step, and a due time", "Overdue and at-risk work surfaces itself", "Clear the queue and the day is done — visibly"], <SnapQueue key="q" />],
@@ -2426,6 +2478,7 @@ function SiteHome({ onLogin, onRegister, onEmail }: any) {
   return (<div className="nw" ref={rootRef}>
     <header className="nwNav"><Logo /><nav className="nwLinks"><a href="#tour">Product</a><a href="#how">How it works</a><a href="#pricing">Pricing</a><a href="#faq">FAQ</a></nav><div className="nwNavCtas"><button className="nwBtnGhost" onClick={onLogin}>Sign in</button><button className="nwBtnSolid lg" onClick={onRegister}>Start free</button></div></header>
     <section className="nwHero swHero">
+      <HeroField />
       <div className="swHeroGrid">
         <div className="swHeroL">
           <span className="swBadge"><i></i>Built for field services &amp; SMBs</span>
@@ -2434,12 +2487,13 @@ function SiteHome({ onLogin, onRegister, onEmail }: any) {
           <div className="swBtns"><button className="nwBtnSolid lg" onClick={onRegister}>Start free</button><a className="nwBtnGhost lg" href="#tour"><span className="swPlay">▶</span>Watch it work</a></div>
           <p className="nwMicro">Free 30 days on Pro · No card · Set up in an afternoon · Cancel anytime</p>
         </div>
-        <div className="swHeroR"><HeroMock /></div>
+        <div className="swHeroR" ref={tiltRef} onMouseMove={e => { const el = tiltRef.current; if (!el || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return; const r = el.getBoundingClientRect(); const px = (e.clientX - r.left) / r.width - .5; const py = (e.clientY - r.top) / r.height - .5; el.style.transform = "rotateY(" + (px * 5).toFixed(2) + "deg) rotateX(" + (-py * 5).toFixed(2) + "deg)"; }} onMouseLeave={() => { const el = tiltRef.current; if (el) el.style.transform = ""; }}><HeroMock /></div>
       </div>
       <div className="fpWorks"><span>Works with</span><b>Gmail</b><b>Outlook</b><b>QuickBooks</b><b>Stripe</b><b>Twilio</b><b>Slack</b></div>
     </section>
     
-    <section className="nwSec fpFeatSec"><div className="fpCard">
+        <div className="mqWrap" aria-hidden="true"><div className="mqTrack">{[0, 1].map(k => (<div className="mqSet" key={k}>{["Lead capture", "AI drafting", "Same-day proposals", "E-signatures", "Inspections", "Crew scheduling", "Invoicing", "QuickBooks sync", "Customer portal", "Full audit log"].map(t => (<span className="mqItem" key={t}>{t}<i>✦</i></span>))}</div>))}</div></div>
+<section className="nwSec fpFeatSec"><div className="fpCard">
       <div className="fpCardHead"><div><p className="nwKick left">Why it exists</p><h2 className="nwH2 left">Built for the way shops actually run</h2></div><p className="fpCardSub">Four leaks drain a service business: the inbox nobody owns, the proposals written at midnight, the paperwork that never closes, and money nobody can trace. Workpile plugs all four.</p></div>
       <div className="nwProb">
         <div className="nwProbCard"><span className="nwProbIco">📥</span><b>The inbox is where leads go to die</b><p>Requests land in a shared inbox nobody owns and age quietly into lost jobs. Workpile gives every one an owner, a next step, and a due time — and the agent drafts the first reply in minutes.</p></div>
@@ -2447,23 +2501,46 @@ function SiteHome({ onLogin, onRegister, onEmail }: any) {
         <div className="nwProbCard"><span className="nwProbIco">📋</span><b>Done jobs with open paperwork don't pay</b><p>The work is finished; the inspection report, the invoice, and the review ask are still open. Workpile closes the loop — you approve the steps that matter.</p></div><div className="nwProbCard"><span className="nwProbIco">🧾</span><b>Money you can't trace</b><p>When the numbers live in three spreadsheets and somebody's head, every job's profit is a guess — and the guess is always wrong in the same direction.</p></div>
       </div>
       </div></section>
-    <section className="nwSec swOpsSec">
-      <h2 className="nwH2">Everything after the lead, handled</h2>
-      <p className="swSub">Not another dashboard to babysit — the work itself, done and waiting on your approval.</p>
-      <div className="swOps">
-        <div className="swOp"><SnapQueue /><div className="swOpTx"><b>The queue works itself</b><p>Every request gets an owner, a next step, and a due time. Nothing ages quietly — worst first, always.</p></div></div>
-        <div className="swOp"><SnapProposal /><div className="swOpTx"><b>Proposals out the same day</b><p>Built from your price book and your sections. E-signed, deposit requested, filed — without the 11pm rewrite.</p></div></div>
-        <div className="swOp"><SnapMoney /><div className="swOpTx"><b>Money in five honest views</b><p>Pipeline, proposed, contracted, invoiced, collected — never blended into one lying number. Click any figure to see its records.</p></div></div>
-      </div>
-    </section>
-    <section className="nwSec alt" id="tour">
+    <section className="nwSec alt" id="tour" ref={tourRef}>
       <p className="nwKick">The product</p>
       <h2 className="nwH2">One system. Every step of the money.</h2><p className="swSub">Each tool replaces a spreadsheet, a sticky note, or an 11pm scramble.</p>
       <div className="swTabs">
         <div className="swTabList">
           {tours.map((t, i) => (<div className={"swTab" + (tab === i ? " on" : "")} key={i} onClick={() => setTab(i)}><b>{t[0]}</b>{tab === i ? (<><h3>{t[1]}</h3><p>{t[2]}</p><ul>{t[3].map((b, j) => (<li key={j}>✓ {b}</li>))}</ul></>) : null}</div>))}
         </div>
-        <div className="swTabPane">{tours[tab][4]}</div>
+        <div className="swTabPane" key={tab}>{tours[tab][4]}</div>
+      </div>
+    </section>
+    <section className="nwSec fidxSec">
+      <h2 className="nwH2">Everything else, included</h2>
+      <p className="swSub">Most platforms sell half of this as add-ons. In Workpile there are no modules to unlock — the whole system is the product.</p>
+      <div className="fidxGrid">
+        {FID_GROUPS.map(([g, items]) => (<div className="fidxCol" key={g}><h3>{g}</h3>{items.map(([n, d]) => (<div className="fidxItem" key={n}><b>{n}</b><p>{d}</p></div>))}</div>))}
+      </div>
+    </section>
+    <section className="nwSec nwAgentSec">
+      <div className="nwAgent">
+        <div className="agTx">
+          <p className="agKick">Copilot — the operator</p>
+          <h2>It doesn't chat about the work. It does the work.</h2>
+          <p>Give Copilot an outcome. It plans the steps, drafts from your templates and your price book, and executes — asking first wherever a customer or a dollar is involved. Every run is logged, line by line.</p>
+          <div className="agLadder">
+            <span className="agRung">L0<b>Observe</b></span>
+            <span className="agRung">L1<b>Draft only</b></span>
+            <span className="agRung on">L2<b>Act with approval</b></span>
+            <span className="agRung">L3<b>Act on your rules</b></span>
+            <span className="agRung">L4<b>Auto, guardrails on</b></span>
+          </div>
+          <p className="agNote">Most shops run at L2. You set the level per workspace — and sends and payments never outrun your approval rules, at any level.</p>
+        </div>
+        <div className="agRun">
+          <div className="agRunHead"><b>Run — Tuesday, 7:12 AM</b><span className="agLive">● Completed</span></div>
+          <div className="agStep"><span className="agDot done" /><div><b>Goal received</b><p>"Chase every proposal from last week that went quiet."</p></div><span className="agTime">7:12</span></div>
+          <div className="agStep"><span className="agDot done" /><div><b>Plan drafted</b><p>6 quiet proposals found · follow-ups drafted from your templates · every figure priced from your book</p></div><span className="agTime">7:12</span></div>
+          <div className="agStep"><span className="agDot wait" /><div><b>Approval requested</b><p>2 drafts need a human eye — the other 4 match your standing rules</p></div><span className="agPill">Approve 2</span></div>
+          <div className="agStep"><span className="agDot done" /><div><b>Sent &amp; booked</b><p>6 follow-ups out · 1 site visit booked · every action logged to its record</p></div><span className="agTime">7:14</span></div>
+          <div className="agFoot">The full run history lives in Automations — every step, every draft, every send.</div>
+        </div>
       </div>
     </section>
     <section className="nwField"><div className="nwFieldIn">
@@ -2509,6 +2586,23 @@ function SiteHome({ onLogin, onRegister, onEmail }: any) {
         ].map((r, i) => (<tr key={i}><td><b>{r[0]}</b></td><td className="me">{r[1]}</td><td>{r[2]}</td><td>{r[3]}</td></tr>))}</tbody>
       </table></div>
     </section>
+    <section className="nwSec calcSec">
+      <h2 className="nwH2">Do the math on your backlog</h2>
+      <p className="swSub">Your numbers, one conservative assumption: a third of the leads that never got a real follow-up were winnable.</p>
+      <div className="calcCard">
+        <div className="calcSliders">
+          <div className="calcRow"><label>New leads a month <output>{calc.leads}</output></label><input type="range" min={5} max={200} step={5} value={calc.leads} onChange={e => setCalc({ ...calc, leads: +e.target.value })} /></div>
+          <div className="calcRow"><label>Average job value <output>${calc.job.toLocaleString()}</output></label><input type="range" min={300} max={15000} step={100} value={calc.job} onChange={e => setCalc({ ...calc, job: +e.target.value })} /></div>
+          <div className="calcRow"><label>Your close rate <output>{calc.rate}%</output></label><input type="range" min={5} max={60} step={1} value={calc.rate} onChange={e => setCalc({ ...calc, rate: +e.target.value })} /></div>
+          <p className="calcAssume">Slow follow-up is the leak this measures — the first responder wins the job most of the time. Drag the sliders to your real numbers.</p>
+        </div>
+        <div className="calcOut">
+          <span>Walking out the door</span>
+          <b>${Math.round(calc.leads / 3 * (calc.rate / 100) * calc.job).toLocaleString()}/mo</b>
+          <p>That's ${Math.round(calc.leads / 3 * (calc.rate / 100) * calc.job * 12).toLocaleString()} a year in winnable work that never got a follow-up. Pro is $119/mo — a single saved job (${calc.job.toLocaleString()}) covers about {Math.max(1, Math.round(calc.job / 119))} months of it.</p>
+        </div>
+      </div>
+    </section>
     <section className="nwSec alt" id="pricing">
       <p className="nwKick">Pricing</p>
       <h2 className="nwH2">Per workspace. 30 days free. No card.</h2>
@@ -2528,7 +2622,7 @@ function SiteHome({ onLogin, onRegister, onEmail }: any) {
       <h2 className="nwH2">Straight answers</h2><p className="swSub">The things owners actually ask before they trust a system with their backlog.</p>
       <div className="nwFaqs">{faqs.map((f, i) => (<div className="nwFaq" key={i}><b>{f[0]}</b><p>{f[1]}</p></div>))}</div>
     </section>
-    <section className="nwCta"><div className="fpCtaGrid"><div className="fpCtaTx"><h2>Your backlog is costing you jobs tonight.</h2><p>Start the free Pro trial, finish setup with the wizard, and wake up to a queue that's already moving.</p><button className="nwBtnPaper lg" onClick={onRegister}>Get started ↗</button><div className="swCtaStats"><span><b>0</b>leads left behind</span><span><b>Same day</b>proposals out</span><span><b>30 days</b>free on Pro</span></div></div><div className="fpCtaSnap"><SnapProposal /></div></div></section>
+    <section className="nwCta"><div className="fpCtaGrid"><div className="fpCtaTx"><h2>Your backlog is costing you jobs tonight.</h2><p>Start the free Pro trial, finish setup with the wizard, and wake up to a queue that's already moving.</p><button className="nwBtnPaper lg" onClick={onRegister}>Get started ↗</button><div className="swCtaStats"><span><b>0</b>leads left behind</span><span><b>Same day</b>proposals out</span><span><b>30 days</b>free on Pro</span></div></div></div></section>
     <footer className="nwFoot"><div className="nwFootIn"><Logo /><p>Turn every opportunity into accountable work.</p><div className="nwNavCtas"><button className="nwBtnGhost" onClick={onLogin}>Sign in</button><button className="nwBtnSolid" onClick={onRegister}>Start free</button></div></div><div className="nwFootCols"><div><b>Product</b><a href="#tour">Work Queue</a><a href="#tour">Copilot</a><a href="#tour">Proposals</a><a href="#tour">Inspections</a><a href="#pricing">Pricing</a></div><div><b>Company</b><a href="#how">How it works</a><a href="#compare">Compare</a><a href="#faq">FAQ</a></div><div><b>Legal</b><a href="/terms">Terms</a><a href="/privacy">Privacy</a><a href="/dpa">DPA</a></div></div><div className="nwFootBar"><span>© 2026 Workpile</span><span>Every lead worked. Every dollar accounted for.</span></div></footer>
   </div>);
 }

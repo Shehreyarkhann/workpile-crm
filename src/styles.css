@@ -1218,3 +1218,90 @@ aside.rail button.on .nshort { background:#ffffff22; }
 .rvIn { opacity:1; transform:none; transition:opacity .6s ease, transform .6s ease; }
 @media (prefers-reduced-motion: reduce) { .rvPre { opacity:1; transform:none; } .rvIn { transition:none; } }
 .nw section[id] { scroll-margin-top:92px; }
+
+/* ===== v115: wide-screen editorial pass ===== */
+.heroField { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+.nwHero { position:relative; }
+.swHeroGrid { position:relative; z-index:1; perspective:1400px; }
+.swHeroR { transform-style:preserve-3d; transition:transform .35s ease; will-change:transform; }
+@media (min-width:1280px) {
+  .nwSec, .nwFieldIn, .nwTrustIn, .nwFootIn { max-width:1360px; }
+  .nwHero { max-width:1440px; }
+  .nwNav { max-width:1360px; }
+  .nwH2 { font-size:clamp(38px, 3.4vw, 52px); }
+  .nwProb { grid-template-columns:repeat(4,1fr); }
+  .swHeroGrid { gap:64px; }
+}
+@media (min-width:1700px) {
+  .nwSec, .nwFieldIn, .nwTrustIn, .nwFootIn, .nwNav { max-width:1480px; }
+  .nwHero { max-width:1560px; }
+}
+@media (min-width:901px) {
+  #tour { height:340vh; }
+  #tour .swTabs { position:sticky; top:96px; }
+  .swTabPane { animation:swPaneIn .5s ease both; }
+}
+@keyframes swPaneIn { from { opacity:0; transform:translateY(16px) scale(.99); } to { opacity:1; transform:none; } }
+.fidxGrid { display:grid; grid-template-columns:repeat(4,1fr); gap:34px; margin-top:44px; text-align:left; }
+.fidxCol h3 { font-size:13px; letter-spacing:.14em; text-transform:uppercase; color:#0E5C3A; margin:0 0 8px; }
+.fidxItem { border-top:1px solid #E4E9E4; padding:15px 0 13px; }
+.fidxItem b { font-size:15.5px; display:block; margin-bottom:4px; }
+.fidxItem p { margin:0; color:#5B6B62; font-size:13.5px; line-height:1.55; }
+@media (max-width:1100px) { .fidxGrid { grid-template-columns:repeat(2,1fr); } }
+@media (max-width:640px) { .fidxGrid { grid-template-columns:1fr; } }
+.nwCta .fpCtaGrid { grid-template-columns:1fr; max-width:760px; }
+
+/* v115 fix: center the pinned showcase in the viewport */
+@media (min-width:901px) { #tour .swTabs { min-height:calc(100vh - 150px); align-content:center; } }
+
+/* ===== v115 r2: marquee, operator band, calculator, steps line ===== */
+.mqWrap { overflow:hidden; border-block:1px solid #E7ECE8; padding:15px 0; }
+.mqTrack { display:flex; width:max-content; animation:mqMove 34s linear infinite; }
+.mqSet { display:flex; }
+.mqItem { display:flex; align-items:center; gap:26px; padding-right:26px; font-weight:700; font-size:14.5px; color:#43534A; white-space:nowrap; }
+.mqItem i { color:#DB4E2A; font-style:normal; font-size:12px; }
+@keyframes mqMove { to { transform:translateX(-50%); } }
+@media (prefers-reduced-motion: reduce) { .mqTrack { animation:none; } }
+.nwAgent { background:#083B25; border-radius:28px; padding:52px; display:grid; grid-template-columns:1fr 1.05fr; gap:48px; color:#EAF2EC; text-align:left; }
+.agKick { color:#7FD6A8; letter-spacing:.14em; text-transform:uppercase; font-size:12px; font-weight:800; margin:0; }
+.nwAgent h2 { color:#fff; font-size:clamp(28px, 2.6vw, 40px); letter-spacing:-.03em; line-height:1.08; margin:12px 0 14px; }
+.agTx > p { color:#B9CDBB; line-height:1.65; margin:0; }
+.agLadder { display:flex; gap:8px; margin:26px 0 14px; flex-wrap:wrap; }
+.agRung { border:1px solid rgba(255,255,255,.18); border-radius:12px; padding:9px 12px; font-size:11px; color:#9DB8A6; display:flex; flex-direction:column; gap:2px; }
+.agRung b { color:#fff; font-size:12.5px; }
+.agRung.on { background:#0E5C3A; border-color:#22C55E; color:#CFE8D6; }
+.agNote { font-size:13.5px; }
+.agRun { background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.12); border-radius:20px; padding:22px; align-self:start; }
+.agRunHead { display:flex; justify-content:space-between; align-items:center; }
+.agRunHead b { color:#fff; }
+.agLive { color:#22C55E; font-size:12px; font-weight:700; }
+.agStep { display:flex; gap:12px; padding:13px 0; border-top:1px solid rgba(255,255,255,.09); align-items:flex-start; }
+.agStep b { color:#fff; font-size:14.5px; }
+.agStep p { margin:2px 0 0; color:#B9CDBB; font-size:13px; line-height:1.5; }
+.agDot { width:9px; height:9px; border-radius:50%; margin-top:6px; flex:none; }
+.agDot.done { background:#22C55E; }
+.agDot.wait { background:#F5B544; }
+.agTime { margin-left:auto; color:#8AA892; font-size:12px; flex:none; }
+.agPill { margin-left:auto; background:#fff; color:#083B25; font-weight:800; font-size:12px; padding:6px 11px; border-radius:99px; white-space:nowrap; flex:none; }
+.agFoot { color:#8AA892; font-size:12.5px; padding-top:12px; }
+.nwAgentSec .agStep { opacity:0; }
+.nwAgentSec.rvIn .agStep { animation:agIn .6s ease both; }
+.nwAgentSec.rvIn .agRun .agStep:nth-of-type(2) { animation-delay:.15s; }
+.nwAgentSec.rvIn .agRun .agStep:nth-of-type(3) { animation-delay:.45s; }
+.nwAgentSec.rvIn .agRun .agStep:nth-of-type(4) { animation-delay:.75s; }
+.nwAgentSec.rvIn .agRun .agStep:nth-of-type(5) { animation-delay:1.05s; }
+@keyframes agIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:none; } }
+@media (prefers-reduced-motion: reduce) { .nwAgentSec .agStep { opacity:1; } .nwAgentSec.rvIn .agStep { animation:none; } }
+@media (max-width:900px) { .nwAgent { grid-template-columns:1fr; padding:30px 22px; } }
+.calcCard { background:#fff; border:1px solid #ECEEF0; border-radius:24px; box-shadow:0 18px 44px rgba(16,22,19,.07); display:grid; grid-template-columns:1.1fr .9fr; gap:40px; padding:38px; margin-top:40px; text-align:left; }
+.calcRow { margin-bottom:24px; }
+.calcRow label { display:flex; justify-content:space-between; font-weight:700; font-size:14.5px; margin-bottom:9px; }
+.calcRow output { color:#0E5C3A; }
+.calcRow input[type=range] { width:100%; accent-color:#0E5C3A; }
+.calcAssume { color:#5B6B62; font-size:13px; line-height:1.6; margin:2px 0 0; }
+.calcOut { background:#EFF6F1; border-radius:18px; padding:26px; display:flex; flex-direction:column; justify-content:center; }
+.calcOut span { font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:#5B6B62; font-weight:800; }
+.calcOut b { font-size:clamp(34px, 3.4vw, 48px); letter-spacing:-.03em; color:#083B25; margin:6px 0; }
+.calcOut p { margin:0; color:#43534A; line-height:1.6; font-size:14.5px; }
+@media (max-width:900px) { .calcCard { grid-template-columns:1fr; padding:26px 20px; } }
+@media (min-width:901px) { .nwSteps { position:relative; } .nwSteps::before { content:""; position:absolute; top:36px; left:14%; right:14%; border-top:2px dashed #CBD8CC; } .nwStep { position:relative; } }
