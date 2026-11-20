@@ -127,3 +127,36 @@ for (const st of src.statements) {
 }
 if (badHooks) process.exit(1);
 console.log("Hooks-order check OK (no hook declared below an early return)");
+
+// ---------- Audit 5: every JSX component used is declared or imported ----------
+// The v108 class: a splice deleted InspectionTemplatesEditor while Settings
+// still rendered it. Rollup resolves the free identifier as a global, the
+// build passes, and the tab crashes at runtime with a ReferenceError.
+// Vite cannot see it; a name inventory can.
+{
+  const declared = new Set();
+  const collect = (n) => {
+    if (ts.isFunctionDeclaration(n) && n.name) declared.add(n.name.text);
+    if (ts.isClassDeclaration(n) && n.name) declared.add(n.name.text);
+    if (ts.isVariableDeclaration(n) && n.name && ts.isIdentifier(n.name)) declared.add(n.name.text);
+    if (ts.isImportDeclaration(n) && n.importClause) {
+      if (n.importClause.name) declared.add(n.importClause.name.text);
+      const nb = n.importClause.namedBindings;
+      if (nb) { if (ts.isNamespaceImport(nb)) declared.add(nb.name.text); else for (const el of nb.elements) declared.add(el.name.text); }
+    }
+    n.forEachChild(collect);
+  };
+  collect(src);
+  const used = new Map();
+  const scan = (n) => {
+    if ((ts.isJsxOpeningElement(n) || ts.isJsxSelfClosingElement(n)) && ts.isIdentifier(n.tagName) && /^[A-Z]/.test(n.tagName.text)) {
+      if (!used.has(n.tagName.text)) used.set(n.tagName.text, line(n.getStart()));
+    }
+    n.forEachChild(scan);
+  };
+  scan(src);
+  let badRefs = 0;
+  for (const [name, ln] of used) if (!declared.has(name)) { badRefs++; console.error(`UI-SCOPE: <${name}> used at line ${ln} is not declared or imported in this file`); }
+  if (badRefs) process.exit(1);
+  console.log(`JSX-reference check OK (${used.size} components used, all declared)`);
+}

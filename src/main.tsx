@@ -3961,6 +3961,39 @@ function InspectionModal({ id, users, woLabel, onClose }: any) {
 
 // CONCEPT — inspections attached to a work order: designed cards, the
 // inspection itself opens as the field-first modal.
+function InspectionTemplatesEditor() {
+  const [tpls, setTpls] = useState<any[]>([]); const [edit, setEdit] = useState<any>(null); const [msg, setMsg] = useState("");
+  const load = () => { api("/api/inspection-templates").then((t: any) => setTpls(Array.isArray(t) ? t : [])).catch(() => {}); };
+  useEffect(load, []);
+  const startEdit = (t: any) => setEdit(JSON.parse(JSON.stringify({ id: t.id || "", name: t.name || "", standard_ref: t.standard_ref || "", sections: t.sections || [] })));
+  const save = async () => { try { if (edit.id) await api("/api/inspection-templates/" + edit.id, { method: "PATCH", body: edit }); else await api("/api/inspection-templates", { method: "POST", body: edit }); setEdit(null); setMsg("Saved."); load(); } catch (e: any) { setMsg(e.message); } };
+  const updItem = (si: number, ii: number, patchI: any) => { const s = [...edit.sections]; s[si] = { ...s[si], items: s[si].items.map((it: any, j: number) => j === ii ? { ...it, ...patchI } : it) }; setEdit({ ...edit, sections: s }); };
+  return <div style={{ marginTop: 18 }}>
+    <h3>Inspection templates</h3>
+    <p className="muted" style={{ fontSize: 12.5 }}>Checklists that inspections run against. An inspection freezes its template when created — edits here never rewrite an issued inspection.</p>
+    {msg && <p className="muted">{msg}</p>}
+    {tpls.map(t => <div key={t.id} className="rowflex" style={{ padding: "6px 0", borderBottom: "1px solid #EEF2EF" }}><span style={{ flex: 1 }}><b>{t.name}</b> <span className="muted">· {(t.sections || []).reduce((n: number, s: any) => n + (s.items || []).length, 0)} items{t.standard_ref ? " · " + t.standard_ref : ""}</span></span><button className="btn ghost small" onClick={() => startEdit(t)}>Edit</button></div>)}
+    {!edit && <button className="btn ghost small" style={{ marginTop: 8 }} onClick={() => setEdit({ id: "", name: "", standard_ref: "", sections: [{ title: "Section 1", items: [] }] })}>+ New template</button>}
+    {edit && <div className="card" style={{ padding: 10, marginTop: 8 }}>
+      <div className="rowflex"><label className="f" style={{ flex: 1 }}>Name<input value={edit.name} onChange={e => setEdit({ ...edit, name: e.target.value })} /></label>
+      <label className="f" style={{ flex: 1 }}>Standard / reference<input value={edit.standard_ref} onChange={e => setEdit({ ...edit, standard_ref: e.target.value })} placeholder="e.g. OSHA 29 CFR 1926.1101" /></label></div>
+      {edit.sections.map((s: any, si: number) => <div key={si} style={{ border: "1px solid #E3EAE5", borderRadius: 8, padding: 8, marginTop: 8 }}>
+        <div className="rowflex"><input style={{ flex: 1, fontWeight: 700 }} value={s.title} onChange={e => { const ss = [...edit.sections]; ss[si] = { ...ss[si], title: e.target.value }; setEdit({ ...edit, sections: ss }); }} /><button className="btn ghost small" onClick={() => setEdit({ ...edit, sections: edit.sections.filter((_: any, j: number) => j !== si) })}>✕ section</button></div>
+        {(s.items || []).map((it: any, ii: number) => <div key={ii} className="rowflex" style={{ gap: 5, marginTop: 5, flexWrap: "wrap" }}>
+          <input style={{ flex: 2, minWidth: 170 }} value={it.label} placeholder="Checklist item" onChange={e => updItem(si, ii, { label: e.target.value, key: it.key || ("item_" + si + "_" + ii) })} />
+          <select style={{ width: "auto" }} value={it.type || "passfail"} onChange={e => updItem(si, ii, { type: e.target.value })}><option value="passfail">Pass/Fail</option><option value="yesno">Yes/No</option><option value="reading">Reading</option><option value="text">Text</option></select>
+          {it.type === "reading" && <><input style={{ width: 64 }} placeholder="Unit" value={it.unit || ""} onChange={e => updItem(si, ii, { unit: e.target.value })} /><input style={{ width: 64 }} placeholder="Min" value={it.min ?? ""} onChange={e => updItem(si, ii, { min: e.target.value })} /><input style={{ width: 64 }} placeholder="Max" value={it.max ?? ""} onChange={e => updItem(si, ii, { max: e.target.value })} /></>}
+          <label className="muted" style={{ fontSize: 12 }}><input type="checkbox" checked={!!it.critical} onChange={e => updItem(si, ii, { critical: e.target.checked })} /> critical</label>
+          <label className="muted" style={{ fontSize: 12 }}><input type="checkbox" checked={!!it.photo_required} onChange={e => updItem(si, ii, { photo_required: e.target.checked })} /> 📷 req</label>
+          <button className="btn ghost small" onClick={() => { const ss = [...edit.sections]; ss[si] = { ...ss[si], items: ss[si].items.filter((_: any, j: number) => j !== ii) }; setEdit({ ...edit, sections: ss }); }}>✕</button>
+        </div>)}
+        <button className="btn ghost small" style={{ marginTop: 6 }} onClick={() => { const ss = [...edit.sections]; ss[si] = { ...ss[si], items: [...(ss[si].items || []), { key: "item_" + si + "_" + (ss[si].items || []).length + "_" + Math.floor(Math.random() * 9999), label: "", type: "passfail" }] }; setEdit({ ...edit, sections: ss }); }}>+ Item</button>
+      </div>)}
+      <div className="rowflex" style={{ marginTop: 8 }}><button className="btn ghost small" onClick={() => setEdit({ ...edit, sections: [...edit.sections, { title: "New section", items: [] }] })}>+ Section</button><span style={{ flex: 1 }} /><button className="btn small" onClick={save}>Save template</button><button className="btn ghost small" onClick={() => setEdit(null)}>Cancel</button></div>
+    </div>}
+  </div>;
+}
+
 function InspList({ woId, users, onOpen }: any) {
   const [list, setList] = useState<any[]>([]); const [tpls, setTpls] = useState<any[]>([]); const [msg, setMsg] = useState("");
   const [form, setForm] = useState<any>({ template_id: "", title: "", inspector_id: "" });
