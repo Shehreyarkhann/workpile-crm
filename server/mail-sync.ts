@@ -48,7 +48,13 @@ async function accessFor(conn: any, fetchFn: FetchFn): Promise<string> {
 async function getJson(url: string, token: string, fetchFn: FetchFn) {
   const r = await fetchFn(url, { headers: { Authorization: `Bearer ${token}` } });
   const j = await r.json().catch(() => ({}));
-  if (r.status < 200 || r.status >= 300) throw new Error("GET " + url.split("?")[0] + " -> " + r.status);
+  if (r.status < 200 || r.status >= 300) {
+    // Keep the provider's own words — a bare "403" is undiagnosable from
+    // the integrations card (rate limit vs API-not-enabled vs scope).
+    const reason = j?.error?.errors?.[0]?.reason || j?.error?.code || "";
+    const msg = String(j?.error?.message || "").slice(0, 140);
+    throw new Error(("GET " + url.split("?")[0] + " -> " + r.status + (reason ? ` [${reason}]` : "") + (msg ? " " + msg : "")).slice(0, 230));
+  }
   return j;
 }
 export async function profileEmail(provider: string, accessToken: string, fetchFn: FetchFn = realFetch): Promise<string> {
@@ -173,7 +179,7 @@ export async function graphPoll(conn: any, fetchFn: FetchFn = realFetch): Promis
 export const livePollers: Record<string, (conn: any, fetchFn?: FetchFn) => Promise<any[]>> = { google: gmailPoll, microsoft: graphPoll };
 
 export async function processMailSync(ingest: (ws: string, actor: string, emails: any[]) => any, fetchFn: FetchFn = realFetch): Promise<{ polled: number; ingested: number; errors: number }> {
-  const conns = db.prepare("SELECT * FROM oauth_connections WHERE status='connected' AND token_ref IS NOT NULL AND token_ref<>''").all() as any[];
+  const conns = db.prepare("SELECT * FROM oauth_connections WHERE status='connected' AND token_ref IS NOT NULL AND token_ref<>'' AND (backoff_until IS NULL OR backoff_until<=?)").all(now()) as any[];
   let polled = 0, ingested = 0, errors = 0;
   for (const conn of conns) {
     const poller = livePollers[conn.provider]; if (!poller) continue;
@@ -188,8 +194,13 @@ export async function processMailSync(ingest: (ws: string, actor: string, emails
         for (const em of emails) if ((em as any).external_id) db.prepare("INSERT OR IGNORE INTO mail_sync_seen (connection_id, provider_msg_id, created_at) VALUES (?,?,?)").run(conn.id, (em as any).external_id, now());
       }
       if ((conn as any).__cursor) { const c = (conn as any).__cursor; db.prepare("UPDATE oauth_connections SET sync_token=?, backfill_done=? WHERE id=?").run(c.token, c.done ? 1 : 0, conn.id); }
-      db.prepare("UPDATE oauth_connections SET last_poll_at=?, last_error=NULL WHERE id=?").run(now(), conn.id);
-    } catch (e: any) { errors++; db.prepare("UPDATE oauth_connections SET last_error=? WHERE id=?").run(String(e?.message || e).slice(0, 240), conn.id); }
+      db.prepare("UPDATE oauth_connections SET last_poll_at=?, last_error=NULL, error_strikes=0, backoff_until=NULL WHERE id=?").run(now(), conn.id);
+    } catch (e: any) { errors++; const msg = String(e?.message || e).slice(0, 240);
+      // Quota-shaped failures (403/429, rateLimit reasons) back off
+      // exponentially instead of retrying every minute into the same wall;
+      // the sync resumes on its own once Google lets it.
+      if (/-> (403|429)|ratelimit|quota/i.test(msg)) { const strikes = (conn.error_strikes || 0) + 1; const mins = Math.min(60, 5 * Math.pow(2, strikes - 1)); db.prepare("UPDATE oauth_connections SET last_error=?, error_strikes=?, backoff_until=? WHERE id=?").run(msg, strikes, new Date(Date.now() + mins * 60000).toISOString(), conn.id); }
+      else db.prepare("UPDATE oauth_connections SET last_error=? WHERE id=?").run(msg, conn.id); }
   }
   return { polled, ingested, errors };
 }
