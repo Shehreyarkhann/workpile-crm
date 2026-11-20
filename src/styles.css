@@ -861,10 +861,10 @@ aside.rail button.on .nshort { background:#ffffff22; }
 
 /* ---------- Project (job) modal restyle ---------- */
 .modal.cxJob { max-width:1060px; width:96vw; border-radius:18px; }
-.modal.cxJob .path { display:flex; gap:0; margin:14px 0 4px; }
-.modal.cxJob .path .stage { flex:1; text-align:center; font-size:11px; font-weight:600; color:var(--cx-mut); padding:8px 2px; border-top:3px solid var(--cx-line); cursor:pointer; }
-.modal.cxJob .path .stage.done { border-top-color:var(--cx-sig); color:var(--cx-pine); }
-.modal.cxJob .path .stage.cur { border-top-color:var(--cx-pine); color:var(--cx-deep); font-weight:800; }
+.modal.cxJob .path { display:flex; gap:3px; margin:14px 0 4px; overflow:visible; flex-wrap:nowrap; }
+.modal.cxJob .path .stage { flex:1 1 0; min-width:0; height:42px; display:flex; align-items:center; justify-content:center; text-align:center; white-space:normal; clip-path:none; font-size:10.5px; font-weight:600; line-height:1.15; color:var(--cx-mut); background:#EFF4EF; border-radius:8px; padding:4px 3px; cursor:pointer; }
+.modal.cxJob .path .stage.done { background:#E7F6EC; color:var(--cx-pine); }
+.modal.cxJob .path .stage.cur { background:var(--cx-deep); color:#fff; font-weight:800; }
 .modal.cxJob .deck { margin:12px 0 0; border:1px solid var(--cx-line); border-radius:12px; background:#FAFBFA; }
 .modal.cxJob .tabs { margin:14px 0 0; border-bottom:1px solid var(--cx-line); display:flex; gap:2px; }
 .modal.cxJob .tabs button { border:0; background:none; padding:10px 14px; font-size:13.5px; font-weight:600; color:var(--cx-mut); cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; }
@@ -946,7 +946,8 @@ aside.rail button.on .nshort { background:#ffffff22; }
   .cx-table tr { padding:12px 14px; border-bottom:1px solid var(--cx-line2); }
   .cx-table td { border:0; padding:3px 0; }
   .modal.cxJob { width:100vw; max-width:100vw; border-radius:0; }
-  .modal.cxJob .path .stage { font-size:9.5px; }
+  .modal.cxJob .path { display:grid; grid-template-columns:repeat(5, 1fr); gap:4px; }
+  .modal.cxJob .path .stage { height:38px; font-size:9.5px; padding:3px 2px; }
   .cx-scrim { justify-content:stretch; }
   .cx-sheet { width:100%; max-width:100%; }
   .cx-mscrim { padding:0; }
