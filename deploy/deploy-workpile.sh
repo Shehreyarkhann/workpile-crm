@@ -86,6 +86,35 @@ for i in $(seq 1 20); do
   [ "$i" = "20" ] && { echo "!! App did not answer health — check: journalctl -u workpile -n 50"; exit 1; }
 done
 
+# --- Nightly DB backup (v116: the audit gap — backup.sh existed but nothing ever ran it) ---
+# sqlite3 CLI gives backup.sh the online .backup path (safe against the live DB);
+# without it the script falls back to cp, which can miss WAL contents.
+if ! command -v sqlite3 >/dev/null 2>&1; then
+  echo "== Installing sqlite3 for backups (best effort)"
+  apt-get install -y sqlite3 >/dev/null 2>&1 || echo "WARN: sqlite3 install failed — backups will use the cp fallback"
+fi
+chmod +x "$APP_DIR/deploy/backup.sh"
+mkdir -p "$APP_DIR/backups"
+# Cron: 3:17 AM America/New_York nightly, pinned via CRON_TZ so the droplet's own
+# timezone doesn't matter. backup.sh resolves paths from env, so both are absolute
+# here — a relative LEADFLOW_DB would silently back up the wrong file.
+CRON_TZ_LINE="CRON_TZ=America/New_York"
+CRON_LINE="17 3 * * * cd $APP_DIR && LEADFLOW_DB=$APP_DIR/data/leadflow.db BACKUP_DIR=$APP_DIR/backups $APP_DIR/deploy/backup.sh >> $APP_DIR/backups/backup.log 2>&1"
+( crontab -l 2>/dev/null | grep -v "deploy/backup.sh" | grep -v "^CRON_TZ=America/New_York" ; echo "$CRON_TZ_LINE" ; echo "$CRON_LINE" ) | crontab -
+echo "== Nightly backup cron installed (03:17 America/New_York, 14-day retention)"
+# Run one backup right now and verify it, so a broken backup never waits for 3 AM to surface.
+( cd "$APP_DIR" && LEADFLOW_DB="$APP_DIR/data/leadflow.db" BACKUP_DIR="$APP_DIR/backups" bash deploy/backup.sh ) || echo "WARN: initial backup run failed"
+LATEST_BAK=$(ls -t "$APP_DIR/backups"/leadflow-*.db 2>/dev/null | head -1 || true)
+if [ -n "$LATEST_BAK" ] && command -v sqlite3 >/dev/null 2>&1; then
+  BAK_INTEGRITY=$(sqlite3 "$LATEST_BAK" "PRAGMA integrity_check;" | head -1)
+  BAK_TABLES=$(sqlite3 "$LATEST_BAK" "SELECT count(*) FROM sqlite_master WHERE type='table';")
+  echo "== Backup verified: $LATEST_BAK (integrity: $BAK_INTEGRITY, tables: $BAK_TABLES)"
+elif [ -n "$LATEST_BAK" ]; then
+  echo "== Backup written: $LATEST_BAK (sqlite3 absent — integrity check skipped)"
+else
+  echo "!! No backup file produced — investigate before trusting the cron"
+fi
+
 # --- nginx vhost (additive: its own server block, ClaimPaid untouched) ---
 cat > /etc/nginx/sites-available/workpile <<EOF
 server {
