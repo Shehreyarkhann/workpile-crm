@@ -18,7 +18,12 @@ export function jobMoney(ws: string, job: any) {
   const coApproved = r2(((db.prepare("SELECT COALESCE(SUM(delta_total),0) AS s FROM change_orders WHERE workspace_id=? AND job_id=? AND status='approved'").get(ws, job.id) as any)?.s) || 0);
   const revised = r2(contract + coApproved);
   const invoiced = r2(((db.prepare("SELECT COALESCE(SUM(total),0) AS s FROM invoices WHERE workspace_id=? AND job_id=? AND status NOT IN ('draft','void')").get(ws, job.id) as any)?.s) || 0);
-  const collectedInv = r2(((db.prepare("SELECT COALESCE(SUM(p.amount),0) AS s FROM payments p JOIN invoices i ON i.id=p.invoice_id WHERE p.workspace_id=? AND i.job_id=? AND p.status='paid'").get(ws, job.id) as any)?.s) || 0);
+  const collectedInvDirect = r2(((db.prepare("SELECT COALESCE(SUM(p.amount),0) AS s FROM payments p JOIN invoices i ON i.id=p.invoice_id WHERE p.workspace_id=? AND i.job_id=? AND p.status='paid'").get(ws, job.id) as any)?.s) || 0);
+  // v117: split payments (one check across several invoices) live in
+  // payment_allocations with payments.invoice_id NULL — count what the
+  // direct join cannot see, never double-counting single-invoice payments.
+  const collectedSplit = r2(((db.prepare("SELECT COALESCE(SUM(a.amount),0) AS s FROM payment_allocations a JOIN invoices i ON i.id=a.invoice_id JOIN payments p ON p.id=a.payment_id WHERE a.workspace_id=? AND i.job_id=? AND p.invoice_id IS NULL AND p.status='paid'").get(ws, job.id) as any)?.s) || 0);
+  const collectedInv = r2(collectedInvDirect + collectedSplit);
   const collectedDep = signed ? r2(((db.prepare("SELECT COALESCE(SUM(amount),0) AS s FROM payments WHERE workspace_id=? AND proposal_id=? AND kind='deposit' AND status='paid'").get(ws, signed.id) as any)?.s) || 0) : 0;
   const collected = r2(collectedInv + collectedDep);
   const labor = r2(((db.prepare("SELECT COALESCE(SUM(COALESCE(t.hours,0)*COALESCE(t.rate,0)),0) AS s FROM wo_time_entries t JOIN work_orders w ON w.id=t.work_order_id WHERE t.workspace_id=? AND w.job_id=?").get(ws, job.id) as any)?.s) || 0);

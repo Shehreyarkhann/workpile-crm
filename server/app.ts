@@ -11,6 +11,7 @@ import { REPORT_KINDS, parseRecipients, sendScheduledReport } from "./report-sch
 import { localParts, localToday } from "./tz.ts";
 import { newTotpSecret, verifyTotp, otpauthUrl, createMfaPending, peekMfaPending, consumeMfaPending } from "./mfa.ts";
 import { ensureInspTemplates, createInspection, decorateInsp, inspProgress, inspectionGateForWO, photoRequiredMissing, logInspEvent, parseSections, INSP_RESULTS } from "./inspections.ts";
+import { closeReadiness, derivedStage, stageDrift } from "./readiness.ts";
 import { ensureReportTemplates, listReportTemplates, buildReportContext, renderReportHtml, generateReport, listReports, sampleReportContext } from "./reports.ts";
 import { jobMoney, estLineCost } from "./money.ts";
 import { storageGet } from "./storage.ts";
@@ -993,7 +994,9 @@ app.post("/api/invoices/:id/payments", requireAuth, (req: any, res) => {
   if (!(amount > 0)) return res.status(422).json({ error: { code: "bad_amount" } });
   if (amount > balance + 0.001) return res.status(422).json({ error: { code: "overpayment", message: `Payment $${amount} exceeds the invoice balance $${balance}.` } });
   const pid = uid("pay");
-  db.prepare("INSERT INTO payments (id,workspace_id,proposal_id,invoice_id,kind,amount,mode,status,created_at,paid_at) VALUES (?,?,?,?,'invoice_payment',?,?,'paid',?,?)").run(pid, ws, inv.proposal_id || null, inv.id, amount, req.body?.mode === "live" ? "live" : "test", now(), now());
+  const payMethod = ["card", "check", "money_order", "cash", "ach", "other"].includes(String(req.body?.method || "")) ? String(req.body.method) : "other";
+  db.prepare("INSERT INTO payments (id,workspace_id,proposal_id,invoice_id,job_id,kind,amount,mode,method,reference,status,created_at,paid_at) VALUES (?,?,?,?,?,'invoice_payment',?,?,?,?,'paid',?,?)").run(pid, ws, inv.proposal_id || null, inv.id, inv.job_id || null, amount, req.body?.mode === "live" ? "live" : "test", payMethod, String(req.body?.reference || "").slice(0, 80) || null, now(), now());
+  db.prepare("INSERT INTO payment_allocations (id,workspace_id,payment_id,invoice_id,amount,created_at) VALUES (?,?,?,?,?,?)").run(uid("alloc"), ws, pid, inv.id, amount, now());
   const paid = Math.round(((inv.paid_amount || 0) + amount) * 100) / 100;
   const status = paid >= (inv.total || 0) - 0.001 ? "paid" : "partially_paid";
   db.prepare("UPDATE invoices SET paid_amount=?, status=? WHERE id=?").run(paid, status, inv.id);
@@ -1001,6 +1004,42 @@ app.post("/api/invoices/:id/payments", requireAuth, (req: any, res) => {
   if (status === "paid") { const jl = inv.job_id ? db.prepare("SELECT lead_id FROM jobs WHERE id=?").get(inv.job_id) as any : null; onInvoicePaid(ws, jl?.lead_id || inv.lead_id); }
   audit(ws, req.user.id, "invoice.payment", "invoice", inv.id, { amount, status });
   res.status(201).json(invView(db.prepare("SELECT * FROM invoices WHERE id=?").get(inv.id)));
+});
+// v117 (S2): record a payment against a PROJECT — a check or money order can
+// cover several invoices, and one invoice can be settled by several payments.
+// Allocations are explicit; anything unallocated stays visible as loose money.
+app.post("/api/jobs/:id/payments", requireAuth, (req: any, res) => {
+  const ws = req.user.workspace_id; const job = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, ws) as any;
+  if (!job) return res.status(404).json({ error: { code: "not_found" } });
+  const amount = Math.round(Number(req.body?.amount || 0) * 100) / 100;
+  if (!(amount > 0)) return res.status(422).json({ error: { code: "bad_amount" } });
+  const method = ["card", "check", "money_order", "cash", "ach", "other"].includes(String(req.body?.method || "")) ? String(req.body.method) : "other";
+  const reference = String(req.body?.reference || "").slice(0, 80);
+  const open = (db.prepare("SELECT * FROM invoices WHERE workspace_id=? AND job_id=? AND status NOT IN ('void','paid','draft') ORDER BY issued_at, created_at").all(ws, job.id) as any[]).map(i => ({ inv: i, balance: Math.round(((i.total || 0) - (i.paid_amount || 0)) * 100) / 100 })).filter(x => x.balance > 0.001);
+  let allocs: { invoice_id: string; amount: number }[] = [];
+  if (Array.isArray(req.body?.allocations) && req.body.allocations.length) {
+    allocs = req.body.allocations.map((a: any) => ({ invoice_id: String(a.invoice_id), amount: Math.round(Number(a.amount || 0) * 100) / 100 })).filter((a: any) => a.amount > 0);
+    if (allocs.reduce((sum, a) => sum + a.amount, 0) > amount + 0.001) return res.status(422).json({ error: { code: "over_allocated", message: "Allocations exceed the payment amount." } });
+    for (const a of allocs) { const o = open.find(x => x.inv.id === a.invoice_id); if (!o) return res.status(422).json({ error: { code: "invoice_not_open", message: "An allocation names an invoice that is not open on this project." } }); if (a.amount > o.balance + 0.001) return res.status(422).json({ error: { code: "overpayment", message: `Allocation $${a.amount} exceeds the balance $${o.balance} on ${o.inv.number}.` } }); }
+  } else {
+    let left = amount;
+    for (const o of open) { if (left <= 0.001) break; const a = Math.min(left, o.balance); allocs.push({ invoice_id: o.inv.id, amount: Math.round(a * 100) / 100 }); left = Math.round((left - a) * 100) / 100; }
+  }
+  const pid = uid("pay");
+  db.prepare("INSERT INTO payments (id,workspace_id,proposal_id,invoice_id,job_id,kind,amount,mode,method,reference,status,created_at,paid_at) VALUES (?,?,?,?,?,'invoice_payment',?,?,?,?,'paid',?,?)").run(pid, ws, job.proposal_id || null, allocs.length === 1 ? allocs[0].invoice_id : null, job.id, amount, req.body?.mode === "live" ? "live" : "test", method, reference || null, now(), now());
+  const touched: any[] = [];
+  for (const a of allocs) {
+    db.prepare("INSERT INTO payment_allocations (id,workspace_id,payment_id,invoice_id,amount,created_at) VALUES (?,?,?,?,?,?)").run(uid("alloc"), ws, pid, a.invoice_id, a.amount, now());
+    const inv = db.prepare("SELECT * FROM invoices WHERE id=?").get(a.invoice_id) as any;
+    const paid = Math.round(((inv.paid_amount || 0) + a.amount) * 100) / 100;
+    const status = paid >= (inv.total || 0) - 0.001 ? "paid" : "partially_paid";
+    db.prepare("UPDATE invoices SET paid_amount=?, status=? WHERE id=?").run(paid, status, inv.id);
+    if (status === "paid") { db.prepare("UPDATE jobs SET invoice_status='paid' WHERE id=?").run(job.id); onInvoicePaid(ws, inv.lead_id); }
+    touched.push({ invoice_id: inv.id, number: inv.number, applied: a.amount, status });
+  }
+  audit(ws, req.user.id, "job.payment", "job", job.id, { payment_id: pid, amount, method, reference, allocations: allocs });
+  const job2 = db.prepare("SELECT * FROM jobs WHERE id=?").get(job.id) as any;
+  res.status(201).json({ ok: true, payment_id: pid, applied: touched, unallocated: Math.round((amount - allocs.reduce((sum, a) => sum + a.amount, 0)) * 100) / 100, close_readiness: closeReadiness(ws, job2) });
 });
 app.post("/api/invoices/:id/void", requireAuth, (req: any, res) => { const inv = db.prepare("SELECT * FROM invoices WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any; if (!inv) return res.status(404).json({ error: { code: "not_found" } }); if ((inv.paid_amount || 0) > 0) return res.status(422).json({ error: { code: "has_payments", message: "An invoice with payments cannot be voided — refund through the proposal instead." } }); db.prepare("UPDATE invoices SET status='void' WHERE id=?").run(inv.id); res.json({ ok: true }); });
 app.post("/api/invoices/:id/send", requireAuth, async (req: any, res) => {
@@ -1020,6 +1059,8 @@ app.post("/api/invoices/:id/send", requireAuth, async (req: any, res) => {
   const msg: any = await queueAndDeliver(ws, { lead_id: inv.lead_id, channel: "email", to: email, subject: `Invoice ${inv.number} from ${tpl.company} — balance $${balance.toFixed(2)}`, body });
   if (msg?.status === "suppressed") return res.status(422).json({ error: { code: "suppressed", message: "This address has opted out of email." } });
   db.prepare("UPDATE invoices SET sent_at=? WHERE id=?").run(now(), inv.id);
+  // v117 (S2): issuing an invoice is a fact — the project stage derives from it.
+  if (inv.job_id) { const jb = db.prepare("SELECT * FROM jobs WHERE id=?").get(inv.job_id) as any; if (jb) { if (inv.project_iter == null) db.prepare("UPDATE invoices SET project_iter=? WHERE id=?").run(jb.project_iter ?? 0, inv.id); if (["WORK_COMPLETED", "DOCUMENTATION_PENDING", "READY_TO_INVOICE"].includes(jb.stage)) { db.prepare("UPDATE jobs SET stage='INVOICED', stage_changed_at=?, updated_at=? WHERE id=?").run(now(), now(), jb.id); logEvent(ws, jb.lead_id, req.user.id, "job_stage", jb.stage, "INVOICED", { job_id: jb.id, auto: "invoice_sent", invoice_id: inv.id }); } } }
   audit(ws, req.user.id, "invoice.sent", "invoice", inv.id, { to: email, status: msg?.status });
   res.json({ ok: true, delivery: msg?.status || "queued", test_mode: msg?.status === "test_mode", link });
 });
@@ -1797,13 +1838,15 @@ app.get("/api/jobs/:id", requireAuth, (req: any, res) => {
   const emails = db.prepare("SELECT id, from_name, from_email, subject, body, status, created_at FROM inbox_items WHERE workspace_id=? AND lead_id=? ORDER BY created_at DESC LIMIT 20").all(req.user.workspace_id, j.lead_id);
   const depTakenTotal = (db.prepare("SELECT COALESCE(SUM(p.amount),0) v FROM payments p JOIN proposals pr ON pr.id=p.proposal_id WHERE p.workspace_id=? AND pr.lead_id=? AND p.status='paid' AND (p.kind='deposit' OR p.kind IS NULL)").get(req.user.workspace_id, j.lead_id) as any)?.v || 0;
   const depAppliedTotal = (db.prepare("SELECT COALESCE(SUM(p.amount),0) v FROM payments p JOIN invoices i ON i.id=p.invoice_id WHERE p.workspace_id=? AND i.lead_id=? AND p.kind='deposit_credit' AND p.status='applied'").get(req.user.workspace_id, j.lead_id) as any)?.v || 0;
-  res.json({ job: jobView(j), money: (() => { const jm: any = jobMoney(req.user.workspace_id, j); if (!canSeeMargin(req.user)) { jm.margin = undefined; jm.margin_pct = undefined; jm.projected_margin = undefined; jm.projected_margin_pct = undefined; } return jm; })(), labor, schedule, documents, field_reports: reports, change_orders: changeOrders, invoices, deposits: { taken: Math.round(depTakenTotal * 100) / 100, applied: Math.round(depAppliedTotal * 100) / 100, available: depositsAvailable(req.user.workspace_id, j.lead_id) }, site_visits: siteVisits, emails, pending_approval: pendAppr || null, origin: originRow || { lead_id: j.lead_id } });
+  res.json({ job: jobView(j), close_readiness: closeReadiness(req.user.workspace_id, j), derived_stage: derivedStage(req.user.workspace_id, j), money: (() => { const jm: any = jobMoney(req.user.workspace_id, j); if (!canSeeMargin(req.user)) { jm.margin = undefined; jm.margin_pct = undefined; jm.projected_margin = undefined; jm.projected_margin_pct = undefined; } return jm; })(), labor, schedule, documents, field_reports: reports, change_orders: changeOrders, invoices, deposits: { taken: Math.round(depTakenTotal * 100) / 100, applied: Math.round(depAppliedTotal * 100) / 100, available: depositsAvailable(req.user.workspace_id, j.lead_id) }, site_visits: siteVisits, emails, pending_approval: pendAppr || null, origin: originRow || { lead_id: j.lead_id } });
 });
 app.post("/api/jobs/:id/stage", requireAuth, (req: any, res) => {
   const j = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!j) return res.status(404).json({ error: { code: "not_found" } });
   const to = String(req.body.to || "");
   if (!JOB_STAGES.includes(to)) return res.status(422).json({ error: { code: "bad_stage" } });
+  // v117 (S2): closing is validated against the facts — or waived by an owner with a reason.
+  if (to === "CLOSED" && j.stage !== "CLOSED") { const rd = closeReadiness(req.user.workspace_id, j); if (!rd.ready) { const waive = req.body?.waive === true && ["OWNER", "OPS_ADMIN"].includes(req.user.role) && String(req.body?.reason || "").trim(); if (!waive) return res.status(422).json({ error: { code: "not_ready", message: "This project is not ready to close — some conditions are unmet.", conditions: rd.conditions } }); audit(req.user.workspace_id, req.user.id, "job.close_waived", "job", j.id, { reason: String(req.body.reason).slice(0, 300), unmet: rd.conditions.filter((c: any) => !c.met).map((c: any) => c.key) }); } }
   // v19 scheduling workflow: entering SCHEDULED assigns a date+time (picker value, or the
   // stored one, or tomorrow 09:00 by default), syncs the job's crew into the Ops crew
   // schedule for that day, and makes sure that week's timesheets exist.
@@ -1828,7 +1871,7 @@ app.post("/api/jobs/:id/stage", requireAuth, (req: any, res) => {
     db.prepare("DELETE FROM job_schedule WHERE workspace_id=? AND lead_id=? AND work_date=?").run(req.user.workspace_id, j.lead_id, String(j.scheduled_start).slice(0, 10));
     db.prepare("UPDATE jobs SET scheduled_start=NULL, scheduled_end=NULL WHERE id=?").run(j.id);
   }
-  db.prepare("UPDATE jobs SET stage=?, closed_at=?, updated_at=? WHERE id=?").run(to, to === "CLOSED" ? now() : j.closed_at, now(), j.id);
+  db.prepare("UPDATE jobs SET stage=?, closed_at=?, stage_changed_at=?, updated_at=? WHERE id=?").run(to, to === "CLOSED" ? now() : j.closed_at, now(), now(), j.id);
   if (to === "WORK_COMPLETED") onJobCompleted(req.user.workspace_id, { ...j, stage: to });
   if (to === "INVOICED" && j.invoice_status === "not_ready") db.prepare("UPDATE jobs SET invoice_status='invoiced' WHERE id=?").run(j.id);
   logEvent(req.user.workspace_id, j.lead_id, req.user.id, "job_stage", j.stage, to, { job_id: j.id });
@@ -1838,7 +1881,7 @@ app.patch("/api/jobs/:id", requireAuth, (req: any, res) => {
   const j = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!j) return res.status(404).json({ error: { code: "not_found" } });
   const b = req.body || {}; const sets: string[] = []; const vals: any[] = [];
-  for (const k of ["scheduled_start", "scheduled_end", "invoice_status", "value", "sector", "requires_site_visit", "budget_cost", "tax_rate_id", "payment_plan"]) if (b[k] !== undefined) { sets.push(`${k}=?`); vals.push(b[k]); }
+  for (const k of ["scheduled_start", "scheduled_end", "invoice_status", "value", "sector", "requires_site_visit", "budget_cost", "tax_rate_id", "payment_plan", "invoice_variance_note"]) if (b[k] !== undefined) { sets.push(`${k}=?`); vals.push(b[k]); }
   if (sets.length) { db.prepare(`UPDATE jobs SET ${sets.join(",")}, updated_at=? WHERE id=?`).run(...vals, now(), j.id); }
   res.json(jobView(db.prepare("SELECT * FROM jobs WHERE id=?").get(j.id)));
 });
@@ -1932,6 +1975,8 @@ app.post("/api/change-orders/:id/status", requireAuth, (req: any, res) => {
   if (!["draft", "sent", "approved", "rejected"].includes(to)) return res.status(422).json({ error: { code: "bad_status" } });
   db.prepare("UPDATE change_orders SET status=? WHERE id=?").run(to, co.id);
   if (to === "approved" && co.job_id) db.prepare("UPDATE jobs SET value=COALESCE(value,0)+?, updated_at=? WHERE id=?").run(co.delta_total || 0, now(), co.job_id);
+  // v117 (S8): an approved change order advances the project revision — P26-264-00 → -01 → -02
+  if (to === "approved" && co.status !== "approved" && co.job_id) { const no = bumpProjectIteration(req.user.workspace_id, co.job_id); const jj = db.prepare("SELECT project_iter FROM jobs WHERE id=?").get(co.job_id) as any; db.prepare("UPDATE change_orders SET project_iter=? WHERE id=?").run(jj?.project_iter ?? null, co.id); audit(req.user.workspace_id, req.user.id, "change_order.approved", "change_order", co.id, { project_no: no, delta_total: co.delta_total }); }
   res.json(db.prepare("SELECT * FROM change_orders WHERE id=?").get(co.id));
 });
 app.post("/api/documents/:id/chase", requireAuth, async (req: any, res) => {
@@ -2483,6 +2528,10 @@ app.get("/api/queue", requireAuth, (req: any, res) => {
     if (!crew && ["AWAITING_SCHEDULING", "SCHEDULED"].includes(j.stage)) { const v = jobView(j); items.push({ id: "q_crew_" + j.id, type: "job_crew", score: 62, title: `Job needs crew — ${v.contact_name}`, subtitle: `${v.service_requested} · ${moneyFmt(j.value)} · no one assigned`, job_id: j.id, lead_id: j.lead_id, primary: { kind: "open_job", label: "Assign crew" } }); }
     const docs = db.prepare("SELECT COUNT(*) t, SUM(CASE WHEN status='received' THEN 1 ELSE 0 END) r FROM documents WHERE (job_id=? OR lead_id=?) AND required=1").get(j.id, j.lead_id) as any;
     if ((docs.t || 0) > (docs.r || 0) && ["IN_PROGRESS", "WORK_COMPLETED", "DOCUMENTATION_PENDING", "READY_TO_INVOICE"].includes(j.stage)) { const v = jobView(j); items.push({ id: "q_docs_" + j.id, type: "paperwork", score: 58, title: `Paperwork missing — ${v.contact_name}`, subtitle: `${(docs.t || 0) - (docs.r || 0)} required document(s) outstanding on ${v.service_requested} — the job cannot invoice until they land`, job_id: j.id, lead_id: j.lead_id, primary: { kind: "open_job", label: "Chase docs" } }); }
+    // v117 (S2): close-ready projects and stage drift surface themselves.
+    const rd = closeReadiness(ws, j);
+    if (rd.ready) { const v = jobView(j); items.push({ id: "q_close_" + j.id, type: "ready_to_close", score: 64, title: `Ready to close — ${v.contact_name}`, subtitle: `${v.service_requested} · work complete, fully invoiced and collected — one click to close`, job_id: j.id, lead_id: j.lead_id, primary: { kind: "open_job", label: "Review & close" } }); }
+    else { const drift = stageDrift(ws, j); if (drift) { const v = jobView(j); items.push({ id: "q_drift_" + j.id, type: "stage_drift", score: 56, title: `Stage behind the facts — ${v.contact_name}`, subtitle: `${v.service_requested} · board says ${drift.stored.replaceAll("_", " ").toLowerCase()} but the facts say ${drift.derived.replaceAll("_", " ").toLowerCase()} (${Math.max(1, Math.round(drift.hours / 24))}d)`, job_id: j.id, lead_id: j.lead_id, primary: { kind: "open_job", label: "Open project" } }); } }
   }
   for (const f of db.prepare("SELECT f.*, COALESCE(w.name,u.name) who FROM field_reports f LEFT JOIN workers w ON w.id=f.worker_id LEFT JOIN users u ON u.id=f.manager_id WHERE f.workspace_id=? AND f.status='missing' AND f.report_date<? ORDER BY f.report_date LIMIT 20").all(ws, todayStr()) as any[])
     items.push({ id: "q_fr_" + f.id, type: "field_report", score: 52, title: `Field report missing — ${f.who || "worker"}`, subtitle: `Report for ${f.report_date} not filed`, lead_id: f.lead_id || null, primary: { kind: "open_ops", label: "Chase" } });
@@ -2645,7 +2694,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-export const APP_VERSION = "v116";
+export const APP_VERSION = "v117";
 app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: APP_VERSION, jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {
@@ -2894,6 +2943,7 @@ app.post("/api/change-orders/:id/decide", requireAuth, (req: any, res) => {
   const decision = req.body.decision === "approved" ? "approved" : "rejected";
   if (decision === "rejected" && !req.body.reason_code) return res.status(422).json({ error: { code: "reason_required" } });
   db.prepare("UPDATE change_orders SET status=? WHERE id=?").run(decision, co.id);
+  if (decision === "approved") { const jid = co.job_id || co.project_id; if (jid) { const no = bumpProjectIteration(req.user.workspace_id, jid); const jj = db.prepare("SELECT project_iter FROM jobs WHERE id=?").get(jid) as any; db.prepare("UPDATE change_orders SET project_iter=? WHERE id=?").run(jj?.project_iter ?? null, co.id); audit(req.user.workspace_id, req.user.id, "change_order.approved", "change_order", co.id, { project_no: no, delta_total: co.delta_total }); } }
   res.json({ ok: true, status: decision });
 });
 
@@ -3230,6 +3280,10 @@ app.post("/api/proposals/:id/send", requireAuth, async (req: any, res) => {
   if (r.status === "suppressed") return res.status(422).json({ error: { code: "suppressed", message: `This ${channel} address is on the workspace suppression list — the proposal was NOT sent. Remove the suppression in Automations if this is a mistake.` } });
   if (!["sent", "delivered", "test_mode"].includes(r.status)) return res.status(502).json({ error: { code: "delivery_failed", message: `Delivery failed (status: ${r.status}) — the proposal was NOT marked sent and no follow-ups were scheduled. Fix the channel and retry.` } });
   db.prepare("UPDATE proposals SET status='sent', sent_at=? WHERE id=?").run(now(), p.id);
+  // v117 (S3): validity runs from the send — the quote cannot silently age past it.
+  const wsd = db.prepare("SELECT proposal_valid_days FROM workspaces WHERE id=?").get(req.user.workspace_id) as any;
+  const validDays = Math.min(90, Math.max(14, Number(req.body?.valid_days || wsd?.proposal_valid_days || 30)));
+  db.prepare("UPDATE proposals SET expires_at=?, expiry_extended=0 WHERE id=?").run(new Date(Date.now() + validDays * 86400000).toISOString(), p.id);
   db.prepare("UPDATE proposals SET delivery_mode=? WHERE id=?").run(r.status === "test_mode" ? "test" : "live", p.id);
   supersedePriorProposals(req.user.workspace_id, l.id, p.id, true);
   emitOutbox(req.user.workspace_id, "proposal.sent", p.id, { lead_id: l.id, total: p.total, channel });
@@ -3237,6 +3291,34 @@ app.post("/api/proposals/:id/send", requireAuth, async (req: any, res) => {
   enrollFollowup(req.user.workspace_id, l.id, p.id);
   logEvent(req.user.workspace_id, l.id, req.user.id, "proposal_sent", null, null, { channel, status: r.status });
   res.status(201).json({ status: r.status, channel, to, sign_link: link });
+});
+// v117 (S3): sent-quote aging — nothing ages in silence; 90+ is a decision.
+app.get("/api/proposals/aging", requireAuth, (req: any, res) => {
+  const ws = req.user.workspace_id;
+  const rows = db.prepare("SELECT p.id, p.total, p.sent_at, p.created_at, p.expires_at, p.status FROM proposals p WHERE p.workspace_id=? AND p.status IN ('sent','expired')").all(ws) as any[];
+  const mk = () => ({ count: 0, total: 0, ids: [] as string[] });
+  const buckets: any = { current: mk(), d31_60: mk(), d61_90: mk(), over_90: mk(), expired: mk() };
+  for (const r of rows) { const age = Math.floor((Date.now() - new Date(r.sent_at || r.created_at).getTime()) / 86400000); const b = r.status === "expired" ? buckets.expired : age <= 30 ? buckets.current : age <= 60 ? buckets.d31_60 : age <= 90 ? buckets.d61_90 : buckets.over_90; b.count++; b.total = Math.round((b.total + (r.total || 0)) * 100) / 100; b.ids.push(r.id); }
+  res.json(buckets);
+});
+app.post("/api/proposals/bulk-expire", requireAuth, (req: any, res) => {
+  if (!["OWNER", "OPS_ADMIN", "APPROVER", "ADMIN"].includes(req.user.role) && !permsOf(req.user).can_approve) return res.status(403).json({ error: { code: "not_approver" } });
+  const ws = req.user.workspace_id; const ids: string[] = [...new Set<string>((req.body?.ids || []).map((x: any) => String(x)))].slice(0, 200);
+  let n = 0;
+  for (const id of ids) { const p = db.prepare("SELECT * FROM proposals WHERE id=? AND workspace_id=? AND status='sent'").get(id, ws) as any; if (!p) continue; db.prepare("UPDATE proposals SET status='expired' WHERE id=?").run(id); stopFollowups(p.lead_id, "proposal_expired"); n++; }
+  audit(ws, req.user.id, "proposal.bulk_expire", "proposal", null, { count: n });
+  res.json({ ok: true, expired: n });
+});
+app.post("/api/proposals/:id/revive", requireAuth, (req: any, res) => {
+  const ws = req.user.workspace_id; const p = db.prepare("SELECT * FROM proposals WHERE id=? AND workspace_id=?").get(req.params.id, ws) as any;
+  if (!p) return res.status(404).json({ error: { code: "not_found" } });
+  if (p.status !== "expired") return res.status(422).json({ error: { code: "not_expired" } });
+  const wsd = db.prepare("SELECT proposal_valid_days FROM workspaces WHERE id=?").get(ws) as any;
+  const days = Math.min(90, Math.max(14, Number(req.body?.valid_days || wsd?.proposal_valid_days || 30)));
+  db.prepare("UPDATE proposals SET status='sent', sent_at=?, expires_at=?, expiry_extended=0 WHERE id=?").run(now(), new Date(Date.now() + days * 86400000).toISOString(), p.id);
+  enrollFollowup(ws, p.lead_id, p.id);
+  audit(ws, req.user.id, "proposal.revive", "proposal", p.id, { valid_days: days });
+  res.json({ ok: true, valid_days: days });
 });
 app.get("/api/notifications", requireAuth, (req: any, res) => {
   const rows = (db.prepare("SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 50").all(req.user.id) as any[]).map((r: any) => ({ ...r, kind: r.type }));

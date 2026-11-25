@@ -106,3 +106,24 @@ export async function processFollowups(baseUrl = ""): Promise<{ sent: number; st
   }
   return { sent, stopped };
 }
+
+// v117 (S3): proposal validity sweep — a sent proposal past its validity date
+// expires (follow-ups stop) instead of aging in silence. One grace: if the
+// customer viewed it in the final week and it was never extended, validity
+// extends once by the workspace's validity window.
+export function processProposalExpiry(): { expired: number; extended: number } {
+  const rows = db.prepare("SELECT * FROM proposals WHERE status='sent' AND expires_at IS NOT NULL AND expires_at < ?").all(now()) as any[];
+  let expired = 0, extended = 0;
+  for (const p of rows) {
+    if (!p.expiry_extended && p.viewed_at && new Date(p.viewed_at).getTime() > new Date(p.expires_at).getTime() - 7 * 86400000) {
+      const ws = db.prepare("SELECT proposal_valid_days FROM workspaces WHERE id=?").get(p.workspace_id) as any;
+      const days = Number(ws?.proposal_valid_days || 30);
+      db.prepare("UPDATE proposals SET expires_at=?, expiry_extended=1 WHERE id=?").run(new Date(Date.now() + days * 86400000).toISOString(), p.id);
+      extended++; continue;
+    }
+    db.prepare("UPDATE proposals SET status='expired' WHERE id=?").run(p.id);
+    stopFollowups(p.lead_id, "proposal_expired");
+    expired++;
+  }
+  return { expired, extended };
+}

@@ -262,7 +262,7 @@ export const TOOLS: Record<string, ToolDef> = {
       const job = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(args.job_id, ws) as any; if (!job) throw new Error("job not found in this workspace");
       if (job.stage === to) return { summary: `Job is already ${to.replaceAll("_", " ")}.`, refs: { job_id: job.id, stage: to } };
       if (to === "CLOSED" && !args.waive_docs) { const missing = (db.prepare("SELECT COUNT(*) c FROM documents WHERE job_id=? AND required=1 AND status<>'received'").get(job.id) as any).c; if (missing > 0) throw new Error(`this job has ${missing} required document(s) still missing — receive them, or re-run with waive_docs=true to close anyway`); }
-      db.prepare("UPDATE jobs SET stage=?, updated_at=? WHERE id=?").run(to, now(), job.id);
+      db.prepare("UPDATE jobs SET stage=?, stage_changed_at=?, updated_at=? WHERE id=?").run(to, now(), now(), job.id);
       if (to === "WORK_COMPLETED") { try { const { onJobCompleted } = await import("./lifecycle.ts"); onJobCompleted(ws, { ...job, stage: to }); } catch { /* best-effort */ } }
       return { summary: `Job moved ${String(job.stage).replaceAll("_", " ")} → ${to.replaceAll("_", " ")}.${to === "WORK_COMPLETED" ? " Review-playbook enrollment checked." : ""}${to === "CLOSED" && args.waive_docs ? " (closed with documents waived)" : ""}`, refs: { job_id: job.id, lead_id: job.lead_id, stage: to } }; } },
   create_change_order: { name: "create_change_order", description: "Draft a change order against a job (scope delta + dollar delta). Drafts never change the job value — an approved change order does, through the normal human flow.", control: "draft",
@@ -353,7 +353,7 @@ export const TOOLS: Record<string, ToolDef> = {
         if (!job) { skipped.push({ id, reason: "not found in this workspace" }); continue; }
         if (job.stage === to) { skipped.push({ id, reason: "already " + to }); continue; }
         if (to === "CLOSED" && !args.waive_docs) { const missing = (db.prepare("SELECT COUNT(*) c FROM documents WHERE job_id=? AND required=1 AND status<>'received'").get(id) as any).c; if (missing > 0) { skipped.push({ id, reason: `${missing} required document(s) missing` }); continue; } }
-        db.prepare("UPDATE jobs SET stage=?, updated_at=? WHERE id=?").run(to, now(), id); moved.push(id);
+        db.prepare("UPDATE jobs SET stage=?, stage_changed_at=?, updated_at=? WHERE id=?").run(to, now(), now(), id); moved.push(id);
         if (to === "WORK_COMPLETED") { try { const { onJobCompleted } = await import("./lifecycle.ts"); onJobCompleted(ws, { ...job, stage: to }); } catch { /* best-effort */ } } }
       return { summary: `Moved ${moved.length} of ${ids.length} job(s) to ${to.replaceAll("_", " ")}.${skipped.length ? ` Skipped ${skipped.length}: ${skipped.slice(0, 8).map(s => `${s.id.slice(-6)} (${s.reason})`).join("; ")}` : ""}`, refs: { moved, skipped } }; } },
   get_revenue_report: { name: "get_revenue_report", description: "The five separated money figures with definitions.", control: "read",
