@@ -1330,6 +1330,39 @@ app.post("/api/jobs", requireAuth, (req: any, res) => { // manual job from a lea
   const j = ensureJobForLead(req.user.workspace_id, req.user.id, l);
   res.status(201).json(jobView(j));
 });
+// v118: DIRECT PROJECT — a project with no funnel. Walk-in work, a verbal
+// go-ahead, an assigned job: the project opens immediately. Underneath sits
+// a minimal shell lead (state WON, created_from='direct' on the job) so
+// invoicing, documents, money and close-readiness work unchanged; the
+// record is badged Direct so funnel reporting never confuses it with a win.
+app.post("/api/projects/direct", requireAuth, (req: any, res) => {
+  const ws = req.user.workspace_id; const b = req.body || {};
+  const service = String(b.service_requested || "").trim();
+  if (!service) return res.status(422).json({ error: { code: "service_required", message: "Name the work — what is this project?" } });
+  let contactId = String(b.contact_id || "");
+  if (!contactId) {
+    const cname = String(b.customer_name || "").trim();
+    if (!cname) return res.status(422).json({ error: { code: "customer_required", message: "A project needs a customer — pick one or type the name." } });
+    contactId = uid("ct");
+    db.prepare("INSERT INTO contacts (id,workspace_id,name,phone,email,address,is_customer) VALUES (?,?,?,?,?,?,1)").run(contactId, ws, cname.slice(0, 120), String(b.customer_phone || "").slice(0, 40), String(b.customer_email || "").slice(0, 120), String(b.location || "").slice(0, 200));
+  } else {
+    const c = db.prepare("SELECT id FROM contacts WHERE id=? AND workspace_id=?").get(contactId, ws) as any;
+    if (!c) return res.status(404).json({ error: { code: "contact_not_found" } });
+  }
+  const stage = ["AWAITING_SCHEDULING", "SCHEDULED", "IN_PROGRESS"].includes(String(b.stage || "")) ? String(b.stage) : "AWAITING_SCHEDULING";
+  const value = Math.max(0, Math.round(Number(b.value || 0) * 100) / 100);
+  const leadId = uid("lead");
+  db.prepare("INSERT INTO leads (id,workspace_id,contact_id,service_requested,state,est_value,owner_id,pm_id,location,notes,created_at,updated_at,stage_changed_at) VALUES (?,?,?,?, 'WON',?,?,?,?,?,?,?,?)").run(leadId, ws, contactId, service.slice(0, 200), value, String(b.owner_id || req.user.id), String(b.pm_id || b.owner_id || req.user.id), String(b.location || "").slice(0, 200), "Direct project — created without a funnel.", now(), now(), now());
+  assignLeadNo(ws, leadId);
+  const jobId = uid("job");
+  db.prepare("INSERT INTO jobs (id,workspace_id,lead_id,proposal_id,stage,value,sector,created_from,special_instructions,stage_changed_at,created_at,updated_at) VALUES (?,?,?,NULL,?,?,'private','direct',?,?,?,?)").run(jobId, ws, leadId, stage, value, String(b.special_instructions || "").slice(0, 4000) || null, now(), now(), now());
+  const projectNo = assignProjectNo(ws, jobId);
+  const job = db.prepare("SELECT * FROM jobs WHERE id=?").get(jobId) as any;
+  ensureDefaultWorkOrder(ws, job);
+  logEvent(ws, leadId, req.user.id, "project_direct_created", null, "WON", { job_id: jobId, project_no: projectNo });
+  audit(ws, req.user.id, "project.direct_create", "job", jobId, { project_no: projectNo, value });
+  res.status(201).json({ ...jobView(job), project_no: projectNo });
+});
 // ---------- v25: self-service profile ----------
 app.patch("/api/users/me", requireAuth, (req: any, res) => {
   const name = req.body.name !== undefined ? String(req.body.name || "").trim().slice(0, 80) : null;
@@ -1881,7 +1914,7 @@ app.patch("/api/jobs/:id", requireAuth, (req: any, res) => {
   const j = db.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=?").get(req.params.id, req.user.workspace_id) as any;
   if (!j) return res.status(404).json({ error: { code: "not_found" } });
   const b = req.body || {}; const sets: string[] = []; const vals: any[] = [];
-  for (const k of ["scheduled_start", "scheduled_end", "invoice_status", "value", "sector", "requires_site_visit", "budget_cost", "tax_rate_id", "payment_plan", "invoice_variance_note"]) if (b[k] !== undefined) { sets.push(`${k}=?`); vals.push(b[k]); }
+  for (const k of ["scheduled_start", "scheduled_end", "invoice_status", "value", "sector", "requires_site_visit", "budget_cost", "tax_rate_id", "payment_plan", "invoice_variance_note", "special_instructions"]) if (b[k] !== undefined) { sets.push(`${k}=?`); vals.push(b[k]); }
   if (sets.length) { db.prepare(`UPDATE jobs SET ${sets.join(",")}, updated_at=? WHERE id=?`).run(...vals, now(), j.id); }
   res.json(jobView(db.prepare("SELECT * FROM jobs WHERE id=?").get(j.id)));
 });
@@ -1892,7 +1925,7 @@ function buildPacket(req: any, j: any) {
   const sched = db.prepare("SELECT work_date FROM job_schedule WHERE lead_id=? ORDER BY work_date LIMIT 3").all(j.lead_id) as any[];
   const ws = db.prepare("SELECT name FROM workspaces WHERE id=?").get(req.user.workspace_id) as any;
   const subject = `Your job with ${ws.name} — ${v.service_requested}`;
-  const body = `${ws.name} — job packet for ${v.contact_name}\nService: ${v.service_requested}\nSite: ${v.location || "—"}\nJob value: $${v.value}\nScheduled: ${sched.map(s => s.work_date).join(", ") || "to be scheduled"}\nPaperwork: ${docs.length ? docs.map(d => `${d.name} (${d.status})`).join("; ") : "none outstanding"}\nQuestions? Reply here and we'll take care of it.`;
+  const body = `${ws.name} — job packet for ${v.contact_name}\nService: ${v.service_requested}\nSite: ${v.location || "—"}\nJob value: $${v.value}\nScheduled: ${sched.map(s => s.work_date).join(", ") || "to be scheduled"}\nPaperwork: ${docs.length ? docs.map(d => `${d.name} (${d.status})`).join("; ") : "none outstanding"}\n${j.special_instructions ? `Special instructions: ${j.special_instructions}\n` : ""}Questions? Reply here and we'll take care of it.`;
   const prop = db.prepare("SELECT * FROM proposals WHERE lead_id=? ORDER BY version DESC LIMIT 1").get(j.lead_id) as any;
   const inv = db.prepare("SELECT * FROM invoices WHERE job_id=? AND status<>'void' ORDER BY created_at DESC LIMIT 1").get(j.id) as any;
   const includes: any[] = [{ kind: "summary", name: "Job packet summary" }];
@@ -2694,7 +2727,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-export const APP_VERSION = "v117";
+export const APP_VERSION = "v118";
 app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: APP_VERSION, jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {

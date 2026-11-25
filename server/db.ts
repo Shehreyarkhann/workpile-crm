@@ -172,6 +172,7 @@ export function initSchema() {
   "INSERT OR IGNORE INTO payment_allocations (id, workspace_id, payment_id, invoice_id, amount, created_at) SELECT 'alloc_' || id, workspace_id, id, invoice_id, amount, created_at FROM payments WHERE invoice_id IS NOT NULL AND status='paid' AND kind='invoice_payment'",
   "ALTER TABLE jobs ADD COLUMN stage_changed_at TEXT",
   "ALTER TABLE jobs ADD COLUMN invoice_variance_note TEXT",
+  "ALTER TABLE jobs ADD COLUMN special_instructions TEXT",
   "ALTER TABLE invoices ADD COLUMN project_iter INTEGER",
   "ALTER TABLE change_orders ADD COLUMN project_iter INTEGER",
   "ALTER TABLE proposals ADD COLUMN expiry_extended INTEGER DEFAULT 0",
