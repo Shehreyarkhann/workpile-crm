@@ -116,9 +116,13 @@ function createLead(workspaceId: string, actor: string, input: any) {
       possibleDupeOf = dupe.id;
     }
   }
-  const cid = uid("ct");
-  db.prepare("INSERT INTO contacts (id,workspace_id,name,phone,email,address) VALUES (?,?,?,?,?,?)")
-    .run(cid, workspaceId, input.contact?.name || "", input.contact?.phone || "", input.contact?.email || "", input.location?.address || input.location || "");
+  let cid = "";
+  if (input.contact_id) { const ex = db.prepare("SELECT id FROM contacts WHERE id=? AND workspace_id=?").get(String(input.contact_id), workspaceId) as any; if (ex) cid = ex.id; }
+  if (!cid) {
+    cid = uid("ct");
+    db.prepare("INSERT INTO contacts (id,workspace_id,name,phone,email,address) VALUES (?,?,?,?,?,?)")
+      .run(cid, workspaceId, input.contact?.name || "", input.contact?.phone || "", input.contact?.email || "", input.location?.address || input.location || "");
+  }
   let sid = input.source_id || null;
   if (!sid && input.source) {
     const s = db.prepare("SELECT id FROM sources WHERE workspace_id=? AND name=?").get(workspaceId, input.source) as any;
@@ -561,6 +565,29 @@ app.get("/api/auth/me", requireAuth, (req: any, res) => { ensureMembership(req.u
 
 // ---------- routes: workspace data ----------
 app.get("/api/users", requireAuth, (req: any, res) => res.json((db.prepare("SELECT * FROM users WHERE workspace_id=?").all(req.user.workspace_id) as any[]).map(u => ({ id: u.id, name: u.name, email: u.email, role: u.role, avatar_url: u.avatar_url || null, approval_limit: u.approval_limit, labor_class_id: u.labor_class_id || null, permissions: permsOf(u), has_overrides: !!u.permissions }))));
+// v119: typeahead suggestions — existing customers, services and locations
+// surface as you type in create forms and search boxes, so records link to
+// what already exists instead of spawning duplicates.
+app.get("/api/suggest", requireAuth, (req: any, res) => {
+  const ws = req.user.workspace_id; const kind = String(req.query.kind || ""); const q = String(req.query.q || "").trim().toLowerCase();
+  const like = "%" + q.replace(/[%_]/g, "") + "%";
+  let items: any[] = [];
+  if (kind === "customers") {
+    items = (db.prepare("SELECT id, name, email, phone, address, is_customer FROM contacts WHERE workspace_id=? AND (LOWER(name) LIKE ? OR LOWER(email) LIKE ? OR phone LIKE ?) ORDER BY is_customer DESC, name LIMIT 8").all(ws, like, like, like) as any[])
+      .map(c => ({ id: c.id, label: c.name, sub: [c.email, c.phone].filter(Boolean).join(" · "), email: c.email || "", phone: c.phone || "", address: c.address || "", is_customer: !!c.is_customer }));
+  } else if (kind === "services") {
+    const seen = new Map<string, any>();
+    for (const r of db.prepare("SELECT name FROM price_book_items WHERE workspace_id=? AND LOWER(name) LIKE ? ORDER BY name LIMIT 8").all(ws, like) as any[]) if (!seen.has(r.name.toLowerCase())) seen.set(r.name.toLowerCase(), { label: r.name, sub: "Price book" });
+    for (const r of db.prepare("SELECT DISTINCT service_requested s FROM leads WHERE workspace_id=? AND service_requested IS NOT NULL AND service_requested!='' AND LOWER(service_requested) LIKE ? LIMIT 8").all(ws, like) as any[]) if (!seen.has(r.s.toLowerCase())) seen.set(r.s.toLowerCase(), { label: r.s, sub: "Used before" });
+    items = [...seen.values()].slice(0, 8);
+  } else if (kind === "locations") {
+    const seen = new Map<string, any>();
+    for (const r of db.prepare("SELECT DISTINCT location s FROM leads WHERE workspace_id=? AND location IS NOT NULL AND location!='' AND LOWER(location) LIKE ? LIMIT 8").all(ws, like) as any[]) if (!seen.has(r.s.toLowerCase())) seen.set(r.s.toLowerCase(), { label: r.s });
+    for (const r of db.prepare("SELECT DISTINCT address s FROM contacts WHERE workspace_id=? AND address IS NOT NULL AND address!='' AND LOWER(address) LIKE ? LIMIT 8").all(ws, like) as any[]) if (!seen.has(r.s.toLowerCase())) seen.set(r.s.toLowerCase(), { label: r.s });
+    items = [...seen.values()].slice(0, 8);
+  } else return res.status(422).json({ error: { code: "bad_kind" } });
+  res.json({ items });
+});
 app.get("/api/leads", requireAuth, (req: any, res) => { ensureNumbers(req.user.workspace_id);
   const ws = req.user.workspace_id;
   let rows = (db.prepare("SELECT * FROM leads WHERE workspace_id=? ORDER BY created_at DESC").all(ws) as any[]).map(leadView);
@@ -2727,7 +2754,7 @@ app.post("/api/public/backlog-audit", (req: any, res) => { const rows = Array.is
 app.get("/audit", (_req: any, res) => { res.setHeader("Content-Type", "text/html"); res.send(AUDIT_PAGE); });
 app.get("/api/admin/activation", requireAuth, requirePlatformAdmin, (_req: any, res) => { const wss = db.prepare("SELECT id, name, plan, created_at FROM workspaces ORDER BY created_at").all() as any[]; const M = ["has_leads", "has_proposals", "has_decided_approval", "has_jobs", "has_won", "has_team"]; const rows = wss.map(w => { const c = (sql: string) => (db.prepare(sql).get(w.id) as any)?.c || 0; return { workspace: w.name, plan: w.plan, has_leads: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=?") > 0, has_proposals: c("SELECT COUNT(*) c FROM proposals WHERE workspace_id=?") > 0, has_decided_approval: c("SELECT COUNT(*) c FROM approvals WHERE workspace_id=? AND decision IS NOT NULL") > 0, has_jobs: c("SELECT COUNT(*) c FROM jobs WHERE workspace_id=?") > 0, has_won: c("SELECT COUNT(*) c FROM leads WHERE workspace_id=? AND state='WON'") > 0, has_team: c("SELECT COUNT(*) c FROM users WHERE workspace_id=?") > 1 }; }); const summary: any = {}; for (const m of M) summary[m] = rows.length ? Math.round(1000 * rows.filter(r => (r as any)[m]).length / rows.length) / 10 : 0; res.json({ workspaces: rows, milestone_pct: summary }); });
 app.get("/api/metrics/periods", requireAuth, (req: any, res) => { const ws = req.user.workspace_id; const dow = (new Date().getUTCDay() + 6) % 7; const monday = new Date(Date.now() - dow * 86400000); monday.setUTCHours(0, 0, 0, 0); const thisStart = monday.toISOString(); const lastStart = new Date(monday.getTime() - 7 * 86400000).toISOString(); const win = (a: string, b: string | null) => { const c = (sql: string, ...p: any[]) => (db.prepare(sql).get(...p) as any)?.v || 0; const cond = (col: string) => b ? `${col}>=? AND ${col}<?` : `${col}>=?`; const args = b ? [ws, a, b] : [ws, a]; return { leads_created: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND ${cond("created_at")}`, ...args), proposals_sent: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND ${cond("sent_at")}`, ...args), proposals_live: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='live' AND ${cond("sent_at")}`, ...args), proposals_test_mode: c(`SELECT COUNT(*) v FROM proposals WHERE workspace_id=? AND delivery_mode='test' AND ${cond("sent_at")}`, ...args), won: c(`SELECT COUNT(*) v FROM leads WHERE workspace_id=? AND state='WON' AND ${cond("updated_at")}`, ...args), jobs_created: c(`SELECT COUNT(*) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args), signed_value: c(`SELECT COALESCE(SUM(value),0) v FROM jobs WHERE workspace_id=? AND ${cond("created_at")}`, ...args) }; }; res.json({ this_week: win(thisStart, null), last_week: win(lastStart, thisStart), week_start: thisStart, note: "Event counts by timestamp in each window (Mon–Sun UTC). Won is counted when the lead entered WON (updated_at); signed value sums jobs created in the window." }); });
-export const APP_VERSION = "v118";
+export const APP_VERSION = "v119";
 app.get("/api/health/deep", (_req: any, res) => { let dbOk = true; try { db.prepare("SELECT 1").get(); } catch { dbOk = false; } res.json({ ok: dbOk, db: dbOk ? "ok" : "error", version: APP_VERSION, jobs: jobStats(), outbox_pending: outboxPending(), time: now() }); });
 app.get("/api/admin/platform", requireAuth, requirePlatformAdmin, (_req: any, res) => { res.json({ workspaces: (db.prepare("SELECT COUNT(*) c FROM workspaces").get() as any).c, users: (db.prepare("SELECT COUNT(*) c FROM users").get() as any).c, jobs: jobStats(), outbox_pending: outboxPending(), dead_jobs: db.prepare("SELECT id, kind, attempts, last_error, created_at FROM background_jobs WHERE status='dead' ORDER BY created_at DESC LIMIT 10").all(), dead_deliveries: (db.prepare("SELECT COUNT(*) c FROM outcome_deliveries WHERE last_status IN ('dead','dead_letter','failed') AND superseded_at IS NULL").get() as any).c }); });
 app.post("/api/admin/impersonate", requireAuth, requirePlatformAdmin, (req: any, res) => {
